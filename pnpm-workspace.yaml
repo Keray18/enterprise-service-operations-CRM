@@ -1,0 +1,8 @@
+packages:
+  - "backend"
+  - "frontend"
+
+allowBuilds:
+  esbuild: true
+  oracledb: true
+  unrs-resolver: true
