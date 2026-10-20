@@ -15,7 +15,9 @@
     "db:migrate": "tsx src/database/runMigrations.ts",
     "db:status": "tsx src/database/runMigrations.ts --status",
     "db:bootstrap-admin": "tsx src/scripts/bootstrapAdmin.ts",
-    "db:rotate-admin": "tsx src/scripts/rotateAdminPassword.ts"
+    "db:rotate-admin": "tsx src/scripts/rotateAdminPassword.ts",
+    "db:users": "tsx src/scripts/listUsers.ts",
+    "db:set-password": "tsx src/scripts/setUserPassword.ts"
   },
   "dependencies": {
     "@node-rs/argon2": "^2.2.2",
@@ -24,9 +26,11 @@
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
+    "exceljs": "^4.4.0",
     "express": "^4.21.2",
     "express-rate-limit": "^7.5.0",
     "helmet": "^8.0.0",
+    "multer": "^2.4.0",
     "oracledb": "^6.7.1",
     "winston": "^3.17.0",
     "zod": "^3.24.2"
@@ -35,6 +39,7 @@
     "@types/cookie-parser": "^1.4.10",
     "@types/cors": "^2.8.17",
     "@types/express": "^4.17.21",
+    "@types/multer": "^2.3.0",
     "@types/node": "^22.13.10",
     "@types/oracledb": "^7.0.3",
     "@types/supertest": "^6.0.2",

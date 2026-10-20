@@ -1,0 +1,139 @@
+import { logger } from '../logging/logger.js';
+import { notificationRepository } from '../database/repositories/notificationRepository.js';
+import { NotificationOutboxRecord } from '../types/callCenter.js';
+
+export interface SmsProviderResponse {
+  success: boolean;
+  providerMessageId?: string;
+  errorMessage?: string;
+}
+
+/**
+ * Interface for SMS Gateway Adapters.
+ * In local/dev/test environments, uses MockSmsAdapter.
+ * In production, integrates with DLT-compliant Indian telecom gateways (e.g. Gupshup, ValueFirst, Airtel IQ).
+ */
+export interface ISmsAdapter {
+  sendSms(recipient: string, messageBody: string, templateCode: string): Promise<SmsProviderResponse>;
+}
+
+export class MockSmsAdapter implements ISmsAdapter {
+  private sentMessages: Array<{ recipient: string; messageBody: string; templateCode: string; timestamp: Date }> = [];
+  private failNext = false;
+
+  setFailNext(fail: boolean): void {
+    this.failNext = fail;
+  }
+
+  getSentMessages(): Array<{ recipient: string; messageBody: string; templateCode: string; timestamp: Date }> {
+    return [...this.sentMessages];
+  }
+
+  clear(): void {
+    this.sentMessages = [];
+    this.failNext = false;
+  }
+
+  async sendSms(recipient: string, messageBody: string, templateCode: string): Promise<SmsProviderResponse> {
+    if (this.failNext) {
+      this.failNext = false;
+      return {
+        success: false,
+        errorMessage: 'SIMULATED_GATEWAY_TIMEOUT: Mock SMS provider simulated failure',
+      };
+    }
+
+    const providerMessageId = `MOCK-SMS-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
+    this.sentMessages.push({
+      recipient,
+      messageBody,
+      templateCode,
+      timestamp: new Date(),
+    });
+
+    const maskedPhone = recipient.length >= 4 
+      ? recipient.slice(0, 2) + '******' + recipient.slice(-2) 
+      : '******';
+
+    logger.info(`[SMS ADAPTER] Dispatched ${templateCode} to ${maskedPhone}. ProviderMsgId: ${providerMessageId}`);
+
+    return {
+      success: true,
+      providerMessageId,
+    };
+  }
+}
+
+export const mockSmsAdapter = new MockSmsAdapter();
+
+export class NotificationService {
+  private smsAdapter: ISmsAdapter = mockSmsAdapter;
+
+  /**
+   * Generates the approved SMS 1 Complaint Registration template.
+   */
+  buildSms1Message(jobNumber: string): string {
+    return `Dear Customer, We have registered your service request #${jobNumber}. You will receive a call from our service technician soon.`;
+  }
+
+  /**
+   * Generates the approved SMS 2 Appointment & Check-In OTP template.
+   */
+  buildSms2Message(params: {
+    jobNumber: string;
+    techName: string;
+    techMobile: string;
+    appointmentDatetime: string;
+    checkinOtp: string;
+  }): string {
+    return `Dear Customer, Service Request #${params.jobNumber} has been assigned to ${params.techName} Mob no ${params.techMobile} and your appointment is scheduled for ${params.appointmentDatetime}. Please keep the required documents ready and kindly share the OTP ${params.checkinOtp}, at the time of Visit.`;
+  }
+
+  /**
+   * Generates the approved SMS 6 Check-In OTP Regeneration template.
+   */
+  buildSms6Message(params: { jobNumber: string; checkinOtp: string }): string {
+    return `Dear Customer, Please share OTP ${params.checkinOtp} against your service request #${params.jobNumber} at the time of technician visit.`;
+  }
+
+  /**
+   * Asynchronously attempts delivery for an enqueued outbox notification.
+   * Gateway errors update the outbox status to FAILED without throwing errors back to caller.
+   */
+  async processNotification(notification: NotificationOutboxRecord): Promise<void> {
+    try {
+      if (notification.channel === 'SMS') {
+        const res = await this.smsAdapter.sendSms(
+          notification.recipient,
+          notification.messageBody,
+          notification.templateCode
+        );
+
+        if (res.success) {
+          await notificationRepository.updateStatus(notification.notificationId, 'SENT', {
+            providerMessageId: res.providerMessageId,
+          });
+        } else {
+          await notificationRepository.updateStatus(notification.notificationId, 'FAILED', {
+            errorMessage: res.errorMessage,
+          });
+        }
+      }
+    } catch (err: any) {
+      logger.error(`Failed to process notification ${notification.notificationId}: ${err?.message || err}`);
+      try {
+        await notificationRepository.updateStatus(notification.notificationId, 'FAILED', {
+          errorMessage: err?.message || 'UNKNOWN_DISPATCH_ERROR',
+        });
+      } catch (dbErr) {
+        logger.error(`Failed to record notification failure: ${dbErr}`);
+      }
+    }
+  }
+
+  setSmsAdapter(adapter: ISmsAdapter): void {
+    this.smsAdapter = adapter;
+  }
+}
+
+export const notificationService = new NotificationService();

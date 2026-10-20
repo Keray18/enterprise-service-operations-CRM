@@ -47,6 +47,7 @@ export async function requireAuth(req: Request, _res: Response, next: NextFuncti
       username: user.username,
       email: user.email,
       fullName: user.fullName,
+      locationId: user.locationId,
       roles,
       permissions,
     };
@@ -97,6 +98,29 @@ export function requirePermission(...requiredPermissions: string[]) {
       return next(
         new AppError(
           `Access denied. Requires permissions: ${requiredPermissions.join(', ')}`,
+          403,
+          'FORBIDDEN'
+        )
+      );
+    }
+
+    next();
+  };
+}
+
+export function requireAnyPermission(...requiredPermissions: string[]) {
+  return (req: Request, _res: Response, next: NextFunction): void => {
+    if (!req.user) {
+      return next(new AppError('Authentication required', 401, 'UNAUTHORIZED'));
+    }
+
+    const userPerms = new Set(req.user.permissions);
+    const hasAny = requiredPermissions.some((p) => userPerms.has(p));
+
+    if (!hasAny) {
+      return next(
+        new AppError(
+          `Access denied. Requires one of permissions: ${requiredPermissions.join(', ')}`,
           403,
           'FORBIDDEN'
         )

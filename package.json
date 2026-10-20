@@ -16,7 +16,9 @@
     "db:migrate": "pnpm --filter backend db:migrate",
     "db:status": "pnpm --filter backend db:status",
     "db:bootstrap-admin": "pnpm --filter backend db:bootstrap-admin",
-    "db:rotate-admin": "pnpm --filter backend db:rotate-admin"
+    "db:rotate-admin": "pnpm --filter backend db:rotate-admin",
+    "db:users": "pnpm --filter backend db:users",
+    "db:set-password": "pnpm --filter backend db:set-password"
   },
   "devDependencies": {
     "typescript": "^5.8.2"

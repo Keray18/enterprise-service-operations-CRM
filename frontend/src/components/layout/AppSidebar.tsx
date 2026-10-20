@@ -3,6 +3,7 @@
 import AccountBalanceWalletIcon from '@mui/icons-material/AccountBalanceWallet';
 import AssessmentIcon from '@mui/icons-material/Assessment';
 import AssignmentIcon from '@mui/icons-material/Assignment';
+import CategoryIcon from '@mui/icons-material/Category';
 import ChevronLeftIcon from '@mui/icons-material/ChevronLeft';
 import ChevronRightIcon from '@mui/icons-material/ChevronRight';
 import DashboardIcon from '@mui/icons-material/Dashboard';
@@ -94,6 +95,12 @@ const NAV_SECTIONS: NavSection[] = [
         href: '/admin',
         icon: <SettingsIcon fontSize="small" />,
         requiredPermission: 'users:read',
+      },
+      {
+        label: 'Catalog Masters',
+        href: '/admin/masters',
+        icon: <CategoryIcon fontSize="small" />,
+        requiredPermission: 'masters:read',
       },
     ],
   },

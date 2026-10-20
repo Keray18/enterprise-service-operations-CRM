@@ -5,6 +5,7 @@ export interface UserRecord {
   fullName: string;
   passwordHash: string;
   phoneNumber?: string;
+  locationId?: string;
   isActive: 'Y' | 'N';
   failedLoginAttempts: number;
   lockedUntil?: Date;
@@ -31,6 +32,7 @@ export interface AuthenticatedUser {
   username: string;
   email: string;
   fullName: string;
+  locationId?: string;
   roles: string[];
   permissions: string[];
 }

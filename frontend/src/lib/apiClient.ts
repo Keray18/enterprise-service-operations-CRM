@@ -138,4 +138,36 @@ export const apiClient = {
 
   delete: <T>(endpoint: string, options?: RequestInit) =>
     request<T>(endpoint, { ...options, method: 'DELETE' }),
+
+  downloadBlob: async (endpoint: string, options?: RequestInit): Promise<Blob> => {
+    const url = `${API_BASE_URL}${endpoint.startsWith('/') ? endpoint : `/${endpoint}`}`;
+    const headers = new Headers(options?.headers);
+    if (currentCsrfToken && !headers.has('x-csrf-token')) {
+      headers.set('x-csrf-token', currentCsrfToken);
+    }
+    const res = await fetch(url, {
+      credentials: 'include',
+      ...options,
+      headers,
+    });
+    if (!res.ok) {
+      throw new ApiClientError(`Download failed with status ${res.status}`, 'DOWNLOAD_FAILED', res.status);
+    }
+    return res.blob();
+  },
 };
+
+export function triggerBlobDownload(blob: Blob, filename: string): void {
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.style.display = 'none';
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => {
+    document.body.removeChild(a);
+    window.URL.revokeObjectURL(url);
+  }, 100);
+}
+

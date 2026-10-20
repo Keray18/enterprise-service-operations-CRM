@@ -8,7 +8,12 @@ import { checkDatabaseReadiness } from './database/oraclePool.js';
 import { logger } from './logging/logger.js';
 import { correlationIdMiddleware } from './middleware/correlationId.js';
 import { AppError, errorHandler, sendError, sendSuccess } from './middleware/errorHandler.js';
+import { asfRoutes } from './routes/asfRoutes.js';
 import { authRouter } from './routes/authRoutes.js';
+import { callCenterRouter } from './routes/callCenterRoutes.js';
+import { catalogRouter } from './routes/catalogRoutes.js';
+import { customerRouter } from './routes/customerRoutes.js';
+import { geographyRouter } from './routes/geographyRoutes.js';
 import { workspaceRouter } from './routes/workspaceRoutes.js';
 
 export function createApp(): Express {
@@ -134,6 +139,11 @@ export function createApp(): Express {
   // Application Domain Routes
   // ============================================================================
   app.use('/api/v1/auth', authRouter);
+  app.use('/api/v1/catalog', catalogRouter);
+  app.use('/api/v1/geography', geographyRouter);
+  app.use('/api/v1/customers', customerRouter);
+  app.use('/api/v1/call-center', callCenterRouter);
+  app.use('/api/v1/asf', asfRoutes);
   app.use('/api/v1/workspace', workspaceRouter);
 
   // 404 Route Not Found Handler

@@ -109,6 +109,7 @@ export class AuthService {
       username: user.username,
       email: user.email,
       fullName: user.fullName,
+      locationId: user.locationId,
       roles,
       permissions,
     };
@@ -158,6 +159,7 @@ export class AuthService {
         username: user.username,
         email: user.email,
         fullName: user.fullName,
+        locationId: user.locationId,
         roles,
         permissions,
       },

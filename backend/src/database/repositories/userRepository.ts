@@ -10,6 +10,7 @@ function mapRowToUser(row: any): UserRecord {
     fullName: row.FULL_NAME,
     passwordHash: row.PASSWORD_HASH,
     phoneNumber: row.PHONE_NUMBER || undefined,
+    locationId: row.LOCATION_ID || undefined,
     isActive: row.IS_ACTIVE as 'Y' | 'N',
     failedLoginAttempts: Number(row.FAILED_LOGIN_ATTEMPTS || 0),
     lockedUntil: row.LOCKED_UNTIL ? new Date(row.LOCKED_UNTIL) : undefined,
@@ -25,7 +26,7 @@ export class UserRepository {
     try {
       const sql = `
         SELECT 
-          USER_ID, USERNAME, EMAIL, FULL_NAME, PASSWORD_HASH, PHONE_NUMBER,
+          USER_ID, USERNAME, EMAIL, FULL_NAME, PASSWORD_HASH, PHONE_NUMBER, LOCATION_ID,
           IS_ACTIVE, FAILED_LOGIN_ATTEMPTS, LOCKED_UNTIL, LAST_LOGIN_AT,
           CREATED_AT, UPDATED_AT
         FROM APP_USERS
@@ -52,7 +53,7 @@ export class UserRepository {
     try {
       const sql = `
         SELECT 
-          USER_ID, USERNAME, EMAIL, FULL_NAME, PASSWORD_HASH, PHONE_NUMBER,
+          USER_ID, USERNAME, EMAIL, FULL_NAME, PASSWORD_HASH, PHONE_NUMBER, LOCATION_ID,
           IS_ACTIVE, FAILED_LOGIN_ATTEMPTS, LOCKED_UNTIL, LAST_LOGIN_AT,
           CREATED_AT, UPDATED_AT
         FROM APP_USERS
@@ -81,15 +82,16 @@ export class UserRepository {
     fullName: string;
     passwordHash: string;
     phoneNumber?: string;
+    locationId?: string;
   }): Promise<void> {
     const conn = await getOracleConnection();
     try {
       const sql = `
         INSERT INTO APP_USERS (
-          USER_ID, USERNAME, EMAIL, FULL_NAME, PASSWORD_HASH, PHONE_NUMBER,
+          USER_ID, USERNAME, EMAIL, FULL_NAME, PASSWORD_HASH, PHONE_NUMBER, LOCATION_ID,
           IS_ACTIVE, FAILED_LOGIN_ATTEMPTS, CREATED_AT, UPDATED_AT
         ) VALUES (
-          :userId, :username, :email, :fullName, :passwordHash, :phoneNumber,
+          :userId, :username, :email, :fullName, :passwordHash, :phoneNumber, :locationId,
           'Y', 0, SYSTIMESTAMP, SYSTIMESTAMP
         )
       `;
@@ -102,9 +104,38 @@ export class UserRepository {
           fullName: data.fullName.trim(),
           passwordHash: data.passwordHash,
           phoneNumber: data.phoneNumber || null,
+          locationId: data.locationId || null,
         },
         { autoCommit: true }
       );
+    } finally {
+      await conn.close();
+    }
+  }
+
+  async findEngineersByLocation(locationId: string): Promise<UserRecord[]> {
+    const conn = await getOracleConnection();
+    try {
+      const sql = `
+        SELECT 
+          u.USER_ID, u.USERNAME, u.EMAIL, u.FULL_NAME, u.PASSWORD_HASH, u.PHONE_NUMBER, u.LOCATION_ID,
+          u.IS_ACTIVE, u.FAILED_LOGIN_ATTEMPTS, u.LOCKED_UNTIL, u.LAST_LOGIN_AT,
+          u.CREATED_AT, u.UPDATED_AT
+        FROM APP_USERS u
+        JOIN USER_ROLES ur ON u.USER_ID = ur.USER_ID
+        JOIN ROLES r ON ur.ROLE_ID = r.ROLE_ID
+        WHERE r.CODE = 'ENGINEER'
+          AND u.LOCATION_ID = :locationId
+          AND u.IS_ACTIVE = 'Y'
+        ORDER BY u.FULL_NAME ASC
+      `;
+      const result = await conn.execute<any>(
+        sql,
+        { locationId },
+        { outFormat: oracledb.OUT_FORMAT_OBJECT }
+      );
+
+      return (result.rows || []).map(mapRowToUser);
     } finally {
       await conn.close();
     }

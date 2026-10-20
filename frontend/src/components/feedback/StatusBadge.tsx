@@ -3,6 +3,8 @@ import React from 'react';
 import { tokens } from '../../theme/tokens';
 
 export type OperationalStatus =
+  | 'ACTIVE'
+  | 'INACTIVE'
   | 'REGISTERED'
   | 'ACKNOWLEDGED'
   | 'APPOINTMENT_SCHEDULED'
@@ -34,6 +36,7 @@ export function StatusBadge({ status, label, size = 'small' }: StatusBadgeProps)
   let border: string = 'transparent';
 
   switch (normStatus) {
+    case 'ACTIVE':
     case 'CLOSED':
     case 'REPLACED':
     case 'IN_WARRANTY':
@@ -55,6 +58,11 @@ export function StatusBadge({ status, label, size = 'small' }: StatusBadgeProps)
       bg = tokens.colors.status.warningSubtle;
       color = tokens.colors.status.warning;
       border = '#fde68a';
+      break;
+    case 'INACTIVE':
+      bg = '#f1f5f9';
+      color = '#64748b';
+      border = '#cbd5e1';
       break;
     case 'CANCELLED':
     case 'OUT_OF_WARRANTY':
