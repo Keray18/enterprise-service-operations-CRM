@@ -49,12 +49,6 @@ interface NavSection {
 
 const NAV_SECTIONS: NavSection[] = [
   {
-    title: 'OVERVIEW',
-    items: [
-      { label: 'System Overview', href: '/', icon: <DashboardIcon fontSize="small" /> },
-    ],
-  },
-  {
     title: 'CALL CENTER',
     items: [
       {
@@ -101,6 +95,18 @@ const NAV_SECTIONS: NavSection[] = [
         href: '/admin/masters',
         icon: <CategoryIcon fontSize="small" />,
         requiredPermission: 'masters:read',
+      },
+      {
+        label: 'Finance & Settlements',
+        href: '/finance',
+        icon: <AccountBalanceWalletIcon fontSize="small" />,
+        requiredPermission: 'finance:read',
+      },
+      {
+        label: 'System Diagnostics',
+        href: '/admin/diagnostics',
+        icon: <DashboardIcon fontSize="small" />,
+        requiredRole: 'ADMIN',
       },
     ],
   },

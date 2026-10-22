@@ -40,7 +40,7 @@ describe('Part Codes, HSN/Tax, Geography & Serviceability (Phase 1B.2)', () => {
   let testCityId: string;
   let testLocationId: string;
   let testPartId: string;
-  const suffix = Date.now().toString().slice(-4);
+  const suffix = Math.floor(1000 + Math.random() * 9000).toString();
 
   beforeAll(async () => {
     // 1. Setup Admin user with masters:manage & masters:read
@@ -250,7 +250,7 @@ describe('Part Codes, HSN/Tax, Geography & Serviceability (Phase 1B.2)', () => {
   describe('State and City Masters', () => {
     it('should create a new State', async () => {
       const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
-      testStateCode = 'X' + chars[Math.floor(Math.random() * chars.length)] + chars[Math.floor(Math.random() * chars.length)];
+      testStateCode = 'X' + Array.from({ length: 4 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
       const res = await request(app)
         .post('/api/v1/geography/states')
         .set('Cookie', adminSessionCookie)

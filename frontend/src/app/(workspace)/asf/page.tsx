@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState } from 'react';
+import Link from 'next/link';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
 import Card from '@mui/material/Card';
@@ -37,13 +38,13 @@ import SendIcon from '@mui/icons-material/Send';
 import WarningAmberIcon from '@mui/icons-material/WarningAmber';
 import VerifiedUserIcon from '@mui/icons-material/VerifiedUser';
 import AccessTimeFilledIcon from '@mui/icons-material/AccessTimeFilled';
+import BuildIcon from '@mui/icons-material/Build';
 
 import { EmptyState } from '../../../components/data-display/EmptyState';
 import { PageHeader } from '../../../components/data-display/PageHeader';
 import { SlaCounter } from '../../../components/feedback/SlaCounter';
 import { StatusBadge } from '../../../components/feedback/StatusBadge';
 import { ProtectedRoute } from '../../../components/layout/ProtectedRoute';
-import { WorkspaceShell } from '../../../components/layout/WorkspaceShell';
 
 import {
   AsfQueueFilters,
@@ -122,8 +123,7 @@ export default function AsfFranchisePage() {
   const countOverdue = items.filter((i) => i.slaBreached48h === 'Y' || i.slaStatus?.isBreached).length;
 
   return (
-    <WorkspaceShell>
-      <ProtectedRoute requiredPermission="asf:read">
+    <ProtectedRoute requiredPermission="asf:read">
         <PageHeader
           title="Authorized Service Franchise (ASF) Operations"
           subtitle="48-hour acknowledgement SLA queue, atomic single-commit dispatch, and technician OTP check-in."
@@ -438,6 +438,18 @@ export default function AsfFranchisePage() {
                         {/* Actions */}
                         <TableCell align="right">
                           <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: 1 }}>
+                            <Button
+                              component={Link}
+                              href={`/asf/jobs/${ticket.requestId}`}
+                              size="small"
+                              variant={isCheckedIn ? 'contained' : 'outlined'}
+                              color="info"
+                              startIcon={<BuildIcon sx={{ fontSize: 14 }} />}
+                              sx={{ textTransform: 'none', fontWeight: 600 }}
+                            >
+                              Job 360
+                            </Button>
+
                             {canDispatch && (
                               <Button
                                 size="small"
@@ -518,6 +530,5 @@ export default function AsfFranchisePage() {
           }}
         />
       </ProtectedRoute>
-    </WorkspaceShell>
   );
 }

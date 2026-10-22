@@ -17,7 +17,6 @@ import React from 'react';
 import { PageHeader } from '../../../components/data-display/PageHeader';
 import { StatusBadge } from '../../../components/feedback/StatusBadge';
 import { ProtectedRoute } from '../../../components/layout/ProtectedRoute';
-import { WorkspaceShell } from '../../../components/layout/WorkspaceShell';
 
 export default function AdminPage() {
   const adminModules = [
@@ -31,6 +30,18 @@ export default function AdminPage() {
         'Manage Brands, Product Lines, and Model Master matrices with full SLA, warranty durations, and service eligibility rules.',
       href: '/admin/masters',
       actionLabel: 'Open Catalog Console',
+      available: true,
+    },
+    {
+      title: 'System Diagnostics & Health',
+      code: 'SCR-ADM-DIAG',
+      status: 'ACTIVE',
+      statusLabel: 'Infrastructure Live',
+      icon: <SecurityIcon sx={{ fontSize: 36, color: 'success.main' }} />,
+      description:
+        'Internal administrative diagnostics, Oracle database connection pool latency, and Express backend liveness probes.',
+      href: '/admin/diagnostics',
+      actionLabel: 'Open Diagnostics',
       available: true,
     },
     {
@@ -72,8 +83,7 @@ export default function AdminPage() {
   ];
 
   return (
-    <WorkspaceShell>
-      <ProtectedRoute requiredPermission="users:read">
+    <ProtectedRoute requiredPermission="users:read">
         <PageHeader
           title="Head Office Administration & Governance"
           subtitle="Universal Master Data, User & Franchise Directory, Approvals, and Financial Wallets."
@@ -155,6 +165,5 @@ export default function AdminPage() {
           ))}
         </Grid>
       </ProtectedRoute>
-    </WorkspaceShell>
   );
 }

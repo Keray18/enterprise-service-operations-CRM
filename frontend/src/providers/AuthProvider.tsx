@@ -11,6 +11,8 @@ export interface AuthUser {
   fullName: string;
   roles: string[];
   permissions: string[];
+  locationId?: string;
+  brandId?: string;
 }
 
 interface MeResponse {
@@ -70,9 +72,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const logoutMutation = useMutation<void, Error, void>({
     mutationFn: async () => {
-      await apiClient.post('/api/v1/auth/logout');
+      try {
+        await apiClient.post('/api/v1/auth/logout');
+      } catch {
+        // Even if backend session already expired or unreachable, proceed with local revocation
+      }
     },
-    onSuccess: () => {
+    onSettled: () => {
       setCsrfToken(null);
       queryClient.setQueryData(['auth', 'me'], null);
       queryClient.clear();

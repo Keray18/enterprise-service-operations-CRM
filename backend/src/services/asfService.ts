@@ -18,7 +18,13 @@ import {
 } from '../types/asf.js';
 import { PaginatedResult } from '../types/catalog.js';
 import { ServiceRequestWithRelationsRecord } from '../types/callCenter.js';
-import { generateCheckInOtp, generateSalt, hashOtp, verifyOtp } from '../utils/cryptoUtils.js';
+import {
+  encryptNotificationPayload,
+  generateCheckInOtp,
+  generateSalt,
+  hashOtp,
+  verifyOtp,
+} from '../utils/cryptoUtils.js';
 import { notificationService } from './notificationService.js';
 import { slaMonitoringService } from './slaMonitoringService.js';
 
@@ -154,13 +160,18 @@ export class AsfService {
         conn
       );
 
-      // Step G: Generate Cryptographically Secure 6-Digit Check-In OTP & Hash
+      // Step G: Generate Cryptographically Secure 6-Digit Check-In OTP & HMAC Digest
       const checkInOtp = generateCheckInOtp();
       const salt = generateSalt();
-      const otpHash = hashOtp(checkInOtp, salt);
+      const otpHash = hashOtp({
+        otp: checkInOtp,
+        salt,
+        requestId: input.requestId,
+        purpose: 'CHECK_IN',
+      });
       const expiresAt = new Date(Date.now() + 48 * 3600 * 1000); // 48-hour validity
 
-      // Step H: Store Salted Hash in SERVICE_REQUEST_VERIFICATIONS
+      // Step H: Store Salted HMAC Digest in SERVICE_REQUEST_VERIFICATIONS
       await verificationRepository.upsertCheckInOtp(
         {
           requestId: input.requestId,
@@ -196,7 +207,7 @@ export class AsfService {
         conn
       );
 
-      // Step J: Enqueue SMS 2 in NOTIFICATIONS_OUTBOX
+      // Step J: Enqueue Authenticated Encrypted SMS 2 in NOTIFICATIONS_OUTBOX
       const formattedSlot = `${appointmentDate.toLocaleDateString()} (${input.appointmentSlot})`;
       const smsBody = notificationService.buildSms2Message({
         jobNumber: existing.jobNumber,
@@ -205,6 +216,9 @@ export class AsfService {
         appointmentDatetime: formattedSlot,
         checkinOtp: checkInOtp,
       });
+
+      // Encrypt sensitive OTP-bearing payload (AES-256-GCM)
+      const encrypted = encryptNotificationPayload(smsBody);
 
       const recipientPhone = existing.customerPhone;
       let outboxItem;
@@ -215,7 +229,12 @@ export class AsfService {
             channel: 'SMS',
             recipient: recipientPhone,
             templateCode: 'SMS_02_APPOINTMENT',
-            messageBody: smsBody,
+            messageBody: '[ENCRYPTED_OTP_PAYLOAD]',
+            isEncrypted: 'Y',
+            encryptedPayload: encrypted.encryptedPayload,
+            encryptionIv: encrypted.iv,
+            authTag: encrypted.authTag,
+            keyVersion: encrypted.keyVersion,
           },
           conn
         );
@@ -273,7 +292,12 @@ export class AsfService {
       // Generate new cryptographically secure OTP
       const newOtp = generateCheckInOtp();
       const newSalt = generateSalt();
-      const newHash = hashOtp(newOtp, newSalt);
+      const newHash = hashOtp({
+        otp: newOtp,
+        salt: newSalt,
+        requestId: input.requestId,
+        purpose: 'CHECK_IN',
+      });
       const newExpiresAt = new Date(Date.now() + 48 * 3600 * 1000);
 
       // Record in verification table
@@ -306,11 +330,14 @@ export class AsfService {
         conn
       );
 
-      // Enqueue SMS 6
+      // Enqueue Authenticated Encrypted SMS 6
       const smsBody = notificationService.buildSms6Message({
         jobNumber: existing.jobNumber,
         checkinOtp: newOtp,
       });
+
+      // Encrypt sensitive OTP-bearing payload (AES-256-GCM)
+      const encrypted = encryptNotificationPayload(smsBody);
 
       let outboxItem;
       if (existing.customerPhone) {
@@ -320,7 +347,12 @@ export class AsfService {
             channel: 'SMS',
             recipient: existing.customerPhone,
             templateCode: 'SMS_06_OTP_REGEN',
-            messageBody: smsBody,
+            messageBody: '[ENCRYPTED_OTP_PAYLOAD]',
+            isEncrypted: 'Y',
+            encryptedPayload: encrypted.encryptedPayload,
+            encryptionIv: encrypted.iv,
+            authTag: encrypted.authTag,
+            keyVersion: encrypted.keyVersion,
           },
           conn
         );
@@ -405,8 +437,14 @@ export class AsfService {
         throw new AppError('Check-In OTP has expired. Please regenerate a new OTP.', 400, 'OTP_EXPIRED');
       }
 
-      // Constant-time hash verification
-      const isMatch = verifyOtp(input.otp, verification.checkInOtpSalt, verification.checkInOtpHash);
+      // Constant-time HMAC-SHA-256 verification binding requestId and pepper
+      const isMatch = verifyOtp({
+        providedOtp: input.otp,
+        salt: verification.checkInOtpSalt,
+        requestId: input.requestId,
+        expectedHash: verification.checkInOtpHash,
+        purpose: 'CHECK_IN',
+      });
 
       if (!isMatch) {
         // Increment attempts

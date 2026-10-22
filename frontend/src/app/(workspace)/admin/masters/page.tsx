@@ -10,7 +10,6 @@ import React, { useState } from 'react';
 import { PageHeader } from '../../../../components/data-display/PageHeader';
 import { StatusBadge } from '../../../../components/feedback/StatusBadge';
 import { ProtectedRoute } from '../../../../components/layout/ProtectedRoute';
-import { WorkspaceShell } from '../../../../components/layout/WorkspaceShell';
 import { BrandManagementTab } from './BrandManagementTab';
 import { CatalogAuditTab } from './CatalogAuditTab';
 import { GeographyManagementTab } from './GeographyManagementTab';
@@ -44,8 +43,7 @@ export default function MasterDataCatalogPage() {
   };
 
   return (
-    <WorkspaceShell>
-      <ProtectedRoute requiredPermission="masters:read">
+    <ProtectedRoute requiredPermission="masters:read">
         <PageHeader
           title="Universal Catalog & Serviceability Console"
           subtitle="Configure enterprise Brands, Products, Models, Spare Parts, HSN/Tax policies, and Postal Serviceability."
@@ -100,6 +98,5 @@ export default function MasterDataCatalogPage() {
           </Alert>
         </Snackbar>
       </ProtectedRoute>
-    </WorkspaceShell>
   );
 }

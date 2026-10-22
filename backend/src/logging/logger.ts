@@ -22,6 +22,19 @@ const SENSITIVE_EXACT_KEYS = new Set([
   'check_in_otp',
   'happy_code',
   'otp',
+  'otp_hash_pepper',
+  'pepper',
+  'notification_encryption_key',
+  'encryption_key',
+  'encrypted_payload',
+  'encryptedpayload',
+  'encryption_iv',
+  'encryptioniv',
+  'auth_tag',
+  'authtag',
+  'salt',
+  'check_in_otp_salt',
+  'check_in_otp_hash',
   'oracle_password',
   'credentials',
 ]);
@@ -35,7 +48,11 @@ function isSensitiveKey(key: string): boolean {
     lower.includes('token') ||
     lower.includes('cookie') ||
     lower.includes('hash') ||
-    lower.includes('credential')
+    lower.includes('credential') ||
+    lower.includes('pepper') ||
+    lower.includes('encryption') ||
+    lower.includes('cipher') ||
+    lower.includes('authtag')
   );
 }
 

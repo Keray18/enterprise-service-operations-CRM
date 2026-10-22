@@ -5,6 +5,7 @@ import { Box, Button, Card, CardContent, CircularProgress, Typography } from '@m
 import { usePathname, useRouter } from 'next/navigation';
 import React, { useEffect } from 'react';
 import { useAuth } from '../../providers/AuthProvider';
+import { resolveDefaultWorkspace } from '../../lib/workspaceResolver';
 
 interface ProtectedRouteProps {
   children: React.ReactNode;
@@ -99,8 +100,15 @@ export function ProtectedRoute({
               {requiredPermission}
             </code>
           </Typography>
-          <Button variant="outlined" color="primary" onClick={() => router.push('/')}>
-            Return to Allowed Workspaces
+          <Button
+            variant="outlined"
+            color="primary"
+            onClick={() => {
+              const target = resolveDefaultWorkspace(user) || '/login';
+              router.push(target);
+            }}
+          >
+            Return to Authorized Workspace
           </Button>
         </CardContent>
       </Card>
@@ -129,8 +137,15 @@ export function ProtectedRoute({
           <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
             This operational area is restricted to users with role: <strong>{requiredRole}</strong>.
           </Typography>
-          <Button variant="outlined" color="primary" onClick={() => router.push('/')}>
-            Return to Overview
+          <Button
+            variant="outlined"
+            color="primary"
+            onClick={() => {
+              const target = resolveDefaultWorkspace(user) || '/login';
+              router.push(target);
+            }}
+          >
+            Return to Authorized Workspace
           </Button>
         </CardContent>
       </Card>

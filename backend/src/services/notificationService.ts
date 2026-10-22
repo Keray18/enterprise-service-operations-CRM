@@ -1,6 +1,7 @@
 import { logger } from '../logging/logger.js';
 import { notificationRepository } from '../database/repositories/notificationRepository.js';
 import { NotificationOutboxRecord } from '../types/callCenter.js';
+import { decryptNotificationPayload } from '../utils/cryptoUtils.js';
 
 export interface SmsProviderResponse {
   success: boolean;
@@ -90,10 +91,45 @@ export class NotificationService {
   }
 
   /**
+   * Generates the approved SMS 3 Product Replaced template.
+   */
+  buildSms3Message(params: { jobNumber: string }): string {
+    return `Dear Customer, Your product has been replaced against Service Request #${params.jobNumber}. If not satisfied, Please contact us.`;
+  }
+
+  /**
+   * Generates the approved SMS 4 Call Closure Summary & Happy Code template.
+   */
+  buildSms4Message(params: { jobNumber: string; happyCode: string }): string {
+    return `Dear Customer, Your service Request #${params.jobNumber} is closed. If you are satisfied with our service, Kindly share happy code #${params.happyCode} to our technician.`;
+  }
+
+  /**
+   * Generates the approved SMS 5 Happy Code Regeneration template.
+   */
+  buildSms5Message(params: { jobNumber: string; happyCode: string }): string {
+    return `Dear Customer, Your happy code is ${params.happyCode} against your service request #${params.jobNumber} please share the same with the service executive.`;
+  }
+
+  /**
    * Generates the approved SMS 6 Check-In OTP Regeneration template.
    */
   buildSms6Message(params: { jobNumber: string; checkinOtp: string }): string {
     return `Dear Customer, Please share OTP ${params.checkinOtp} against your service request #${params.jobNumber} at the time of technician visit.`;
+  }
+
+  /**
+   * Generates the approved SMS 7 Service Request Cancelled template.
+   */
+  buildSms7Message(params: { jobNumber: string }): string {
+    return `Dear Customer, Service Request #${params.jobNumber} has been cancelled. If not satisfied, Please contact us.`;
+  }
+
+  /**
+   * Generates the approved SMS 8 Replacement Approved template.
+   */
+  buildSms8Message(params: { jobNumber: string; replacementApprovalNo: string }): string {
+    return `Dear Customer, Request for product replacement against Service Request #${params.jobNumber} has been approved. Kindly share replacement approval no. #${params.replacementApprovalNo} at the time of replacement.`;
   }
 
   /**
@@ -103,9 +139,35 @@ export class NotificationService {
   async processNotification(notification: NotificationOutboxRecord): Promise<void> {
     try {
       if (notification.channel === 'SMS') {
+        let textToSend = notification.messageBody;
+
+        if (notification.isEncrypted === 'Y') {
+          // Fetch full outbox record to ensure ciphertext, IV, and auth tag are present
+          let fullRecord = notification;
+          if (!fullRecord.encryptedPayload || !fullRecord.encryptionIv || !fullRecord.authTag) {
+            const fetched = await notificationRepository.findById(notification.notificationId);
+            if (!fetched) {
+              throw new Error(`Notification record ${notification.notificationId} not found in outbox`);
+            }
+            fullRecord = fetched;
+          }
+
+          if (!fullRecord.encryptedPayload || !fullRecord.encryptionIv || !fullRecord.authTag) {
+            throw new Error('ENCRYPTED_PAYLOAD_MISSING: Missing ciphertext, IV, or authentication tag in outbox');
+          }
+
+          // Authenticated AES-256-GCM decryption
+          textToSend = decryptNotificationPayload({
+            encryptedPayload: fullRecord.encryptedPayload,
+            iv: fullRecord.encryptionIv,
+            authTag: fullRecord.authTag,
+            keyVersion: fullRecord.keyVersion,
+          });
+        }
+
         const res = await this.smsAdapter.sendSms(
           notification.recipient,
-          notification.messageBody,
+          textToSend,
           notification.templateCode
         );
 
@@ -120,13 +182,14 @@ export class NotificationService {
         }
       }
     } catch (err: any) {
-      logger.error(`Failed to process notification ${notification.notificationId}: ${err?.message || err}`);
+      // Do not log the decrypted message or sensitive payload
+      logger.error(`[NOTIFICATION PROCESSOR] Failed to dispatch notification ${notification.notificationId}: ${err?.message || err}`);
       try {
         await notificationRepository.updateStatus(notification.notificationId, 'FAILED', {
           errorMessage: err?.message || 'UNKNOWN_DISPATCH_ERROR',
         });
       } catch (dbErr) {
-        logger.error(`Failed to record notification failure: ${dbErr}`);
+        logger.error(`[NOTIFICATION PROCESSOR] Failed to record notification failure: ${dbErr}`);
       }
     }
   }

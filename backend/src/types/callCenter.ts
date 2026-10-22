@@ -57,6 +57,13 @@ export type ServiceRequestStatus =
   | 'TECHNICIAN_CHECKED_IN'
   | 'IN_PROGRESS_REPAIR'
   | 'PENDING_SPARE_PART'
+  | 'PART_DISPATCHED_TO_ASF'
+  | 'PENDING_SPECIAL_PART_ESTIMATE'
+  | 'SPECIAL_PART_ESTIMATE_PROVIDED'
+  | 'REQUEST_FOR_REPLACEMENT'
+  | 'REPLACEMENT_APPROVED'
+  | 'REPLACEMENT_DISPATCHED'
+  | 'REQUEST_FOR_CANCELLATION'
   | 'CALL_CLOSURE_SUBMITTED'
   | 'CLOSED'
   | 'CANCELLED'
@@ -109,6 +116,37 @@ export interface ServiceRequestRecord {
   checkedInAt?: Date;
   slaBreached48h?: 'Y' | 'N';
   slaBreached48hAt?: Date;
+  // Phase 2B additions
+  faultId?: string;
+  defectId?: string;
+  repairCodeId?: string;
+  voeDescription?: string;
+  observations?: string;
+  repairAction?: string;
+  repairRemarks?: string;
+  repairAt?: 'ON_SITE' | 'IN_HOUSE';
+  diagnosedAt?: Date;
+  diagnosedBy?: string;
+  repairedAt?: Date;
+  repairedBy?: string;
+  replacementReason?: string;
+  replacementRemarks?: string;
+  cancellationReason?: string;
+  cancellationRemarks?: string;
+  specialPartEstimateRemarks?: string;
+  specialPartEstimateAmount?: number;
+  specialPartApprovedAt?: Date;
+  specialPartApprovedBy?: string;
+  laborCharge: number;
+  partsTotalCharge: number;
+  totalEstimateAmount: number;
+  // Phase 2C additions
+  replacementApprovalNo?: string;
+  closedAt?: Date;
+  closedBy?: string;
+  cancelledAt?: Date;
+  cancelledBy?: string;
+  supervisorOverrideReason?: string;
   idempotencyKey?: string;
   versionNo: number;
   createdAt: Date;
@@ -129,6 +167,15 @@ export interface ServiceRequestWithRelationsRecord extends ServiceRequestRecord 
   assignedEngineerPhone?: string;
   stateName?: string;
   cityName?: string;
+  // Phase 2B master relations
+  faultCode?: string;
+  faultDescription?: string;
+  defectCode?: string;
+  defectDescription?: string;
+  repairCode?: string;
+  repairActionDescription?: string;
+  diagnosedByName?: string;
+  repairedByName?: string;
 }
 
 export interface ServiceRequestEventRecord {
@@ -152,6 +199,11 @@ export interface NotificationOutboxRecord {
   recipient: string;
   templateCode: string;
   messageBody: string;
+  isEncrypted?: 'Y' | 'N';
+  encryptedPayload?: string;
+  encryptionIv?: string;
+  authTag?: string;
+  keyVersion?: string;
   status: 'QUEUED' | 'SENT' | 'FAILED';
   providerMessageId?: string;
   errorMessage?: string;

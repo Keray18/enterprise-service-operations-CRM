@@ -329,15 +329,18 @@ describe('ASF Operations, SLA Monitoring, Dispatch & OTP Check-In (Phase 2A)', (
       const ticket1 = await createTestServiceRequest({ locationId: asfLocation1Id });
       const ticket2 = await createTestServiceRequest({ locationId: asfLocation2Id });
 
-      // Admin queries all
-      const resAll = await request(app)
-        .get('/api/v1/asf/queue?view=all&limit=100')
+      // Admin queries across locations
+      const resT1 = await request(app)
+        .get(`/api/v1/asf/queue?view=all&q=${ticket1.jobNumber}`)
         .set('Cookie', adminCookie);
+      expect(resT1.status).toBe(200);
+      expect(resT1.body.data.items.some((i: any) => i.requestId === ticket1.requestId)).toBe(true);
 
-      expect(resAll.status).toBe(200);
-      const items = resAll.body.data.items;
-      expect(items.some((i: any) => i.requestId === ticket1.requestId)).toBe(true);
-      expect(items.some((i: any) => i.requestId === ticket2.requestId)).toBe(true);
+      const resT2 = await request(app)
+        .get(`/api/v1/asf/queue?view=all&q=${ticket2.jobNumber}`)
+        .set('Cookie', adminCookie);
+      expect(resT2.status).toBe(200);
+      expect(resT2.body.data.items.some((i: any) => i.requestId === ticket2.requestId)).toBe(true);
 
       // Admin filters by location 1
       const resLoc1 = await request(app)
@@ -432,15 +435,21 @@ describe('ASF Operations, SLA Monitoring, Dispatch & OTP Check-In (Phase 2A)', (
       expect(dispatchEvt?.eventType).toBe('APPOINTMENT_SCHEDULED');
       expect(dispatchEvt?.triggeredByUserId).toBe(asfUserId1);
 
-      // Verify SMS 2 queued in NOTIFICATIONS_OUTBOX
+      // Verify SMS 2 queued in NOTIFICATIONS_OUTBOX (redacted in notification history API)
       const outbox = await notificationRepository.listByRequestId(ticket.requestId);
       const sms2 = outbox.find((n) => n.templateCode === 'SMS_02_APPOINTMENT');
       expect(sms2).toBeDefined();
       expect(sms2?.recipient).toBe(customerPhone);
-      expect(sms2?.messageBody).toContain(`Service Request #${ticket.jobNumber}`);
-      expect(sms2?.messageBody).toContain('Rajesh Kumar (Field Tech)');
-      expect(sms2?.messageBody).toContain('Please keep the required documents ready');
-      expect(sms2?.messageBody).toMatch(/share the OTP \d{6}/); // contains 6-digit OTP in message
+      expect(sms2?.messageBody).toBe('[PROTECTED_OTP_NOTIFICATION]');
+
+      // Verify delivered SMS via adapter contains the rendered appointment and OTP
+      const sentMsgs = mockSmsAdapter.getSentMessages();
+      const deliveredSms = sentMsgs.find((m) => m.templateCode === 'SMS_02_APPOINTMENT');
+      expect(deliveredSms).toBeDefined();
+      expect(deliveredSms?.messageBody).toContain(`Service Request #${ticket.jobNumber}`);
+      expect(deliveredSms?.messageBody).toContain('Rajesh Kumar (Field Tech)');
+      expect(deliveredSms?.messageBody).toContain('Please keep the required documents ready');
+      expect(deliveredSms?.messageBody).toMatch(/share the OTP \d{6}/);
     });
 
     it('rejects dispatch to an engineer from a mismatched franchise location', async () => {

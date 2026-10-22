@@ -115,8 +115,8 @@ export class PartRepository {
         (options.sortBy && ALLOWED_SORT_COLUMNS[options.sortBy.toLowerCase()]) || 'p.PART_NAME';
       const sortDir = options.sortOrder?.toLowerCase() === 'desc' ? 'DESC' : 'ASC';
 
-      const page = Math.max(1, options.page);
-      const limit = Math.min(100, Math.max(1, options.limit));
+      const page = Math.max(1, options.page || 1);
+      const limit = Math.min(100, Math.max(1, options.limit || 20));
       const offset = (page - 1) * limit;
 
       binds.offset = offset;
@@ -157,8 +157,9 @@ export class PartRepository {
     }
   }
 
-  async findById(partId: string): Promise<PartWithRelationsRecord | null> {
-    const conn = await getOracleConnection();
+  async findById(partId: string, conn?: oracledb.Connection): Promise<PartWithRelationsRecord | null> {
+    const isExternalConn = Boolean(conn);
+    const connection = conn || (await getOracleConnection());
     try {
       const sql = `
         SELECT p.PART_ID, p.BRAND_ID, p.PRODUCT_ID, p.PART_CODE, p.VENDOR_PART_CODE,
@@ -174,11 +175,13 @@ export class PartRepository {
         JOIN HSN_TAX_MASTERS h ON p.HSN_ID = h.HSN_ID
         WHERE p.PART_ID = :partId
       `;
-      const result = await conn.execute<any>(sql, { partId }, { outFormat: oracledb.OUT_FORMAT_OBJECT });
+      const result = await connection.execute<any>(sql, { partId }, { outFormat: oracledb.OUT_FORMAT_OBJECT });
       if (!result.rows || result.rows.length === 0) return null;
       return mapRowToPartWithRelations(result.rows[0]);
     } finally {
-      await conn.close();
+      if (!isExternalConn) {
+        await connection.close();
+      }
     }
   }
 

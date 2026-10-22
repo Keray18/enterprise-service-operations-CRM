@@ -49,6 +49,37 @@ function mapRowToServiceRequest(row: any): ServiceRequestWithRelationsRecord {
     checkedInAt: row.CHECKED_IN_AT ? new Date(row.CHECKED_IN_AT) : undefined,
     slaBreached48h: row.SLA_BREACHED_48H || 'N',
     slaBreached48hAt: row.SLA_BREACHED_48H_AT ? new Date(row.SLA_BREACHED_48H_AT) : undefined,
+    // Phase 2B diagnosis and repair fields
+    faultId: row.FAULT_ID || undefined,
+    defectId: row.DEFECT_ID || undefined,
+    repairCodeId: row.REPAIR_CODE_ID || undefined,
+    voeDescription: row.VOE_DESCRIPTION || undefined,
+    observations: row.OBSERVATIONS || undefined,
+    repairAction: row.REPAIR_ACTION || undefined,
+    repairRemarks: row.REPAIR_REMARKS || undefined,
+    repairAt: row.REPAIR_AT || 'ON_SITE',
+    diagnosedAt: row.DIAGNOSED_AT ? new Date(row.DIAGNOSED_AT) : undefined,
+    diagnosedBy: row.DIAGNOSED_BY || undefined,
+    repairedAt: row.REPAIRED_AT ? new Date(row.REPAIRED_AT) : undefined,
+    repairedBy: row.REPAIRED_BY || undefined,
+    replacementReason: row.REPLACEMENT_REASON || undefined,
+    replacementRemarks: row.REPLACEMENT_REMARKS || undefined,
+    cancellationReason: row.CANCELLATION_REASON || undefined,
+    cancellationRemarks: row.CANCELLATION_REMARKS || undefined,
+    specialPartEstimateRemarks: row.SPECIAL_PART_ESTIMATE_REMARKS || undefined,
+    specialPartEstimateAmount: row.SPECIAL_PART_ESTIMATE_AMOUNT != null ? Number(row.SPECIAL_PART_ESTIMATE_AMOUNT) : undefined,
+    specialPartApprovedAt: row.SPECIAL_PART_APPROVED_AT ? new Date(row.SPECIAL_PART_APPROVED_AT) : undefined,
+    specialPartApprovedBy: row.SPECIAL_PART_APPROVED_BY || undefined,
+    laborCharge: Number(row.LABOR_CHARGE || 0),
+    partsTotalCharge: Number(row.PARTS_TOTAL_CHARGE || 0),
+    totalEstimateAmount: Number(row.TOTAL_ESTIMATE_AMOUNT || 0),
+    // Phase 2C additions
+    replacementApprovalNo: row.REPLACEMENT_APPROVAL_NO || undefined,
+    closedAt: row.CLOSED_AT ? new Date(row.CLOSED_AT) : undefined,
+    closedBy: row.CLOSED_BY || undefined,
+    cancelledAt: row.CANCELLED_AT ? new Date(row.CANCELLED_AT) : undefined,
+    cancelledBy: row.CANCELLED_BY || undefined,
+    supervisorOverrideReason: row.SUPERVISOR_OVERRIDE_REASON || undefined,
     idempotencyKey: row.IDEMPOTENCY_KEY || undefined,
     versionNo: Number(row.VERSION_NO || 1),
     createdAt: new Date(row.CREATED_AT),
@@ -66,6 +97,15 @@ function mapRowToServiceRequest(row: any): ServiceRequestWithRelationsRecord {
     assignedEngineerPhone: row.ASSIGNED_ENGINEER_PHONE || undefined,
     stateName: row.STATE_NAME || undefined,
     cityName: row.CITY_NAME || undefined,
+    // Phase 2B relations
+    faultCode: row.FAULT_CODE || undefined,
+    faultDescription: row.FAULT_DESCRIPTION || undefined,
+    defectCode: row.DEFECT_CODE || undefined,
+    defectDescription: row.DEFECT_DESCRIPTION || undefined,
+    repairCode: row.REPAIR_CODE || undefined,
+    repairActionDescription: row.REPAIR_ACTION_DESC || undefined,
+    diagnosedByName: row.DIAGNOSED_BY_NAME || undefined,
+    repairedByName: row.REPAIRED_BY_NAME || undefined,
   };
 }
 
@@ -107,6 +147,35 @@ const BASE_SELECT_SQL = `
     sr.CHECKED_IN_AT,
     sr.SLA_BREACHED_48H,
     sr.SLA_BREACHED_48H_AT,
+    sr.FAULT_ID,
+    sr.DEFECT_ID,
+    sr.REPAIR_CODE_ID,
+    sr.VOE_DESCRIPTION,
+    sr.OBSERVATIONS,
+    sr.REPAIR_ACTION,
+    sr.REPAIR_REMARKS,
+    sr.REPAIR_AT,
+    sr.DIAGNOSED_AT,
+    sr.DIAGNOSED_BY,
+    sr.REPAIRED_AT,
+    sr.REPAIRED_BY,
+    sr.REPLACEMENT_REASON,
+    sr.REPLACEMENT_REMARKS,
+    sr.CANCELLATION_REASON,
+    sr.CANCELLATION_REMARKS,
+    sr.SPECIAL_PART_ESTIMATE_REMARKS,
+    sr.SPECIAL_PART_ESTIMATE_AMOUNT,
+    sr.SPECIAL_PART_APPROVED_AT,
+    sr.SPECIAL_PART_APPROVED_BY,
+    sr.LABOR_CHARGE,
+    sr.PARTS_TOTAL_CHARGE,
+    sr.TOTAL_ESTIMATE_AMOUNT,
+    sr.REPLACEMENT_APPROVAL_NO,
+    sr.CLOSED_AT,
+    sr.CLOSED_BY,
+    sr.CANCELLED_AT,
+    sr.CANCELLED_BY,
+    sr.SUPERVISOR_OVERRIDE_REASON,
     sr.IDEMPOTENCY_KEY,
     sr.VERSION_NO,
     sr.CREATED_AT,
@@ -123,7 +192,15 @@ const BASE_SELECT_SQL = `
     u_eng.FULL_NAME AS ASSIGNED_ENGINEER_NAME,
     u_eng.PHONE_NUMBER AS ASSIGNED_ENGINEER_PHONE,
     s.STATE_NAME,
-    ci.CITY_NAME
+    ci.CITY_NAME,
+    fm.FAULT_CODE,
+    fm.FAULT_DESCRIPTION,
+    dm.DEFECT_CODE,
+    dm.DEFECT_DESCRIPTION,
+    rcm.REPAIR_CODE,
+    rcm.REPAIR_ACTION AS REPAIR_ACTION_DESC,
+    u_diag.FULL_NAME AS DIAGNOSED_BY_NAME,
+    u_rep.FULL_NAME AS REPAIRED_BY_NAME
   FROM SERVICE_REQUESTS sr
   JOIN CUSTOMERS c ON sr.CUSTOMER_ID = c.CUSTOMER_ID
   JOIN BRANDS b ON sr.BRAND_ID = b.BRAND_ID
@@ -133,6 +210,11 @@ const BASE_SELECT_SQL = `
   LEFT JOIN APP_USERS u_eng ON sr.ASSIGNED_ENGINEER_ID = u_eng.USER_ID
   LEFT JOIN STATES s ON sr.CUSTOMER_STATE_ID = s.STATE_ID
   LEFT JOIN CITIES ci ON sr.CUSTOMER_CITY_ID = ci.CITY_ID
+  LEFT JOIN FAULT_MASTERS fm ON sr.FAULT_ID = fm.FAULT_ID
+  LEFT JOIN DEFECT_MASTERS dm ON sr.DEFECT_ID = dm.DEFECT_ID
+  LEFT JOIN REPAIR_CODE_MASTERS rcm ON sr.REPAIR_CODE_ID = rcm.REPAIR_CODE_ID
+  LEFT JOIN APP_USERS u_diag ON sr.DIAGNOSED_BY = u_diag.USER_ID
+  LEFT JOIN APP_USERS u_rep ON sr.REPAIRED_BY = u_rep.USER_ID
 `;
 
 export class ServiceRequestRepository {
@@ -567,6 +649,289 @@ export class ServiceRequestRepository {
       WHERE REQUEST_ID = :requestId
     `;
     await conn.execute(sql, { requestId });
+  }
+
+  /**
+   * Updates diagnosis on a service request and transitions status to IN_PROGRESS_REPAIR.
+   */
+  async updateDiagnosis(
+    params: {
+      requestId: string;
+      faultId: string;
+      defectId?: string;
+      voeDescription: string;
+      observations?: string;
+      diagnosedBy: string;
+    },
+    conn: oracledb.Connection
+  ): Promise<void> {
+    const sql = `
+      UPDATE SERVICE_REQUESTS
+      SET 
+        STATUS = 'IN_PROGRESS_REPAIR',
+        FAULT_ID = :faultId,
+        DEFECT_ID = :defectId,
+        VOE_DESCRIPTION = :voeDescription,
+        OBSERVATIONS = :observations,
+        DIAGNOSED_AT = SYSTIMESTAMP,
+        DIAGNOSED_BY = :diagnosedBy,
+        VERSION_NO = VERSION_NO + 1,
+        UPDATED_AT = SYSTIMESTAMP
+      WHERE REQUEST_ID = :requestId
+    `;
+    await conn.execute(sql, {
+      requestId: params.requestId,
+      faultId: params.faultId,
+      defectId: params.defectId || null,
+      voeDescription: params.voeDescription,
+      observations: params.observations || null,
+      diagnosedBy: params.diagnosedBy,
+    });
+  }
+
+  /**
+   * Updates repair outcome, action, and resulting state on a service request.
+   */
+  async updateRepairAction(
+    params: {
+      requestId: string;
+      targetStatus: ServiceRequestStatus;
+      repairCodeId: string;
+      repairAction: string;
+      repairRemarks?: string;
+      repairAt?: 'ON_SITE' | 'IN_HOUSE';
+      replacementReason?: string;
+      replacementRemarks?: string;
+      cancellationReason?: string;
+      cancellationRemarks?: string;
+      specialPartRemarks?: string;
+      repairedBy: string;
+    },
+    conn: oracledb.Connection
+  ): Promise<void> {
+    const sql = `
+      UPDATE SERVICE_REQUESTS
+      SET 
+        STATUS = :targetStatus,
+        REPAIR_CODE_ID = :repairCodeId,
+        REPAIR_ACTION = :repairAction,
+        REPAIR_REMARKS = :repairRemarks,
+        REPAIR_AT = :repairAt,
+        REPLACEMENT_REASON = :replacementReason,
+        REPLACEMENT_REMARKS = :replacementRemarks,
+        CANCELLATION_REASON = :cancellationReason,
+        CANCELLATION_REMARKS = :cancellationRemarks,
+        SPECIAL_PART_ESTIMATE_REMARKS = :specialPartRemarks,
+        REPAIRED_AT = SYSTIMESTAMP,
+        REPAIRED_BY = :repairedBy,
+        VERSION_NO = VERSION_NO + 1,
+        UPDATED_AT = SYSTIMESTAMP
+      WHERE REQUEST_ID = :requestId
+    `;
+    await conn.execute(sql, {
+      requestId: params.requestId,
+      targetStatus: params.targetStatus,
+      repairCodeId: params.repairCodeId,
+      repairAction: params.repairAction,
+      repairRemarks: params.repairRemarks || null,
+      repairAt: params.repairAt || 'ON_SITE',
+      replacementReason: params.replacementReason || null,
+      replacementRemarks: params.replacementRemarks || null,
+      cancellationReason: params.cancellationReason || null,
+      cancellationRemarks: params.cancellationRemarks || null,
+      specialPartRemarks: params.specialPartRemarks || null,
+      repairedBy: params.repairedBy,
+    });
+  }
+
+  /**
+   * Sets warehouse quotation amount on special-part estimate and moves to SPECIAL_PART_ESTIMATE_PROVIDED.
+   */
+  async updateSpecialPartQuotation(
+    params: {
+      requestId: string;
+      estimateAmount: number;
+      remarks?: string;
+    },
+    conn: oracledb.Connection
+  ): Promise<void> {
+    const sql = `
+      UPDATE SERVICE_REQUESTS
+      SET 
+        STATUS = 'SPECIAL_PART_ESTIMATE_PROVIDED',
+        SPECIAL_PART_ESTIMATE_AMOUNT = :estimateAmount,
+        SPECIAL_PART_ESTIMATE_REMARKS = COALESCE(:remarks, SPECIAL_PART_ESTIMATE_REMARKS),
+        TOTAL_ESTIMATE_AMOUNT = :estimateAmount + LABOR_CHARGE,
+        VERSION_NO = VERSION_NO + 1,
+        UPDATED_AT = SYSTIMESTAMP
+      WHERE REQUEST_ID = :requestId
+    `;
+    await conn.execute(sql, {
+      requestId: params.requestId,
+      estimateAmount: params.estimateAmount,
+      remarks: params.remarks || null,
+    });
+  }
+
+  /**
+   * Records customer decision on special-part estimate and updates state.
+   */
+  async updateSpecialPartDecision(
+    params: {
+      requestId: string;
+      targetStatus: ServiceRequestStatus;
+      approvedBy: string;
+    },
+    conn: oracledb.Connection
+  ): Promise<void> {
+    const sql = `
+      UPDATE SERVICE_REQUESTS
+      SET 
+        STATUS = :targetStatus,
+        SPECIAL_PART_APPROVED_AT = SYSTIMESTAMP,
+        SPECIAL_PART_APPROVED_BY = :approvedBy,
+        VERSION_NO = VERSION_NO + 1,
+        UPDATED_AT = SYSTIMESTAMP
+      WHERE REQUEST_ID = :requestId
+    `;
+    await conn.execute(sql, {
+      requestId: params.requestId,
+      targetStatus: params.targetStatus,
+      approvedBy: params.approvedBy,
+    });
+  }
+
+  /**
+   * Updates parts total charge and recalculates total estimate amount atomically.
+   */
+  async updateFinancialCharges(
+    params: {
+      requestId: string;
+      partsTotalCharge: number;
+      laborCharge?: number;
+    },
+    conn: oracledb.Connection
+  ): Promise<void> {
+    const sql = `
+      UPDATE SERVICE_REQUESTS
+      SET 
+        PARTS_TOTAL_CHARGE = :partsTotalCharge,
+        LABOR_CHARGE = NVL(:laborCharge, LABOR_CHARGE),
+        TOTAL_ESTIMATE_AMOUNT = :partsTotalCharge + NVL(:laborCharge, LABOR_CHARGE),
+        VERSION_NO = VERSION_NO + 1,
+        UPDATED_AT = SYSTIMESTAMP
+      WHERE REQUEST_ID = :requestId
+    `;
+    await conn.execute(sql, {
+      requestId: params.requestId,
+      partsTotalCharge: params.partsTotalCharge,
+      laborCharge: { val: params.laborCharge != null ? params.laborCharge : null, type: oracledb.NUMBER },
+    });
+  }
+
+  /**
+   * Updates status of service request with version increment.
+   */
+  async updateStatus(
+    requestId: string,
+    targetStatus: ServiceRequestStatus,
+    conn: oracledb.Connection
+  ): Promise<void> {
+    const sql = `
+      UPDATE SERVICE_REQUESTS
+      SET 
+        STATUS = :targetStatus,
+        VERSION_NO = VERSION_NO + 1,
+        UPDATED_AT = SYSTIMESTAMP
+      WHERE REQUEST_ID = :requestId
+    `;
+    await conn.execute(sql, { requestId, targetStatus });
+  }
+
+  /**
+   * Permanently closes service request on Happy Code verification or supervisor override.
+   */
+  async closeServiceRequest(
+    params: {
+      requestId: string;
+      closedBy: string;
+      supervisorOverrideReason?: string;
+    },
+    conn: oracledb.Connection
+  ): Promise<void> {
+    const sql = `
+      UPDATE SERVICE_REQUESTS
+      SET 
+        STATUS = 'CLOSED',
+        CLOSED_AT = SYSTIMESTAMP,
+        CLOSED_BY = :closedBy,
+        SUPERVISOR_OVERRIDE_REASON = :supervisorOverrideReason,
+        VERSION_NO = VERSION_NO + 1,
+        UPDATED_AT = SYSTIMESTAMP
+      WHERE REQUEST_ID = :requestId
+    `;
+    await conn.execute(sql, {
+      requestId: params.requestId,
+      closedBy: params.closedBy,
+      supervisorOverrideReason: params.supervisorOverrideReason || null,
+    });
+  }
+
+  /**
+   * Permanently cancels service request on supervisor approval.
+   */
+  async cancelServiceRequest(
+    params: {
+      requestId: string;
+      cancelledBy: string;
+      cancellationReason?: string;
+      cancellationRemarks?: string;
+    },
+    conn: oracledb.Connection
+  ): Promise<void> {
+    const sql = `
+      UPDATE SERVICE_REQUESTS
+      SET 
+        STATUS = 'CANCELLED',
+        CANCELLED_AT = SYSTIMESTAMP,
+        CANCELLED_BY = :cancelledBy,
+        CANCELLATION_REASON = COALESCE(:cancellationReason, CANCELLATION_REASON),
+        CANCELLATION_REMARKS = COALESCE(:cancellationRemarks, CANCELLATION_REMARKS),
+        VERSION_NO = VERSION_NO + 1,
+        UPDATED_AT = SYSTIMESTAMP
+      WHERE REQUEST_ID = :requestId
+    `;
+    await conn.execute(sql, {
+      requestId: params.requestId,
+      cancelledBy: params.cancelledBy,
+      cancellationReason: params.cancellationReason || null,
+      cancellationRemarks: params.cancellationRemarks || null,
+    });
+  }
+
+  /**
+   * Approves product replacement and stores official approval number.
+   */
+  async approveReplacement(
+    params: {
+      requestId: string;
+      approvalNumber: string;
+    },
+    conn: oracledb.Connection
+  ): Promise<void> {
+    const sql = `
+      UPDATE SERVICE_REQUESTS
+      SET 
+        STATUS = 'REPLACEMENT_APPROVED',
+        REPLACEMENT_APPROVAL_NO = :approvalNumber,
+        VERSION_NO = VERSION_NO + 1,
+        UPDATED_AT = SYSTIMESTAMP
+      WHERE REQUEST_ID = :requestId
+    `;
+    await conn.execute(sql, {
+      requestId: params.requestId,
+      approvalNumber: params.approvalNumber,
+    });
   }
 
   /**

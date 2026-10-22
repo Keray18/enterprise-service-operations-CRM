@@ -16,7 +16,7 @@ export default function NotFoundPage() {
         description="The URL you navigated to does not correspond to an authorized CRM workspace screen. Please verify the URL or return to the overview."
         action={
           <Button component={Link} href="/" variant="contained" size="small">
-            Return to Overview
+            Return to Portal
           </Button>
         }
       />

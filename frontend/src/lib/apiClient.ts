@@ -158,6 +158,7 @@ export const apiClient = {
 };
 
 export function triggerBlobDownload(blob: Blob, filename: string): void {
+  if (typeof window === 'undefined' || typeof document === 'undefined') return;
   const url = window.URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.style.display = 'none';
@@ -166,8 +167,12 @@ export function triggerBlobDownload(blob: Blob, filename: string): void {
   document.body.appendChild(a);
   a.click();
   setTimeout(() => {
-    document.body.removeChild(a);
-    window.URL.revokeObjectURL(url);
+    if (typeof document !== 'undefined' && document.body && document.body.contains(a)) {
+      document.body.removeChild(a);
+    }
+    if (typeof window !== 'undefined' && window.URL) {
+      window.URL.revokeObjectURL(url);
+    }
   }, 100);
 }
 

@@ -14,6 +14,8 @@ import { callCenterRouter } from './routes/callCenterRoutes.js';
 import { catalogRouter } from './routes/catalogRoutes.js';
 import { customerRouter } from './routes/customerRoutes.js';
 import { geographyRouter } from './routes/geographyRoutes.js';
+import { warehouseRouter } from './routes/warehouseRoutes.js';
+import { financeRouter } from './routes/financeRoutes.js';
 import { workspaceRouter } from './routes/workspaceRoutes.js';
 
 export function createApp(): Express {
@@ -144,6 +146,8 @@ export function createApp(): Express {
   app.use('/api/v1/customers', customerRouter);
   app.use('/api/v1/call-center', callCenterRouter);
   app.use('/api/v1/asf', asfRoutes);
+  app.use('/api/v1/warehouse', warehouseRouter);
+  app.use('/api/v1/finance', financeRouter);
   app.use('/api/v1/workspace', workspaceRouter);
 
   // 404 Route Not Found Handler

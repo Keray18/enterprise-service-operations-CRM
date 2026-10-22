@@ -1,4 +1,5 @@
 import { NextFunction, Request, Response } from 'express';
+import { logger } from '../logging/logger.js';
 import { asfService } from '../services/asfService.js';
 import { slaMonitoringService } from '../services/slaMonitoringService.js';
 import {
@@ -116,6 +117,9 @@ export class AsfController {
   async evaluateSla(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const result = await slaMonitoringService.evaluate48hSlaBreaches(req.user?.userId);
+      logger.info(
+        `[SLA MONITOR] Manual SLA evaluation triggered by user ${req.user?.username} (${req.user?.userId}). Evaluated: ${result.evaluatedCount}, New breaches: ${result.newBreachesCount}`
+      );
       res.status(200).json({
         success: true,
         data: result,

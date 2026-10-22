@@ -36,13 +36,16 @@ const loginFormSchema = z.object({
 
 type LoginFormData = z.infer<typeof loginFormSchema>;
 
+import { isAuthorizedForPath, resolveDefaultWorkspace } from '../../lib/workspaceResolver';
+
 function LoginForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const rawRedirect = searchParams.get('redirect');
   const redirectTarget = sanitizeRedirect(rawRedirect, '/');
+  const isSessionExpired = searchParams.get('sessionExpired') === 'true';
 
-  const { login, isAuthenticated, isLoading: authLoading } = useAuth();
+  const { user, login, isAuthenticated, isLoading: authLoading } = useAuth();
   const [showPassword, setShowPassword] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
@@ -58,18 +61,28 @@ function LoginForm() {
     },
   });
 
-  // If already logged in, redirect away
+  // If already logged in, redirect to authorized landing or return path
   useEffect(() => {
-    if (!authLoading && isAuthenticated) {
-      router.replace(redirectTarget);
+    if (!authLoading && isAuthenticated && user) {
+      const defaultLanding = resolveDefaultWorkspace(user) || '/admin';
+      if (rawRedirect && rawRedirect !== '/' && isAuthorizedForPath(user, redirectTarget)) {
+        router.replace(redirectTarget);
+      } else {
+        router.replace(defaultLanding);
+      }
     }
-  }, [authLoading, isAuthenticated, redirectTarget, router]);
+  }, [authLoading, isAuthenticated, user, redirectTarget, rawRedirect, router]);
 
   const onSubmit = async (data: LoginFormData) => {
     setErrorMessage(null);
     try {
-      await login(data);
-      router.replace(redirectTarget);
+      const res = await login(data);
+      const defaultLanding = resolveDefaultWorkspace(res.user) || '/admin';
+      if (rawRedirect && rawRedirect !== '/' && isAuthorizedForPath(res.user, redirectTarget)) {
+        router.replace(redirectTarget);
+      } else {
+        router.replace(defaultLanding);
+      }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Invalid credentials. Please try again.';
       setErrorMessage(msg);
@@ -122,6 +135,13 @@ function LoginForm() {
                 Enterprise After-Sales Service & Inventory Management
               </Typography>
             </Box>
+
+            {/* Session Expired / Notice Banner */}
+            {isSessionExpired && !errorMessage && (
+              <Alert severity="warning" sx={{ mb: 2.5 }}>
+                Your session has expired or is invalid. Please sign in again with your enterprise credentials.
+              </Alert>
+            )}
 
             {/* Error Feedback Banner */}
             {errorMessage && (

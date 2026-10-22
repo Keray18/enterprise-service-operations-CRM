@@ -16,6 +16,7 @@ export interface ServiceRequestVerificationRecord {
   happyCodeExpiresAt?: Date;
   happyCodeAttempts: number;
   happyCodeVerifiedAt?: Date;
+  happyCodeRegeneratedCount: number;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -35,6 +36,7 @@ function mapRowToVerification(row: any): ServiceRequestVerificationRecord {
     happyCodeExpiresAt: row.HAPPY_CODE_EXPIRES_AT ? new Date(row.HAPPY_CODE_EXPIRES_AT) : undefined,
     happyCodeAttempts: Number(row.HAPPY_CODE_ATTEMPTS || 0),
     happyCodeVerifiedAt: row.HAPPY_CODE_VERIFIED_AT ? new Date(row.HAPPY_CODE_VERIFIED_AT) : undefined,
+    happyCodeRegeneratedCount: Number(row.HAPPY_CODE_REGENERATED_COUNT || 0),
     createdAt: new Date(row.CREATED_AT),
     updatedAt: new Date(row.UPDATED_AT),
   };
@@ -103,7 +105,7 @@ export class VerificationRepository {
           CHECK_IN_OTP_EXPIRES_AT, CHECK_IN_OTP_ATTEMPTS, CHECK_IN_VERIFIED_AT,
           CHECK_IN_REGENERATED_COUNT, HAPPY_CODE_HASH, HAPPY_CODE_SALT,
           HAPPY_CODE_EXPIRES_AT, HAPPY_CODE_ATTEMPTS, HAPPY_CODE_VERIFIED_AT,
-          CREATED_AT, UPDATED_AT
+          HAPPY_CODE_REGENERATED_COUNT, CREATED_AT, UPDATED_AT
         FROM SERVICE_REQUEST_VERIFICATIONS
         WHERE REQUEST_ID = :requestId
       `;
@@ -203,6 +205,132 @@ export class VerificationRepository {
       newExpiresAt: params.newExpiresAt,
     });
   }
+
+  /**
+   * Upserts the Happy Code verification secret within a transaction connection.
+   */
+  async upsertHappyCode(
+    params: {
+      requestId: string;
+      happyCodeHash: string;
+      salt: string;
+      expiresAt: Date;
+    },
+    conn: oracledb.Connection
+  ): Promise<void> {
+    const verificationId = crypto.randomUUID();
+
+    const sql = `
+      MERGE INTO SERVICE_REQUEST_VERIFICATIONS srv
+      USING (SELECT :requestId AS REQUEST_ID FROM DUAL) src
+      ON (srv.REQUEST_ID = src.REQUEST_ID)
+      WHEN MATCHED THEN
+        UPDATE SET 
+          HAPPY_CODE_HASH = :happyCodeHash,
+          HAPPY_CODE_SALT = :salt,
+          HAPPY_CODE_EXPIRES_AT = :expiresAt,
+          HAPPY_CODE_ATTEMPTS = 0,
+          HAPPY_CODE_VERIFIED_AT = NULL,
+          UPDATED_AT = SYSTIMESTAMP
+      WHEN NOT MATCHED THEN
+        INSERT (
+          VERIFICATION_ID, REQUEST_ID, HAPPY_CODE_HASH, HAPPY_CODE_SALT,
+          HAPPY_CODE_EXPIRES_AT, HAPPY_CODE_ATTEMPTS, HAPPY_CODE_VERIFIED_AT,
+          HAPPY_CODE_REGENERATED_COUNT, CREATED_AT, UPDATED_AT
+        ) VALUES (
+          :verificationId, :requestId, :happyCodeHash, :salt,
+          :expiresAt, 0, NULL,
+          0, SYSTIMESTAMP, SYSTIMESTAMP
+        )
+    `;
+
+    await conn.execute(sql, {
+      verificationId,
+      requestId: params.requestId,
+      happyCodeHash: params.happyCodeHash,
+      salt: params.salt,
+      expiresAt: params.expiresAt,
+    });
+  }
+
+  /**
+   * Increments failed Happy Code verification attempts by 1 in an isolated transaction.
+   */
+  async incrementHappyCodeAttempts(requestId: string): Promise<number> {
+    const conn = await getOracleConnection();
+    try {
+      const sql = `
+        UPDATE SERVICE_REQUEST_VERIFICATIONS
+        SET 
+          HAPPY_CODE_ATTEMPTS = HAPPY_CODE_ATTEMPTS + 1,
+          UPDATED_AT = SYSTIMESTAMP
+        WHERE REQUEST_ID = :requestId
+        RETURNING HAPPY_CODE_ATTEMPTS INTO :newAttempts
+      `;
+
+      const result = await conn.execute<any>(
+        sql,
+        {
+          requestId,
+          newAttempts: { type: oracledb.NUMBER, dir: oracledb.BIND_OUT },
+        },
+        { autoCommit: true }
+      );
+
+      const attempts = (result.outBinds as any)?.newAttempts?.[0] ?? 1;
+      return attempts;
+    } finally {
+      await conn.close();
+    }
+  }
+
+  /**
+   * Marks Happy Code as successfully verified and consumed.
+   */
+  async markHappyCodeVerified(requestId: string, conn: oracledb.Connection): Promise<void> {
+    const sql = `
+      UPDATE SERVICE_REQUEST_VERIFICATIONS
+      SET 
+        HAPPY_CODE_VERIFIED_AT = SYSTIMESTAMP,
+        UPDATED_AT = SYSTIMESTAMP
+      WHERE REQUEST_ID = :requestId
+    `;
+    await conn.execute(sql, { requestId });
+  }
+
+  /**
+   * Records Happy Code regeneration, invalidating earlier code, resetting attempt counter, and incrementing regeneration counter.
+   */
+  async recordHappyCodeRegeneration(
+    params: {
+      requestId: string;
+      newHappyCodeHash: string;
+      newSalt: string;
+      newExpiresAt: Date;
+    },
+    conn: oracledb.Connection
+  ): Promise<void> {
+    const sql = `
+      UPDATE SERVICE_REQUEST_VERIFICATIONS
+      SET 
+        HAPPY_CODE_HASH = :newHappyCodeHash,
+        HAPPY_CODE_SALT = :newSalt,
+        HAPPY_CODE_EXPIRES_AT = :newExpiresAt,
+        HAPPY_CODE_ATTEMPTS = 0,
+        HAPPY_CODE_VERIFIED_AT = NULL,
+        HAPPY_CODE_REGENERATED_COUNT = NVL(HAPPY_CODE_REGENERATED_COUNT, 0) + 1,
+        UPDATED_AT = SYSTIMESTAMP
+      WHERE REQUEST_ID = :requestId
+    `;
+
+    await conn.execute(sql, {
+      requestId: params.requestId,
+      newHappyCodeHash: params.newHappyCodeHash,
+      newSalt: params.newSalt,
+      newExpiresAt: params.newExpiresAt,
+    });
+  }
 }
 
 export const verificationRepository = new VerificationRepository();
+

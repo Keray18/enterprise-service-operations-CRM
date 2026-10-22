@@ -26,7 +26,6 @@ import { EnterpriseTable } from '../../../components/data-display/DataTablePrimi
 import { EmptyState } from '../../../components/data-display/EmptyState';
 import { StatusBadge } from '../../../components/feedback/StatusBadge';
 import { ProtectedRoute } from '../../../components/layout/ProtectedRoute';
-import { WorkspaceShell } from '../../../components/layout/WorkspaceShell';
 import { FastCallRegistrationDialog } from './components/FastCallRegistrationDialog';
 import { ServiceRequestDetailDialog } from './components/ServiceRequestDetailDialog';
 import {
@@ -226,8 +225,7 @@ export default function CallCenterPage() {
   ];
 
   return (
-    <WorkspaceShell>
-      <ProtectedRoute requiredPermission="calls:read">
+    <ProtectedRoute requiredPermission="calls:read">
         <PageHeader
           title="Call Center Operations"
           subtitle="Inbound complaint registration, fast mobile lookup, and real-time service request lifecycle tracking."
@@ -392,6 +390,5 @@ export default function CallCenterPage() {
           </Alert>
         </Snackbar>
       </ProtectedRoute>
-    </WorkspaceShell>
   );
 }
