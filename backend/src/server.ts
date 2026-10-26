@@ -2,6 +2,7 @@ import { createApp } from './app.js';
 import { env } from './config/env.js';
 import { closeOraclePool, initOraclePool } from './database/oraclePool.js';
 import { logger } from './logging/logger.js';
+import { backgroundScheduler } from './workers/backgroundScheduler.js';
 
 const app = createApp();
 
@@ -15,6 +16,12 @@ const server = app.listen(env.PORT, env.HOST, async () => {
   // Attempt initial database pool connection (non-fatal if database is not yet running)
   try {
     await initOraclePool();
+
+    // Start background job scheduler in non-test environments
+    if (env.NODE_ENV !== 'test') {
+      backgroundScheduler.start({ runImmediately: true });
+      logger.info('Autonomous background scheduler started successfully.');
+    }
   } catch (err: unknown) {
     const errorMsg = err instanceof Error ? err.message : String(err);
     logger.warn(`Oracle connection pool not ready at startup: ${errorMsg}. Server will continue running in degraded readiness mode.`);
@@ -28,6 +35,14 @@ async function handleShutdown(signal: string): Promise<void> {
   isShuttingDown = true;
 
   logger.info(`Received ${signal}. Starting graceful shutdown...`);
+
+  // Stop background scheduler first so no new jobs start
+  try {
+    await backgroundScheduler.stop();
+  } catch (err: unknown) {
+    const errorMsg = err instanceof Error ? err.message : String(err);
+    logger.error(`Error stopping background scheduler: ${errorMsg}`);
+  }
 
   // Stop accepting new HTTP requests
   server.close(async () => {

@@ -38,7 +38,7 @@ export function resolveDefaultWorkspace(user: AuthUser | null): string | null {
   }
 
   // 2. Permission-based fallback
-  if (permissions.includes('users:read') || permissions.includes('masters:read')) {
+  if (permissions.includes('users:read') || permissions.includes('masters:manage')) {
     return '/admin';
   }
   if (permissions.includes('calls:create') || (permissions.includes('calls:read') && !permissions.includes('asf:read'))) {

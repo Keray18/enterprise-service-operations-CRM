@@ -11,6 +11,10 @@ export class SlaPenaltyRepository {
       breachType: PenaltyBreachType;
       breachTimestamp: Date;
       calculatedAmount: number;
+      policyVersion?: string;
+      configStatus?: 'AWAITING_POLICY_CONFIGURATION' | 'CONFIGURED' | 'EXEMPT';
+      elapsedHours?: number;
+      thresholdHours?: number;
     },
     conn?: oracledb.Connection
   ): Promise<SlaPenaltyRecord> {
@@ -40,6 +44,9 @@ export class SlaPenaltyRepository {
       const randPart = crypto.randomBytes(3).toString('hex').toUpperCase();
       const penaltyNumber = `PEN-${dateStr}-${randPart}`;
 
+      const policyVersion = data.policyVersion || 'UNCONFIGURED';
+      const configStatus = data.configStatus || 'AWAITING_POLICY_CONFIGURATION';
+
       const sql = `
         INSERT INTO SLA_PENALTY_RECORDS (
           PENALTY_ID,
@@ -50,6 +57,10 @@ export class SlaPenaltyRepository {
           BREACH_TIMESTAMP,
           CALCULATED_AMOUNT,
           STATUS,
+          POLICY_VERSION,
+          CONFIG_STATUS,
+          ELAPSED_HOURS,
+          THRESHOLD_HOURS,
           CREATED_AT
         ) VALUES (
           :penaltyId,
@@ -60,6 +71,10 @@ export class SlaPenaltyRepository {
           :breachTimestamp,
           :calculatedAmount,
           'PENDING_REVIEW',
+          :policyVersion,
+          :configStatus,
+          :elapsedHours,
+          :thresholdHours,
           SYSTIMESTAMP
         )
       `;
@@ -72,6 +87,10 @@ export class SlaPenaltyRepository {
         breachType: data.breachType,
         breachTimestamp: data.breachTimestamp,
         calculatedAmount: data.calculatedAmount,
+        policyVersion,
+        configStatus,
+        elapsedHours: data.elapsedHours ?? null,
+        thresholdHours: data.thresholdHours ?? null,
       });
 
       const penalty = await this.getPenaltyById(penaltyId, connection);
@@ -98,7 +117,8 @@ export class SlaPenaltyRepository {
         SELECT p.PENALTY_ID, p.PENALTY_NUMBER, p.SERVICE_REQUEST_ID,
                sr.JOB_NUMBER, p.ASF_LOCATION_ID, l.LOCATION_NAME AS ASF_LOCATION_NAME,
                p.BREACH_TYPE, p.BREACH_TIMESTAMP, p.CALCULATED_AMOUNT,
-               p.STATUS, p.REVIEWED_BY, p.REVIEWED_BY_USERNAME,
+               p.STATUS, p.POLICY_VERSION, p.CONFIG_STATUS, p.ELAPSED_HOURS, p.THRESHOLD_HOURS,
+               p.REVIEWED_BY, p.REVIEWED_BY_USERNAME,
                p.REVIEWED_AT, p.REVIEW_REMARKS, p.JOURNAL_ID, p.CREATED_AT
         FROM SLA_PENALTY_RECORDS p
         JOIN SERVICE_REQUESTS sr ON p.SERVICE_REQUEST_ID = sr.REQUEST_ID
@@ -121,6 +141,10 @@ export class SlaPenaltyRepository {
         breachTimestamp: new Date(row.BREACH_TIMESTAMP),
         calculatedAmount: Number(row.CALCULATED_AMOUNT || 0),
         status: row.STATUS as PenaltyStatus,
+        policyVersion: row.POLICY_VERSION || 'UNCONFIGURED',
+        configStatus: row.CONFIG_STATUS || 'AWAITING_POLICY_CONFIGURATION',
+        elapsedHours: row.ELAPSED_HOURS != null ? Number(row.ELAPSED_HOURS) : undefined,
+        thresholdHours: row.THRESHOLD_HOURS != null ? Number(row.THRESHOLD_HOURS) : undefined,
         reviewedBy: row.REVIEWED_BY || undefined,
         reviewedByUsername: row.REVIEWED_BY_USERNAME || undefined,
         reviewedAt: row.REVIEWED_AT ? new Date(row.REVIEWED_AT) : undefined,
@@ -179,7 +203,8 @@ export class SlaPenaltyRepository {
         SELECT p.PENALTY_ID, p.PENALTY_NUMBER, p.SERVICE_REQUEST_ID,
                sr.JOB_NUMBER, p.ASF_LOCATION_ID, l.LOCATION_NAME AS ASF_LOCATION_NAME,
                p.BREACH_TYPE, p.BREACH_TIMESTAMP, p.CALCULATED_AMOUNT,
-               p.STATUS, p.REVIEWED_BY, p.REVIEWED_BY_USERNAME,
+               p.STATUS, p.POLICY_VERSION, p.CONFIG_STATUS, p.ELAPSED_HOURS, p.THRESHOLD_HOURS,
+               p.REVIEWED_BY, p.REVIEWED_BY_USERNAME,
                p.REVIEWED_AT, p.REVIEW_REMARKS, p.JOURNAL_ID, p.CREATED_AT
         FROM SLA_PENALTY_RECORDS p
         JOIN SERVICE_REQUESTS sr ON p.SERVICE_REQUEST_ID = sr.REQUEST_ID
@@ -202,6 +227,10 @@ export class SlaPenaltyRepository {
         breachTimestamp: new Date(row.BREACH_TIMESTAMP),
         calculatedAmount: Number(row.CALCULATED_AMOUNT || 0),
         status: row.STATUS as PenaltyStatus,
+        policyVersion: row.POLICY_VERSION || 'UNCONFIGURED',
+        configStatus: row.CONFIG_STATUS || 'AWAITING_POLICY_CONFIGURATION',
+        elapsedHours: row.ELAPSED_HOURS != null ? Number(row.ELAPSED_HOURS) : undefined,
+        thresholdHours: row.THRESHOLD_HOURS != null ? Number(row.THRESHOLD_HOURS) : undefined,
         reviewedBy: row.REVIEWED_BY || undefined,
         reviewedByUsername: row.REVIEWED_BY_USERNAME || undefined,
         reviewedAt: row.REVIEWED_AT ? new Date(row.REVIEWED_AT) : undefined,
@@ -230,6 +259,8 @@ export class SlaPenaltyRepository {
       reviewedByUsername: string;
       reviewRemarks: string;
       calculatedAmount?: number;
+      policyVersion?: string;
+      configStatus?: 'AWAITING_POLICY_CONFIGURATION' | 'CONFIGURED' | 'EXEMPT';
       journalId?: string;
     },
     conn: oracledb.Connection
@@ -242,6 +273,8 @@ export class SlaPenaltyRepository {
           REVIEWED_AT = SYSTIMESTAMP,
           REVIEW_REMARKS = :reviewRemarks,
           CALCULATED_AMOUNT = NVL(:calculatedAmount, CALCULATED_AMOUNT),
+          POLICY_VERSION = NVL(:policyVersion, POLICY_VERSION),
+          CONFIG_STATUS = NVL(:configStatus, CONFIG_STATUS),
           JOURNAL_ID = NVL(:journalId, JOURNAL_ID)
       WHERE PENALTY_ID = :penaltyId
     `;
@@ -252,6 +285,8 @@ export class SlaPenaltyRepository {
       reviewedByUsername: data.reviewedByUsername,
       reviewRemarks: data.reviewRemarks,
       calculatedAmount: data.calculatedAmount !== undefined ? data.calculatedAmount : null,
+      policyVersion: data.policyVersion || null,
+      configStatus: data.configStatus || null,
       journalId: data.journalId || null,
       penaltyId,
     });

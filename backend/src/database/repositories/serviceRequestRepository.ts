@@ -49,6 +49,8 @@ function mapRowToServiceRequest(row: any): ServiceRequestWithRelationsRecord {
     checkedInAt: row.CHECKED_IN_AT ? new Date(row.CHECKED_IN_AT) : undefined,
     slaBreached48h: row.SLA_BREACHED_48H || 'N',
     slaBreached48hAt: row.SLA_BREACHED_48H_AT ? new Date(row.SLA_BREACHED_48H_AT) : undefined,
+    slaBreached168h: row.SLA_BREACHED_168H || 'N',
+    slaBreached168hAt: row.SLA_BREACHED_168H_AT ? new Date(row.SLA_BREACHED_168H_AT) : undefined,
     // Phase 2B diagnosis and repair fields
     faultId: row.FAULT_ID || undefined,
     defectId: row.DEFECT_ID || undefined,
@@ -147,6 +149,8 @@ const BASE_SELECT_SQL = `
     sr.CHECKED_IN_AT,
     sr.SLA_BREACHED_48H,
     sr.SLA_BREACHED_48H_AT,
+    sr.SLA_BREACHED_168H,
+    sr.SLA_BREACHED_168H_AT,
     sr.FAULT_ID,
     sr.DEFECT_ID,
     sr.REPAIR_CODE_ID,
@@ -652,6 +656,21 @@ export class ServiceRequestRepository {
   }
 
   /**
+   * Marks a service request as having breached the 168-hour closure threshold.
+   */
+  async mark168hSlaBreach(requestId: string, conn: oracledb.Connection): Promise<void> {
+    const sql = `
+      UPDATE SERVICE_REQUESTS
+      SET 
+        SLA_BREACHED_168H = 'Y',
+        SLA_BREACHED_168H_AT = SYSTIMESTAMP,
+        UPDATED_AT = SYSTIMESTAMP
+      WHERE REQUEST_ID = :requestId
+    `;
+    await conn.execute(sql, { requestId });
+  }
+
+  /**
    * Updates diagnosis on a service request and transitions status to IN_PROGRESS_REPAIR.
    */
   async updateDiagnosis(
@@ -944,6 +963,24 @@ export class ServiceRequestRepository {
         AND sr.ACKNOWLEDGED_AT IS NULL
         AND SYSTIMESTAMP > sr.SLA_48H_EXPIRES_AT
         AND sr.SLA_BREACHED_48H = 'N'
+      FOR UPDATE OF sr.REQUEST_ID SKIP LOCKED
+    `;
+    const result = await conn.execute(sql, {}, { outFormat: oracledb.OUT_FORMAT_OBJECT });
+    return (result.rows || []).map(mapRowToServiceRequest);
+  }
+
+  /**
+   * Finds unclosed requests exceeding 168 hours (7 days) without closure for SLA evaluation.
+   * Concurrency-safe: utilizes row locks (FOR UPDATE OF sr.REQUEST_ID SKIP LOCKED).
+   * Pauses during PNA spare part transit and special part customer estimates per Decision 2.2.
+   */
+  async findUnclosed168hSlaBreaches(conn: oracledb.Connection): Promise<ServiceRequestWithRelationsRecord[]> {
+    const sql = `
+      ${BASE_SELECT_SQL}
+      WHERE sr.STATUS NOT IN ('CLOSED', 'CANCELLED', 'REPLACED')
+        AND sr.STATUS NOT IN ('PENDING_SPARE_PART', 'PENDING_SPECIAL_PART_ESTIMATE')
+        AND sr.CREATED_AT < SYSTIMESTAMP - INTERVAL '7' DAY
+        AND sr.SLA_BREACHED_168H = 'N'
       FOR UPDATE OF sr.REQUEST_ID SKIP LOCKED
     `;
     const result = await conn.execute(sql, {}, { outFormat: oracledb.OUT_FORMAT_OBJECT });

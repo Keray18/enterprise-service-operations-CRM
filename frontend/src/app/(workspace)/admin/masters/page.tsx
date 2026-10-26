@@ -43,7 +43,7 @@ export default function MasterDataCatalogPage() {
   };
 
   return (
-    <ProtectedRoute requiredPermission="masters:read">
+    <ProtectedRoute requiredPermission="masters:manage" requiredRole="ADMIN">
         <PageHeader
           title="Universal Catalog & Serviceability Console"
           subtitle="Configure enterprise Brands, Products, Models, Spare Parts, HSN/Tax policies, and Postal Serviceability."

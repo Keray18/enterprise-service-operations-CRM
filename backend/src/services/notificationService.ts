@@ -21,9 +21,14 @@ export interface ISmsAdapter {
 export class MockSmsAdapter implements ISmsAdapter {
   private sentMessages: Array<{ recipient: string; messageBody: string; templateCode: string; timestamp: Date }> = [];
   private failNext = false;
+  private alwaysFail = false;
 
   setFailNext(fail: boolean): void {
     this.failNext = fail;
+  }
+
+  setAlwaysFail(fail: boolean): void {
+    this.alwaysFail = fail;
   }
 
   getSentMessages(): Array<{ recipient: string; messageBody: string; templateCode: string; timestamp: Date }> {
@@ -33,10 +38,11 @@ export class MockSmsAdapter implements ISmsAdapter {
   clear(): void {
     this.sentMessages = [];
     this.failNext = false;
+    this.alwaysFail = false;
   }
 
   async sendSms(recipient: string, messageBody: string, templateCode: string): Promise<SmsProviderResponse> {
-    if (this.failNext) {
+    if (this.alwaysFail || this.failNext) {
       this.failNext = false;
       return {
         success: false,
@@ -192,6 +198,70 @@ export class NotificationService {
         logger.error(`[NOTIFICATION PROCESSOR] Failed to record notification failure: ${dbErr}`);
       }
     }
+  }
+
+  /**
+   * Scans and processes pending or failed notifications with retry daemon.
+   * If retries reach maxRetries, escalates to DEAD_LETTER for supervisor intervention.
+   */
+  async retryFailedNotifications(maxRetries = 3): Promise<{
+    processedCount: number;
+    succeededCount: number;
+    failedCount: number;
+    escalatedCount: number;
+  }> {
+    const pending = await notificationRepository.findPendingRetries(maxRetries);
+    let succeededCount = 0;
+    let failedCount = 0;
+    let escalatedCount = 0;
+
+    for (const item of pending) {
+      if (item.retryCount >= maxRetries - 1) {
+        try {
+          await this.processNotification(item);
+          const check = await notificationRepository.findById(item.notificationId);
+          if (check?.status === 'SENT') {
+            succeededCount++;
+          } else {
+            await notificationRepository.markExhausted(item.notificationId);
+            escalatedCount++;
+            logger.warn(`[NOTIFICATION DAEMON] Notification ${item.notificationId} exhausted max retries (${maxRetries}). Escalated to dead-letter.`);
+          }
+        } catch {
+          await notificationRepository.markExhausted(item.notificationId);
+          escalatedCount++;
+        }
+      } else {
+        try {
+          await this.processNotification(item);
+          const check = await notificationRepository.findById(item.notificationId);
+          if (check?.status === 'SENT') {
+            succeededCount++;
+          } else {
+            failedCount++;
+          }
+        } catch {
+          failedCount++;
+        }
+      }
+    }
+
+    return {
+      processedCount: pending.length,
+      succeededCount,
+      failedCount,
+      escalatedCount,
+    };
+  }
+
+  async getMetrics(): Promise<{
+    queued: number;
+    sent: number;
+    failed: number;
+    deadLetter: number;
+    total: number;
+  }> {
+    return notificationRepository.getOutboxMetrics();
   }
 
   setSmsAdapter(adapter: ISmsAdapter): void {

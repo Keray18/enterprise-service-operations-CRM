@@ -33,6 +33,7 @@ export interface AuthenticatedUser {
   email: string;
   fullName: string;
   locationId?: string;
+  brandId?: string;
   roles: string[];
   permissions: string[];
 }

@@ -116,14 +116,21 @@ export class AsfController {
 
   async evaluateSla(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
-      const result = await slaMonitoringService.evaluate48hSlaBreaches(req.user?.userId);
+      const result = await slaMonitoringService.evaluateAllSlaBreaches(req.user?.userId);
       logger.info(
-        `[SLA MONITOR] Manual SLA evaluation triggered by user ${req.user?.username} (${req.user?.userId}). Evaluated: ${result.evaluatedCount}, New breaches: ${result.newBreachesCount}`
+        `[SLA MONITOR] Comprehensive SLA evaluation triggered by user ${req.user?.username}. 48h breaches: ${result.ack48h.newBreachesCount}, 168h breaches: ${result.closure168h.newBreachesCount}`
       );
       res.status(200).json({
         success: true,
-        data: result,
-        message: `SLA monitoring evaluation complete: ${result.newBreachesCount} new breach(es) flagged.`,
+        data: {
+          evaluatedCount: result.ack48h.evaluatedCount + result.closure168h.evaluatedCount,
+          newBreachesCount: result.ack48h.newBreachesCount + result.closure168h.newBreachesCount,
+          breachedRequestIds: [...result.ack48h.breachedRequestIds, ...result.closure168h.breachedRequestIds],
+          ack48h: result.ack48h,
+          closure168h: result.closure168h,
+          timestamp: result.timestamp,
+        },
+        message: `SLA evaluation complete: ${result.ack48h.newBreachesCount} new 48h breach(es), ${result.closure168h.newBreachesCount} new 168h breach(es) flagged.`,
       });
     } catch (err) {
       next(err);

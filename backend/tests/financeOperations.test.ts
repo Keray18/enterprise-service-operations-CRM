@@ -1,5 +1,5 @@
 import crypto from 'crypto';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { getOracleConnection } from '../src/database/oraclePool.js';
 import { financialJournalRepository } from '../src/database/repositories/financialJournalRepository.js';
 import { brandWalletRepository } from '../src/database/repositories/brandWalletRepository.js';
@@ -58,7 +58,7 @@ describe('Phase 4: Finance, Brand Wallets, Service Claims & Settlement Operation
   const ACCT_LABOR_EXP = '00000000-0000-0000-0008-000000000004'; // 5010
   const ACCT_TRAVEL_EXP = '00000000-0000-0000-0008-000000000005'; // 5020
 
-  const testRunYear = 2200 + Math.floor(Math.random() * 7000);
+  const testRunYear = 2023;
 
   async function insertTestServiceRequest(): Promise<string> {
     const conn = await getOracleConnection();
@@ -93,6 +93,17 @@ describe('Phase 4: Finance, Brand Wallets, Service Claims & Settlement Operation
       const res = await conn.execute('SELECT 1 FROM DUAL');
       expect(res.rows).toBeDefined();
 
+      await conn.execute(`DELETE FROM CLAIM_LINE_ITEMS WHERE CLAIM_ID IN (SELECT CLAIM_ID FROM SERVICE_CLAIMS WHERE CLAIM_YEAR = :y)`, { y: testRunYear });
+      await conn.execute(`DELETE FROM SERVICE_CLAIMS WHERE CLAIM_YEAR = :y`, { y: testRunYear });
+      await conn.commit();
+    } finally {
+      await conn.close();
+    }
+  });
+
+  afterAll(async () => {
+    const conn = await getOracleConnection();
+    try {
       await conn.execute(`DELETE FROM CLAIM_LINE_ITEMS WHERE CLAIM_ID IN (SELECT CLAIM_ID FROM SERVICE_CLAIMS WHERE CLAIM_YEAR = :y)`, { y: testRunYear });
       await conn.execute(`DELETE FROM SERVICE_CLAIMS WHERE CLAIM_YEAR = :y`, { y: testRunYear });
       await conn.commit();
@@ -498,6 +509,136 @@ describe('Phase 4: Finance, Brand Wallets, Service Claims & Settlement Operation
         await conn.close();
       }
     });
+
+    it('should reject claim batch creation with invalid year (e.g. 6854)', async () => {
+      const conn = await getOracleConnection();
+      try {
+        await expect(
+          serviceClaimRepository.createClaimBatch(
+            {
+              claimMonth: 10,
+              claimYear: 6854,
+              asfLocationId: mumbaiAsfId,
+              brandId: skatercatBrandId,
+              totalJobsCount: 1,
+              grossLaborAmount: 350.0,
+              grossTravelAmount: 50.0,
+              penaltyDeductionAmount: 0.0,
+              netClaimAmount: 400.0,
+              status: 'DRAFT',
+              submittedBy: asfActor.userId,
+              submittedByUsername: asfActor.username,
+              lineItems: [],
+            },
+            conn
+          )
+        ).rejects.toThrow(/Invalid claimYear: 6854/i);
+
+        await expect(
+          financeService.generateClaimBatch(
+            {
+              asfLocationId: mumbaiAsfId,
+              brandId: skatercatBrandId,
+              claimMonth: 10,
+              claimYear: 6854,
+            },
+            adminActor
+          )
+        ).rejects.toThrow(/Invalid claim period year/i);
+      } finally {
+        await conn.close();
+      }
+    });
+
+    it('should reject claim batch creation with invalid month (e.g. 13)', async () => {
+      const conn = await getOracleConnection();
+      try {
+        await expect(
+          serviceClaimRepository.createClaimBatch(
+            {
+              claimMonth: 13,
+              claimYear: testRunYear,
+              asfLocationId: mumbaiAsfId,
+              brandId: skatercatBrandId,
+              totalJobsCount: 1,
+              grossLaborAmount: 350.0,
+              grossTravelAmount: 50.0,
+              penaltyDeductionAmount: 0.0,
+              netClaimAmount: 400.0,
+              status: 'DRAFT',
+              submittedBy: asfActor.userId,
+              submittedByUsername: asfActor.username,
+              lineItems: [],
+            },
+            conn
+          )
+        ).rejects.toThrow(/Invalid claimMonth: 13/i);
+
+        await expect(
+          financeService.generateClaimBatch(
+            {
+              asfLocationId: mumbaiAsfId,
+              brandId: skatercatBrandId,
+              claimMonth: 13,
+              claimYear: testRunYear,
+            },
+            adminActor
+          )
+        ).rejects.toThrow(/Invalid claim period month/i);
+      } finally {
+        await conn.close();
+      }
+    });
+
+    it('should reject duplicate claim batch generation for identical period and location', async () => {
+      const conn = await getOracleConnection();
+      try {
+        const existing = await serviceClaimRepository.createClaimBatch(
+          {
+            claimMonth: 5,
+            claimYear: testRunYear,
+            asfLocationId: mumbaiAsfId,
+            brandId: skatercatBrandId,
+            totalJobsCount: 1,
+            grossLaborAmount: 350.0,
+            grossTravelAmount: 50.0,
+            penaltyDeductionAmount: 0.0,
+            netClaimAmount: 400.0,
+            status: 'SUBMITTED',
+            submittedBy: asfActor.userId,
+            submittedByUsername: asfActor.username,
+            lineItems: [],
+          },
+          conn
+        );
+        await conn.commit();
+
+        await expect(
+          financeService.generateClaimBatch(
+            {
+              asfLocationId: mumbaiAsfId,
+              brandId: skatercatBrandId,
+              claimMonth: 5,
+              claimYear: testRunYear,
+            },
+            adminActor
+          )
+        ).rejects.toThrow(/already exists/i);
+      } finally {
+        await conn.close();
+      }
+    });
+
+    it('should return null when commercial claim rate is not configured (no invented fallback rates)', async () => {
+      const unconfiguredBrandId = '00000000-0000-0000-0099-000000000099';
+      const unconfiguredProductId = '00000000-0000-0000-0099-000000000099';
+      const rate = await claimRateMatrixRepository.findRate(
+        unconfiguredBrandId,
+        unconfiguredProductId,
+        'REPAIR'
+      );
+      expect(rate).toBeNull();
+    });
   });
 
   // ============================================================================
@@ -519,11 +660,13 @@ describe('Phase 4: Finance, Brand Wallets, Service Claims & Settlement Operation
       expect(penalty.calculatedAmount).toBe(500.0);
       expect(penalty.journalId).toBeUndefined(); // NEVER automatically debited!
 
-      // Review and approve
+      // Review and approve with authorized commercial rate and policy reference
       const reviewed = await financeService.reviewPenalty(
         penalty.penaltyId,
         {
           action: 'APPROVE',
+          authorizedAmount: 500.0,
+          policyReference: 'ANNEXURE_B_SLA_2026',
           reviewRemarks: 'Acknowledged SLA delay verified with franchise logs',
         },
         adminActor

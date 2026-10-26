@@ -116,6 +116,8 @@ export interface ServiceRequestRecord {
   checkedInAt?: Date;
   slaBreached48h?: 'Y' | 'N';
   slaBreached48hAt?: Date;
+  slaBreached168h?: 'Y' | 'N';
+  slaBreached168hAt?: Date;
   // Phase 2B additions
   faultId?: string;
   defectId?: string;

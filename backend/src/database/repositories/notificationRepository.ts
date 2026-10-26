@@ -269,6 +269,96 @@ export class NotificationRepository {
       await conn.close();
     }
   }
+
+  /**
+   * Retrieves pending or failed notifications eligible for daemon retry.
+   */
+  async findPendingRetries(maxRetries = 3, limit = 50): Promise<NotificationOutboxRecord[]> {
+    const conn = await getOracleConnection();
+    try {
+      const sql = `
+        SELECT 
+          NOTIFICATION_ID, REQUEST_ID, CHANNEL, RECIPIENT, TEMPLATE_CODE,
+          MESSAGE_BODY, IS_ENCRYPTED, ENCRYPTED_PAYLOAD, ENCRYPTION_IV,
+          AUTH_TAG, KEY_VERSION, STATUS, PROVIDER_MESSAGE_ID, ERROR_MESSAGE,
+          RETRY_COUNT, SENT_AT, CREATED_AT
+        FROM NOTIFICATIONS_OUTBOX
+        WHERE STATUS IN ('QUEUED', 'FAILED')
+          AND RETRY_COUNT < :maxRetries
+        ORDER BY CREATED_AT ASC
+        FETCH FIRST :limit ROWS ONLY
+      `;
+
+      const result = await conn.execute<any>(
+        sql,
+        { maxRetries, limit },
+        {
+          outFormat: oracledb.OUT_FORMAT_OBJECT,
+          fetchInfo: { ENCRYPTED_PAYLOAD: { type: oracledb.STRING } },
+        }
+      );
+
+      return (result.rows || []).map((row) => mapRowToNotification(row, false));
+    } finally {
+      await conn.close();
+    }
+  }
+
+  /**
+   * Marks a notification as exhausted / dead lettered after reaching maximum retry thresholds.
+   */
+  async markExhausted(notificationId: string): Promise<void> {
+    const conn = await getOracleConnection();
+    try {
+      const sql = `
+        UPDATE NOTIFICATIONS_OUTBOX
+        SET 
+          STATUS = 'FAILED',
+          ERROR_MESSAGE = 'MAX_RETRIES_EXCEEDED: Dead-lettered notification escalated for supervisor intervention.',
+          RETRY_COUNT = RETRY_COUNT + 1
+        WHERE NOTIFICATION_ID = :notificationId
+      `;
+      await conn.execute(sql, { notificationId }, { autoCommit: true });
+    } finally {
+      await conn.close();
+    }
+  }
+
+  /**
+   * Returns aggregated outbox telemetry metrics.
+   */
+  async getOutboxMetrics(): Promise<{
+    queued: number;
+    sent: number;
+    failed: number;
+    deadLetter: number;
+    total: number;
+  }> {
+    const conn = await getOracleConnection();
+    try {
+      const sql = `
+        SELECT 
+          NVL(SUM(CASE WHEN STATUS = 'QUEUED' THEN 1 ELSE 0 END), 0) AS QUEUED_COUNT,
+          NVL(SUM(CASE WHEN STATUS = 'SENT' THEN 1 ELSE 0 END), 0) AS SENT_COUNT,
+          NVL(SUM(CASE WHEN STATUS = 'FAILED' AND RETRY_COUNT < 3 THEN 1 ELSE 0 END), 0) AS FAILED_COUNT,
+          NVL(SUM(CASE WHEN STATUS = 'FAILED' AND RETRY_COUNT >= 3 THEN 1 ELSE 0 END), 0) AS DEAD_LETTER_COUNT,
+          COUNT(*) AS TOTAL_COUNT
+        FROM NOTIFICATIONS_OUTBOX
+      `;
+
+      const result = await conn.execute<any>(sql, {}, { outFormat: oracledb.OUT_FORMAT_OBJECT });
+      const row = result.rows?.[0] || {};
+      return {
+        queued: Number(row.QUEUED_COUNT || 0),
+        sent: Number(row.SENT_COUNT || 0),
+        failed: Number(row.FAILED_COUNT || 0),
+        deadLetter: Number(row.DEAD_LETTER_COUNT || 0),
+        total: Number(row.TOTAL_COUNT || 0),
+      };
+    } finally {
+      await conn.close();
+    }
+  }
 }
 
 export const notificationRepository = new NotificationRepository();

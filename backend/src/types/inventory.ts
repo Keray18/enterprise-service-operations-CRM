@@ -235,18 +235,38 @@ export interface StockAdjustmentRecord {
   createdAt: Date;
 }
 
+export interface StockCategoryReconciliation {
+  cached: number;
+  movementSum: number;
+  difference: number;
+  isBalanced: boolean;
+}
+
+export interface ReservedStockReconciliation {
+  cached: number;
+  activeReservationSum: number;
+  difference: number;
+  isBalanced: boolean;
+}
+
 export interface InventoryReconciliationRecord {
   locationId: string;
   locationName: string;
+  locationCode?: string;
   partId: string;
   partCode: string;
   partName: string;
+  status: 'BALANCED' | 'DISCREPANCY_DETECTED';
+  isReconciled: boolean;
+  discrepanciesFound: boolean;
+  lastCheckedAt: Date;
+  onHand: StockCategoryReconciliation;
+  reserved: ReservedStockReconciliation;
   cachedOnHand: number;
   ledgerOnHand: number;
   discrepancyOnHand: number;
   cachedReserved: number;
   activeReserved: number;
   discrepancyReserved: number;
-  isReconciled: boolean;
-  lastCheckedAt: Date;
 }
+

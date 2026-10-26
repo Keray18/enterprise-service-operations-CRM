@@ -216,6 +216,10 @@ export interface SlaPenaltyRecord {
   breachTimestamp: Date;
   calculatedAmount: number;
   status: PenaltyStatus;
+  policyVersion?: string;
+  configStatus?: 'AWAITING_POLICY_CONFIGURATION' | 'CONFIGURED' | 'EXEMPT';
+  elapsedHours?: number;
+  thresholdHours?: number;
   reviewedBy?: string;
   reviewedByUsername?: string;
   reviewedAt?: Date;
@@ -286,7 +290,14 @@ export const generateClaimBatchSchema = z.object({
   asfLocationId: z.string().uuid(),
   brandId: z.string().uuid().optional(),
   claimMonth: z.number().int().min(1).max(12),
-  claimYear: z.number().int().min(2020).max(2035),
+  claimYear: z
+    .number()
+    .int()
+    .min(2020)
+    .max(2099)
+    .refine((val) => val <= new Date().getFullYear() + 1, {
+      message: 'Claim year cannot exceed the upcoming calendar year.',
+    }),
   remarks: z.string().max(500).optional(),
 });
 
@@ -300,6 +311,8 @@ export const auditClaimSchema = z.object({
         auditStatus: z.enum(['VERIFIED', 'FLAGGED', 'REJECTED']),
         auditNote: z.string().max(500).optional(),
         deductionAmount: z.number().min(0).optional(),
+        authorizedLaborRate: z.number().min(0).optional(),
+        authorizedTravelAmount: z.number().min(0).optional(),
       })
     )
     .optional(),
@@ -309,6 +322,8 @@ export const reviewPenaltySchema = z.object({
   action: z.enum(['APPROVE', 'WAIVE', 'DISPUTE']),
   reviewRemarks: z.string().min(5, 'Documented review remarks (min 5 chars) are required.'),
   waiverPercentage: z.number().min(0).max(100).optional(),
+  authorizedAmount: z.number().positive().optional(),
+  policyReference: z.string().min(3).max(100).optional(),
 });
 
 export const createSettlementBatchSchema = z.object({

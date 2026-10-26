@@ -107,7 +107,13 @@ export default function WarehousePage() {
   const [adjustTargetLocationId, setAdjustTargetLocationId] = useState<string | undefined>(undefined);
 
   // Queries & Mutations
-  const { data: dashboard, refetch: refetchDashboard, isLoading: isDashboardLoading } = useWarehouseDashboard();
+  const {
+    data: dashboard,
+    refetch: refetchDashboard,
+    isLoading: isDashboardLoading,
+    isError: isDashboardError,
+    error: dashboardError,
+  } = useWarehouseDashboard();
   const { data: stockData, isLoading: isStockLoading, refetch: refetchStock } = useStockBalances({
     locationId: stockLocationId || undefined,
     search: stockSearch || undefined,
@@ -255,6 +261,21 @@ export default function WarehousePage() {
           }
         />
 
+        {/* Dashboard Error Banner */}
+        {isDashboardError && (
+          <Alert
+            severity="error"
+            action={
+              <Button color="inherit" size="small" onClick={() => refetchDashboard()}>
+                Retry
+              </Button>
+            }
+            sx={{ mb: 3 }}
+          >
+            Failed to load warehouse dashboard statistics: {dashboardError?.message || 'Data contract or network error'}
+          </Alert>
+        )}
+
         {/* KPI Summary Cards */}
         <Grid container spacing={2} sx={{ mb: 3 }}>
           <Grid item xs={12} sm={6} md={2}>
@@ -264,7 +285,7 @@ export default function WarehousePage() {
                   On-Hand Stock
                 </Typography>
                 <Typography variant="h5" sx={{ fontWeight: 800, mt: 0.5 }}>
-                  {isDashboardLoading ? '—' : dashboard?.kpis.totalStockOnHand ?? 0}
+                  {isDashboardLoading ? '—' : dashboard?.kpis?.totalStockOnHand ?? 0}
                 </Typography>
                 <Typography variant="caption" color="text.secondary">
                   Physical warehouse units
@@ -280,7 +301,7 @@ export default function WarehousePage() {
                   Reserved Stock
                 </Typography>
                 <Typography variant="h5" sx={{ fontWeight: 800, mt: 0.5, color: 'warning.main' }}>
-                  {isDashboardLoading ? '—' : dashboard?.kpis.totalStockReserved ?? 0}
+                  {isDashboardLoading ? '—' : dashboard?.kpis?.totalStockReserved ?? 0}
                 </Typography>
                 <Typography variant="caption" color="text.secondary">
                   Locked for service jobs
@@ -296,7 +317,7 @@ export default function WarehousePage() {
                   In-Transit Stock
                 </Typography>
                 <Typography variant="h5" sx={{ fontWeight: 800, mt: 0.5, color: 'info.main' }}>
-                  {isDashboardLoading ? '—' : dashboard?.kpis.totalStockInTransit ?? 0}
+                  {isDashboardLoading ? '—' : dashboard?.kpis?.totalStockInTransit ?? 0}
                 </Typography>
                 <Typography variant="caption" color="text.secondary">
                   Shipped via courier / truck
@@ -312,7 +333,7 @@ export default function WarehousePage() {
                   Defective / Quarantine
                 </Typography>
                 <Typography variant="h5" sx={{ fontWeight: 800, mt: 0.5, color: 'error.main' }}>
-                  {isDashboardLoading ? '—' : dashboard?.kpis.totalStockDefective ?? 0}
+                  {isDashboardLoading ? '—' : dashboard?.kpis?.totalStockDefective ?? 0}
                 </Typography>
                 <Typography variant="caption" color="text.secondary">
                   Awaiting scrap or restock
@@ -328,7 +349,7 @@ export default function WarehousePage() {
                   Low Stock Alerts
                 </Typography>
                 <Typography variant="h5" sx={{ fontWeight: 800, mt: 0.5, color: 'warning.dark' }}>
-                  {isDashboardLoading ? '—' : dashboard?.kpis.lowStockPartCount ?? 0}
+                  {isDashboardLoading ? '—' : dashboard?.kpis?.lowStockPartCount ?? 0}
                 </Typography>
                 <Typography variant="caption" color="text.secondary">
                   Below reorder threshold
@@ -344,7 +365,7 @@ export default function WarehousePage() {
                   Pending PNA Requests
                 </Typography>
                 <Typography variant="h5" sx={{ fontWeight: 800, mt: 0.5, color: 'secondary.main' }}>
-                  {isDashboardLoading ? '—' : dashboard?.kpis.pendingPartRequestCount ?? 0}
+                  {isDashboardLoading ? '—' : dashboard?.kpis?.pendingPartRequestCount ?? 0}
                 </Typography>
                 <Typography variant="caption" color="text.secondary">
                   Jobs waiting for parts

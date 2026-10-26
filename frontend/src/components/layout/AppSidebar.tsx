@@ -94,7 +94,7 @@ const NAV_SECTIONS: NavSection[] = [
         label: 'Catalog Masters',
         href: '/admin/masters',
         icon: <CategoryIcon fontSize="small" />,
-        requiredPermission: 'masters:read',
+        requiredPermission: 'masters:manage',
       },
       {
         label: 'Finance & Settlements',
@@ -107,6 +107,17 @@ const NAV_SECTIONS: NavSection[] = [
         href: '/admin/diagnostics',
         icon: <DashboardIcon fontSize="small" />,
         requiredRole: 'ADMIN',
+      },
+    ],
+  },
+  {
+    title: 'ANALYTICS & REPORTS',
+    items: [
+      {
+        label: 'Reports & Telemetry',
+        href: '/reports',
+        icon: <AssessmentIcon fontSize="small" />,
+        requiredPermission: 'reports:view',
       },
     ],
   },

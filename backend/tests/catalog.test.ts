@@ -511,18 +511,35 @@ describe('Catalog Masters & Management (Phase 1B.1)', () => {
       expect(res.body.error.code).toBe('FORBIDDEN');
     });
 
-    it('Warehouse user CANNOT create or update a model (403)', async () => {
+    it('Call Center user CAN view brands, products, and models for complaint intake (masters:read - 200)', async () => {
+      const brandsRes = await request(app)
+        .get('/api/v1/catalog/brands')
+        .set('Cookie', ccSessionCookie);
+      expect(brandsRes.status).toBe(200);
+      expect(brandsRes.body.data.items).toBeInstanceOf(Array);
+
+      const productsRes = await request(app)
+        .get('/api/v1/catalog/products')
+        .set('Cookie', ccSessionCookie);
+      expect(productsRes.status).toBe(200);
+
+      const modelsRes = await request(app)
+        .get('/api/v1/catalog/models')
+        .set('Cookie', ccSessionCookie);
+      expect(modelsRes.status).toBe(200);
+    });
+
+    it('Call Center user CANNOT access bulk import commit (masters:import / masters:manage missing - 403)', async () => {
       const res = await request(app)
-        .post('/api/v1/catalog/models')
-        .set('Cookie', whSessionCookie)
+        .post('/api/v1/catalog/import/commit')
+        .set('Cookie', ccSessionCookie)
+        .set('x-csrf-token', ccCsrfToken)
         .send({
-          modelCode: 'UNAUTH_WH',
-          modelName: 'Unauthorized WH Model',
+          jobId: '00000000-0000-0000-0000-000000000001',
         });
 
-      // 403 Forbidden (RBAC / CSRF)
-      expect([403]).toContain(res.status);
-      expect(res.body.error.code).toBeDefined();
+      expect(res.status).toBe(403);
+      expect(res.body.error.code).toBe('FORBIDDEN');
     });
   });
 

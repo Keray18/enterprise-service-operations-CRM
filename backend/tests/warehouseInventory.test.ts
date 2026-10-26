@@ -2,7 +2,7 @@ import crypto from 'crypto';
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createApp } from '../src/app.js';
-import { closeOraclePool } from '../src/database/oraclePool.js';
+import { closeOraclePool, getOracleConnection } from '../src/database/oraclePool.js';
 import { locationRepository } from '../src/database/repositories/locationRepository.js';
 import { partRepository } from '../src/database/repositories/partRepository.js';
 import { rbacRepository } from '../src/database/repositories/rbacRepository.js';
@@ -610,18 +610,132 @@ describe('Phase 3 — Warehouse & Inventory Logistics', () => {
       expect(balAfter!.qtyOnHand).toBe(onHandBefore + 10);
     });
 
-    it('should verify stock reconciliation matches cached balances with movement sum', async () => {
+    it('should verify stock reconciliation matches cached balances with movement sum and returns structured response', async () => {
       const res = await request(app)
         .get(`/api/v1/warehouse/reconcile/${centralWarehouseLocationId}/${testPartId2}`)
         .set('Cookie', whCookie);
 
       expect(res.status).toBe(200);
       expect(res.body.success).toBe(true);
+      expect(res.body.data.status).toBe('BALANCED');
       expect(res.body.data.isReconciled).toBe(true);
+      expect(res.body.data.discrepanciesFound).toBe(false);
+      expect(res.body.data.onHand).toBeDefined();
+      expect(res.body.data.onHand.isBalanced).toBe(true);
+      expect(res.body.data.onHand.difference).toBe(0);
+      expect(res.body.data.onHand.cached).toBe(res.body.data.onHand.movementSum);
+      expect(res.body.data.reserved).toBeDefined();
+      expect(res.body.data.reserved.isBalanced).toBe(true);
+      expect(res.body.data.reserved.difference).toBe(0);
       expect(res.body.data.discrepancyOnHand).toBe(0);
       expect(res.body.data.discrepancyReserved).toBe(0);
+      expect(res.body.data.lastCheckedAt).toBeDefined();
+    });
+
+    it('should guarantee reconciliation is strictly audit-only and does not mutate stock or movement records', async () => {
+      const balBefore = await inventoryService.getStockBalance(centralWarehouseLocationId, testPartId2);
+      const movementsBefore = await inventoryService.listMovements({
+        locationId: centralWarehouseLocationId,
+        partId: testPartId2,
+      });
+
+      const res = await request(app)
+        .get(`/api/v1/warehouse/reconcile/${centralWarehouseLocationId}/${testPartId2}`)
+        .set('Cookie', whCookie);
+
+      expect(res.status).toBe(200);
+
+      const balAfter = await inventoryService.getStockBalance(centralWarehouseLocationId, testPartId2);
+      const movementsAfter = await inventoryService.listMovements({
+        locationId: centralWarehouseLocationId,
+        partId: testPartId2,
+      });
+
+      expect(balAfter!.qtyOnHand).toBe(balBefore!.qtyOnHand);
+      expect(balAfter!.qtyReserved).toBe(balBefore!.qtyReserved);
+      expect(balAfter!.versionNo).toBe(balBefore!.versionNo);
+      expect(movementsAfter.total).toBe(movementsBefore.total);
+    });
+
+    it('should detect discrepancy when physical balance differs from immutable movement ledger', async () => {
+      const conn = await getOracleConnection();
+      try {
+        // Artificially skew physical on-hand in INVENTORY_BALANCES without adding movement ledger entry
+        await conn.execute(
+          `UPDATE INVENTORY_BALANCES 
+           SET QTY_ON_HAND = QTY_ON_HAND + 5 
+           WHERE LOCATION_ID = :loc AND PART_ID = :part`,
+          { loc: centralWarehouseLocationId, part: testPartId2 },
+          { autoCommit: true }
+        );
+
+        const res = await request(app)
+          .get(`/api/v1/warehouse/reconcile/${centralWarehouseLocationId}/${testPartId2}`)
+          .set('Cookie', whCookie);
+
+        expect(res.status).toBe(200);
+        expect(res.body.data.status).toBe('DISCREPANCY_DETECTED');
+        expect(res.body.data.isReconciled).toBe(false);
+        expect(res.body.data.discrepanciesFound).toBe(true);
+        expect(res.body.data.onHand.isBalanced).toBe(false);
+        expect(res.body.data.onHand.difference).toBe(5);
+        expect(res.body.data.discrepancyOnHand).toBe(5);
+
+        // Revert artificial skew to restore integrity
+        await conn.execute(
+          `UPDATE INVENTORY_BALANCES 
+           SET QTY_ON_HAND = QTY_ON_HAND - 5 
+           WHERE LOCATION_ID = :loc AND PART_ID = :part`,
+          { loc: centralWarehouseLocationId, part: testPartId2 },
+          { autoCommit: true }
+        );
+      } finally {
+        await conn.close();
+      }
+
+      // Re-verify it is balanced again
+      const restoreRes = await request(app)
+        .get(`/api/v1/warehouse/reconcile/${centralWarehouseLocationId}/${testPartId2}`)
+        .set('Cookie', whCookie);
+      expect(restoreRes.body.data.status).toBe('BALANCED');
+      expect(restoreRes.body.data.isReconciled).toBe(true);
+    });
+
+    it('should return valid balanced zero-quantity result for an empty warehouse location', async () => {
+      const res = await request(app)
+        .get(`/api/v1/warehouse/reconcile/${asfLocationId}/${testPartId2}`)
+        .set('Cookie', whCookie);
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.data.status).toBe('BALANCED');
+      expect(res.body.data.isReconciled).toBe(true);
+      expect(res.body.data.onHand.cached).toBe(0);
+      expect(res.body.data.onHand.movementSum).toBe(0);
+      expect(res.body.data.onHand.difference).toBe(0);
+      expect(res.body.data.reserved.cached).toBe(0);
+      expect(res.body.data.reserved.activeReservationSum).toBe(0);
+      expect(res.body.data.reserved.difference).toBe(0);
+    });
+
+    it('should return 404 when location or part does not exist', async () => {
+      const fakeUuid = crypto.randomUUID();
+      const resLoc = await request(app)
+        .get(`/api/v1/warehouse/reconcile/${fakeUuid}/${testPartId2}`)
+        .set('Cookie', whCookie);
+
+      expect(resLoc.status).toBe(404);
+      expect(resLoc.body.error.code).toBe('NOT_FOUND');
+
+      const resPart = await request(app)
+        .get(`/api/v1/warehouse/reconcile/${centralWarehouseLocationId}/${fakeUuid}`)
+        .set('Cookie', whCookie);
+
+      expect(resPart.status).toBe(404);
+      expect(resPart.body.error.code).toBe('NOT_FOUND');
     });
   });
+
 
   // ============================================================================
   // Test Suite 6: Security & RBAC Gating
@@ -655,6 +769,23 @@ describe('Phase 3 — Warehouse & Inventory Logistics', () => {
       expect(res.status).toBe(200);
       expect(res.body.success).toBe(true);
       expect(res.body.data.items).toBeDefined();
+    });
+
+    it('should prevent Call Center user from executing reconciliation (403 Forbidden)', async () => {
+      const res = await request(app)
+        .get(`/api/v1/warehouse/reconcile/${centralWarehouseLocationId}/${testPartId2}`)
+        .set('Cookie', ccCookie);
+
+      expect(res.status).toBe(403);
+      expect(res.body.error.code).toBe('FORBIDDEN');
+    });
+
+    it('should reject unauthenticated reconciliation requests (401 Unauthorized)', async () => {
+      const res = await request(app)
+        .get(`/api/v1/warehouse/reconcile/${centralWarehouseLocationId}/${testPartId2}`);
+
+      expect(res.status).toBe(401);
+      expect(res.body.error.code).toBe('UNAUTHORIZED');
     });
   });
 
@@ -796,6 +927,53 @@ describe('Phase 3 — Warehouse & Inventory Logistics', () => {
       const releasedRes = reservations.items.find((r) => r.requestId === srRequestId);
       expect(releasedRes).toBeDefined();
       expect(releasedRes!.status).toBe('RELEASED');
+    });
+  });
+
+  // ============================================================================
+  // 10. Warehouse Dashboard & KPI Contract Integrity
+  // ============================================================================
+
+  describe('10. Warehouse Dashboard & KPI Contract Integrity', () => {
+    it('returns full structured KPIs, locations, and recent records for authorized Warehouse user', async () => {
+      const res = await request(app)
+        .get('/api/v1/warehouse/dashboard')
+        .set('Cookie', whCookie);
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+
+      const dashboard = res.body.data;
+      expect(dashboard).toBeDefined();
+
+      // Verify nested kpis object
+      expect(dashboard.kpis).toBeDefined();
+      expect(typeof dashboard.kpis.totalStockOnHand).toBe('number');
+      expect(typeof dashboard.kpis.totalStockReserved).toBe('number');
+      expect(typeof dashboard.kpis.totalStockInTransit).toBe('number');
+      expect(typeof dashboard.kpis.totalStockDefective).toBe('number');
+      expect(typeof dashboard.kpis.lowStockPartCount).toBe('number');
+      expect(typeof dashboard.kpis.pendingPartRequestCount).toBe('number');
+      expect(typeof dashboard.kpis.dispatchesPendingArrival).toBe('number');
+
+      // Verify locations array is populated with active locations
+      expect(dashboard.locations).toBeInstanceOf(Array);
+      expect(dashboard.locations.length).toBeGreaterThan(0);
+      expect(dashboard.locations[0]).toHaveProperty('locationId');
+      expect(dashboard.locations[0]).toHaveProperty('locationName');
+
+      // Verify recent records arrays
+      expect(dashboard.recentDispatches).toBeInstanceOf(Array);
+      expect(dashboard.recentGrns).toBeInstanceOf(Array);
+
+      // Verify flat backwards-compatibility properties
+      expect(typeof dashboard.totalOnHandUnits).toBe('number');
+      expect(dashboard.totalOnHandUnits).toBe(dashboard.kpis.totalStockOnHand);
+    });
+
+    it('rejects unauthenticated request to /api/v1/warehouse/dashboard (401)', async () => {
+      const res = await request(app).get('/api/v1/warehouse/dashboard');
+      expect(res.status).toBe(401);
     });
   });
 });

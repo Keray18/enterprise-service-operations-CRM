@@ -17,6 +17,7 @@ import { geographyRouter } from './routes/geographyRoutes.js';
 import { warehouseRouter } from './routes/warehouseRoutes.js';
 import { financeRouter } from './routes/financeRoutes.js';
 import { workspaceRouter } from './routes/workspaceRoutes.js';
+import reportingRouter from './routes/reportingRoutes.js';
 
 export function createApp(): Express {
   const app: Express = express();
@@ -149,6 +150,7 @@ export function createApp(): Express {
   app.use('/api/v1/warehouse', warehouseRouter);
   app.use('/api/v1/finance', financeRouter);
   app.use('/api/v1/workspace', workspaceRouter);
+  app.use('/api/v1/reports', reportingRouter);
 
   // 404 Route Not Found Handler
   app.use((req: Request, _res: Response, next) => {

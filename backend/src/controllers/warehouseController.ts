@@ -505,7 +505,6 @@ export class WarehouseController {
           srp.PART_ENTRY_ID,
           srp.REQUEST_ID,
           sr.JOB_NUMBER,
-          sr.CURRENT_STATE,
           sr.STATUS,
           c.FULL_NAME AS CUSTOMER_NAME,
           c.PRIMARY_MOBILE AS CUSTOMER_PHONE,
@@ -588,16 +587,87 @@ export class WarehouseController {
       const result = await conn.execute<any>(sql, {}, { outFormat: oracledb.OUT_FORMAT_OBJECT });
       const row = result.rows?.[0];
 
+      // Fetch active locations for warehouse operations
+      const locResult = await conn.execute<any>(
+        `SELECT LOCATION_ID, LOCATION_CODE, LOCATION_NAME, PARTY_TYPE
+         FROM LOCATIONS
+         WHERE IS_ACTIVE = 'Y'
+         ORDER BY LOCATION_NAME ASC`,
+        {},
+        { outFormat: oracledb.OUT_FORMAT_OBJECT }
+      );
+      const locations = (locResult.rows || []).map((l: any) => ({
+        locationId: l.LOCATION_ID,
+        locationCode: l.LOCATION_CODE,
+        locationName: l.LOCATION_NAME,
+        partyType: l.PARTY_TYPE,
+      }));
+
+      // Fetch recent dispatches
+      const dispatchesResult = await conn.execute<any>(
+        `SELECT DISPATCH_ID, DISPATCH_NUMBER, FROM_LOCATION_ID, TO_LOCATION_ID,
+                DOCUMENT_TYPE, STATUS, DISPATCH_DATE, CREATED_AT
+         FROM STOCK_DISPATCHES
+         ORDER BY CREATED_AT DESC
+         FETCH FIRST 5 ROWS ONLY`,
+        {},
+        { outFormat: oracledb.OUT_FORMAT_OBJECT }
+      );
+      const recentDispatches = (dispatchesResult.rows || []).map((d: any) => ({
+        dispatchId: d.DISPATCH_ID,
+        dispatchNumber: d.DISPATCH_NUMBER,
+        fromLocationId: d.FROM_LOCATION_ID,
+        toLocationId: d.TO_LOCATION_ID,
+        documentType: d.DOCUMENT_TYPE,
+        status: d.STATUS,
+        dispatchedAt: d.DISPATCH_DATE ? new Date(d.DISPATCH_DATE).toISOString() : undefined,
+      }));
+
+      // Fetch recent goods receipts
+      const grnsResult = await conn.execute<any>(
+        `SELECT GRN_ID, GRN_NUMBER, RECEIVING_LOCATION_ID, SUPPLIER_NAME,
+                SUPPLIER_INVOICE_NO, STATUS, CREATED_AT
+         FROM GOODS_RECEIPTS
+         ORDER BY CREATED_AT DESC
+         FETCH FIRST 5 ROWS ONLY`,
+        {},
+        { outFormat: oracledb.OUT_FORMAT_OBJECT }
+      );
+      const recentGrns = (grnsResult.rows || []).map((g: any) => ({
+        grnId: g.GRN_ID,
+        grnNumber: g.GRN_NUMBER,
+        receivingLocationId: g.RECEIVING_LOCATION_ID,
+        supplierName: g.SUPPLIER_NAME,
+        supplierInvoiceNo: g.SUPPLIER_INVOICE_NO,
+        status: g.STATUS,
+        createdAt: new Date(g.CREATED_AT).toISOString(),
+      }));
+
+      const kpis = {
+        totalStockOnHand: Number(row?.TOTAL_ON_HAND_UNITS || 0),
+        totalStockReserved: Number(row?.TOTAL_RESERVED_UNITS || 0),
+        totalStockInTransit: Number(row?.TOTAL_IN_TRANSIT_UNITS || 0),
+        totalStockDefective: Number(row?.TOTAL_DEFECTIVE_UNITS || 0),
+        lowStockPartCount: Number(row?.LOW_STOCK_COUNT || 0),
+        pendingPartRequestCount: Number(row?.PENDING_PNA_JOBS_COUNT || 0),
+        dispatchesPendingArrival: Number(row?.ACTIVE_DISPATCHES_COUNT || 0),
+      };
+
       sendSuccess(res, {
+        kpis,
+        locations,
+        recentDispatches,
+        recentGrns,
+        // Flat backward-compatibility fields
         totalSkus: Number(row?.TOTAL_SKUS || 0),
-        lowStockCount: Number(row?.LOW_STOCK_COUNT || 0),
-        totalOnHandUnits: Number(row?.TOTAL_ON_HAND_UNITS || 0),
-        totalReservedUnits: Number(row?.TOTAL_RESERVED_UNITS || 0),
-        totalInTransitUnits: Number(row?.TOTAL_IN_TRANSIT_UNITS || 0),
-        totalDefectiveUnits: Number(row?.TOTAL_DEFECTIVE_UNITS || 0),
-        activeDispatchesCount: Number(row?.ACTIVE_DISPATCHES_COUNT || 0),
+        lowStockCount: kpis.lowStockPartCount,
+        totalOnHandUnits: kpis.totalStockOnHand,
+        totalReservedUnits: kpis.totalStockReserved,
+        totalInTransitUnits: kpis.totalStockInTransit,
+        totalDefectiveUnits: kpis.totalStockDefective,
+        activeDispatchesCount: kpis.dispatchesPendingArrival,
         quarantineReturnsCount: Number(row?.QUARANTINE_RETURNS_COUNT || 0),
-        pendingPnaJobsCount: Number(row?.PENDING_PNA_JOBS_COUNT || 0),
+        pendingPnaJobsCount: kpis.pendingPartRequestCount,
       });
     } catch (err: any) {
       sendError(res, err.message, err.statusCode || 500, err.code || 'INTERNAL_ERROR');

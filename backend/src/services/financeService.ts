@@ -442,12 +442,47 @@ export class FinanceService {
     },
     actor: AuthenticatedUser
   ): Promise<ServiceClaimRecord> {
+    // 1. Strict claim period validation
+    if (!Number.isInteger(input.claimMonth) || input.claimMonth < 1 || input.claimMonth > 12) {
+      throw new AppError(
+        `Invalid claim period month (${input.claimMonth}). Month must be an integer between 1 and 12.`,
+        400,
+        'INVALID_CLAIM_PERIOD'
+      );
+    }
+    if (!Number.isInteger(input.claimYear) || input.claimYear < 2020 || input.claimYear > 2035) {
+      throw new AppError(
+        `Invalid claim period year (${input.claimYear}). Year must be an integer between 2020 and 2035.`,
+        400,
+        'INVALID_CLAIM_PERIOD'
+      );
+    }
+
     const conn = await getOracleConnection();
 
     try {
+      // 2. Prevent duplicate batch generation for the same period
+      const existingBatch = await serviceClaimRepository.findExistingBatch(
+        input.asfLocationId,
+        input.brandId,
+        input.claimMonth,
+        input.claimYear,
+        conn
+      );
+      if (existingBatch) {
+        throw new AppError(
+          `A service claim batch (${existingBatch.claimNumber}) already exists for this ASF, brand, and period (${input.claimMonth}/${input.claimYear}) in status '${existingBatch.status}'.`,
+          409,
+          'DUPLICATE_CLAIM_BATCH'
+        );
+      }
+
+      // 3. Find eligible closed jobs on or before the claim period
       const eligibleJobs = await serviceClaimRepository.findEligibleJobsForClaims(
         input.asfLocationId,
         input.brandId,
+        input.claimMonth,
+        input.claimYear,
         conn
       );
 
@@ -477,24 +512,40 @@ export class FinanceService {
         travelAmount: number;
         penaltyAmount: number;
         netLineAmount: number;
+        auditStatus?: 'VERIFIED' | 'FLAGGED' | 'REJECTED';
+        auditNote?: string;
       }> = [];
 
       for (const job of eligibleJobs) {
         // Look up rates from commercial rate matrix
         const rate = await claimRateMatrixRepository.findRate(job.brandId, job.productId, job.callType, conn);
 
-        const baseLabor = rate ? rate.aspLaborPrice : 350.0; // fallback standard repair labor
-        const tatThreshold = rate ? rate.tatHoursThreshold : 48;
-        const onTimePct = rate ? rate.tatOnTimePercentage : 100;
-        const delayPct = rate ? rate.tatDelayPercentage : 80;
+        let baseLabor = 0.0;
+        let claimableLabor = 0.0;
+        let travelAmount = 0.0;
+        let travelKm = 0.0;
+        let tatAppliedPercentage = 100.0;
+        let auditStatus: 'VERIFIED' | 'FLAGGED' = 'VERIFIED';
+        let auditNote: string | undefined;
 
-        const tatAppliedPercentage = job.tatHours <= tatThreshold ? onTimePct : delayPct;
-        const claimableLabor = Math.round(baseLabor * (tatAppliedPercentage / 100) * 100) / 100;
+        if (!rate) {
+          // Commercial rate matrix missing for Brand + Product + CallType
+          // Do not invent financial rates; flag item for human review
+          auditStatus = 'FLAGGED';
+          auditNote = `Commercial rate matrix configuration missing for Brand (${job.brandId}), Product (${job.productId}), CallType (${job.callType}). Requires manual audit authorization.`;
+        } else {
+          baseLabor = rate.aspLaborPrice;
+          const tatThreshold = rate.tatHoursThreshold;
+          const onTimePct = rate.tatOnTimePercentage;
+          const delayPct = rate.tatDelayPercentage;
 
-        // Baseline travel allowance: 10km standard local radius @ ratePerKm
-        const travelRatePerKm = rate ? rate.travelRatePerKm : 5.0;
-        const travelKm = 10.0;
-        const travelAmount = Math.round(travelKm * travelRatePerKm * 100) / 100;
+          tatAppliedPercentage = job.tatHours <= tatThreshold ? onTimePct : delayPct;
+          claimableLabor = Math.round(baseLabor * (tatAppliedPercentage / 100) * 100) / 100;
+
+          // Standard local travel radius @ ratePerKm
+          travelKm = 10.0;
+          travelAmount = Math.round(travelKm * rate.travelRatePerKm * 100) / 100;
+        }
 
         const netLineAmount = Math.round((claimableLabor + travelAmount) * 100) / 100;
 
@@ -515,12 +566,15 @@ export class FinanceService {
           travelAmount,
           penaltyAmount: 0.0,
           netLineAmount,
+          auditStatus,
+          auditNote,
         });
       }
 
       grossLaborAmount = Math.round(grossLaborAmount * 100) / 100;
       grossTravelAmount = Math.round(grossTravelAmount * 100) / 100;
       const netClaimAmount = Math.round((grossLaborAmount + grossTravelAmount - penaltyDeductionAmount) * 100) / 100;
+
 
       const claim = await serviceClaimRepository.createClaimBatch(
         {
@@ -562,6 +616,8 @@ export class FinanceService {
         auditStatus: 'VERIFIED' | 'FLAGGED' | 'REJECTED';
         auditNote?: string;
         deductionAmount?: number;
+        authorizedLaborRate?: number;
+        authorizedTravelAmount?: number;
       }>;
     },
     actor: AuthenticatedUser
@@ -592,17 +648,73 @@ export class FinanceService {
       }
 
       if (input.action === 'APPROVE') {
-        let totalDeductions = 0;
+        const lineItems = claim.lineItems || [];
+        const adjustmentsMap = new Map((input.lineItemAdjustments || []).map((a) => [a.itemId, a]));
 
-        if (input.lineItemAdjustments && input.lineItemAdjustments.length > 0) {
-          for (const adj of input.lineItemAdjustments) {
-            if (adj.deductionAmount && adj.deductionAmount > 0) {
-              totalDeductions += adj.deductionAmount;
+        // Invariant: Missing commercial rate line items (FLAGGED) cannot silently become payable claims!
+        // Every FLAGGED line item must be explicitly resolved with authorized rate or rejected.
+        const unresolvedFlagged = lineItems.filter((item) => {
+          if (item.auditStatus !== 'FLAGGED') return false;
+          const adj = adjustmentsMap.get(item.itemId);
+          return !adj || adj.auditStatus === 'FLAGGED';
+        });
+
+        if (unresolvedFlagged.length > 0) {
+          const flaggedJobNumbers = unresolvedFlagged.map((i) => `#${i.jobNumber}`).join(', ');
+          throw new AppError(
+            `Cannot approve claim batch containing ${unresolvedFlagged.length} unresolved FLAGGED line item(s) (${flaggedJobNumbers}). Commercial rate is missing or unverified. Every flagged line item must be explicitly authorized with rate adjustments or rejected before approval.`,
+            400,
+            'UNRESOLVED_FLAGGED_LINE_ITEMS'
+          );
+        }
+
+        // Apply line item adjustments to database
+        let totalDeductions = 0;
+        let runningNetClaim = 0;
+
+        for (const item of lineItems) {
+          const adj = adjustmentsMap.get(item.itemId);
+          if (adj) {
+            let labor = item.claimableLaborAmount;
+            let travel = item.travelAmount;
+            let deduction = adj.deductionAmount ?? 0;
+
+            if (adj.authorizedLaborRate !== undefined) {
+              labor = adj.authorizedLaborRate;
             }
+            if (adj.authorizedTravelAmount !== undefined) {
+              travel = adj.authorizedTravelAmount;
+            }
+
+            let itemNet = Math.max(0, Math.round((labor + travel - deduction) * 100) / 100);
+            if (adj.auditStatus === 'REJECTED') {
+              itemNet = 0;
+              deduction = item.baseLaborAmount + item.travelAmount;
+            }
+
+            totalDeductions += deduction;
+            runningNetClaim += itemNet;
+
+            await serviceClaimRepository.updateClaimLineItem(
+              item.itemId,
+              {
+                auditStatus: adj.auditStatus,
+                auditNote: adj.auditNote ?? item.auditNote,
+                deductionAmount: deduction,
+                claimableLaborAmount: labor,
+                travelAmount: travel,
+                netLineAmount: itemNet,
+              },
+              conn
+            );
+          } else {
+            runningNetClaim += item.netLineAmount;
+            totalDeductions += item.penaltyAmount;
           }
         }
 
-        const approvedNetClaim = Math.max(0, Math.round((claim.netClaimAmount - totalDeductions) * 100) / 100);
+        const approvedNetClaim = lineItems.length > 0 ? Math.max(0, Math.round(runningNetClaim * 100) / 100) : claim.netClaimAmount;
+        const approvedDeductions = lineItems.length > 0 ? totalDeductions : claim.penaltyDeductionAmount;
 
         // Check Brand Wallet Balance if Brand is specified
         if (claim.brandId) {
@@ -700,7 +812,7 @@ export class FinanceService {
               approvedAt: new Date(),
               journalId: journal.journalId,
               netClaimAmount: approvedNetClaim,
-              penaltyDeductionAmount: totalDeductions,
+              penaltyDeductionAmount: approvedDeductions,
             },
             conn
           );
@@ -823,6 +935,8 @@ export class FinanceService {
       action: 'APPROVE' | 'WAIVE' | 'DISPUTE';
       reviewRemarks: string;
       waiverPercentage?: number;
+      authorizedAmount?: number;
+      policyReference?: string;
     },
     actor: AuthenticatedUser
   ): Promise<SlaPenaltyRecord> {
@@ -844,11 +958,34 @@ export class FinanceService {
 
       let newStatus: PenaltyStatus = 'APPROVED';
       let calculatedAmount = penalty.calculatedAmount;
+      let policyVersion = penalty.policyVersion || 'UNCONFIGURED';
+      let configStatus = penalty.configStatus || 'AWAITING_POLICY_CONFIGURATION';
 
-      if (input.action === 'WAIVE') {
+      if (input.action === 'APPROVE') {
+        // Enforce Financial Invariant: Missing or unapproved penalty amounts cannot silently become posted financial amounts.
+        // Human approval cannot bypass missing financial policy or required configuration.
+        const isUnconfigured = configStatus === 'AWAITING_POLICY_CONFIGURATION' || calculatedAmount <= 0;
+        if (isUnconfigured) {
+          if (!input.authorizedAmount || input.authorizedAmount <= 0 || !input.policyReference) {
+            throw new AppError(
+              'Cannot approve penalty: SLA penalty amount is awaiting policy configuration. To approve a monetary deduction, an authorized commercial rate (> 0) and policy version reference must be explicitly provided.',
+              400,
+              'MISSING_POLICY_CONFIGURATION'
+            );
+          }
+          calculatedAmount = input.authorizedAmount;
+          policyVersion = input.policyReference;
+          configStatus = 'CONFIGURED';
+        } else if (input.authorizedAmount && input.authorizedAmount > 0) {
+          calculatedAmount = input.authorizedAmount;
+          if (input.policyReference) policyVersion = input.policyReference;
+        }
+      } else if (input.action === 'WAIVE') {
         newStatus = 'WAIVED';
         const waiverPct = input.waiverPercentage !== undefined ? input.waiverPercentage : 100;
         calculatedAmount = Math.round(penalty.calculatedAmount * (1 - waiverPct / 100) * 100) / 100;
+        configStatus = 'EXEMPT';
+        if (input.policyReference) policyVersion = input.policyReference;
       } else if (input.action === 'DISPUTE') {
         newStatus = 'DISPUTED';
       }
@@ -861,6 +998,8 @@ export class FinanceService {
           reviewedByUsername: actor.username,
           reviewRemarks: input.reviewRemarks,
           calculatedAmount,
+          policyVersion,
+          configStatus,
         },
         conn
       );

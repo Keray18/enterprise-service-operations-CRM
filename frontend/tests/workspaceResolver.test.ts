@@ -142,5 +142,35 @@ describe('Role-Based Landing Page Resolver (P0 Fix)', () => {
       expect(isAuthorizedForPath(eng, '/call-center')).toBe(false);
       expect(isAuthorizedForPath(eng, '/warehouse')).toBe(false);
     });
+
+    it('should deny /admin and /admin/masters for Call Center user even with masters:read permission', () => {
+      const ccWithMastersRead = createMockUser(
+        ['CALL_CENTER'],
+        ['calls:read', 'calls:create', 'calls:update', 'masters:read']
+      );
+      expect(isAuthorizedForPath(ccWithMastersRead, '/call-center')).toBe(true);
+      expect(isAuthorizedForPath(ccWithMastersRead, '/admin')).toBe(false);
+      expect(isAuthorizedForPath(ccWithMastersRead, '/admin/masters')).toBe(false);
+    });
+
+    it('should deny /admin and /admin/masters for Warehouse user with masters:read', () => {
+      const whWithMastersRead = createMockUser(
+        ['WAREHOUSE'],
+        ['inventory:read', 'inventory:manage', 'masters:read']
+      );
+      expect(isAuthorizedForPath(whWithMastersRead, '/warehouse')).toBe(true);
+      expect(isAuthorizedForPath(whWithMastersRead, '/admin')).toBe(false);
+      expect(isAuthorizedForPath(whWithMastersRead, '/admin/masters')).toBe(false);
+    });
+
+    it('should not resolve default workspace to /admin for user with only masters:read', () => {
+      const userWithOnlyMastersRead = createMockUser([], ['masters:read']);
+      expect(resolveDefaultWorkspace(userWithOnlyMastersRead)).toBeNull();
+    });
+
+    it('should resolve default workspace to /admin for user with masters:manage', () => {
+      const userWithMastersManage = createMockUser([], ['masters:manage']);
+      expect(resolveDefaultWorkspace(userWithMastersManage)).toBe('/admin');
+    });
   });
 });

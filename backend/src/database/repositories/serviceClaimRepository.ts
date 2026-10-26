@@ -45,9 +45,56 @@ export class ServiceClaimRepository {
     }
   }
 
+  async findExistingBatch(
+    asfLocationId: string,
+    brandId: string | undefined,
+    claimMonth: number,
+    claimYear: number,
+    conn?: oracledb.Connection
+  ): Promise<{ claimId: string; claimNumber: string; status: ClaimStatus } | null> {
+    const isExternalConn = Boolean(conn);
+    const connection = conn || (await getOracleConnection());
+
+    try {
+      const binds: Record<string, any> = { asfLocationId, claimMonth, claimYear };
+      let brandFilter = 'AND sc.BRAND_ID IS NULL';
+
+      if (brandId) {
+        binds.brandId = brandId;
+        brandFilter = 'AND sc.BRAND_ID = :brandId';
+      }
+
+      const sql = `
+        SELECT sc.CLAIM_ID, sc.CLAIM_NUMBER, sc.STATUS
+        FROM SERVICE_CLAIMS sc
+        WHERE sc.ASF_LOCATION_ID = :asfLocationId
+          AND sc.CLAIM_MONTH = :claimMonth
+          AND sc.CLAIM_YEAR = :claimYear
+          ${brandFilter}
+          AND sc.STATUS != 'REJECTED'
+      `;
+
+      const result = await connection.execute<any>(sql, binds, { outFormat: oracledb.OUT_FORMAT_OBJECT });
+      const row = result.rows?.[0];
+      if (!row) return null;
+
+      return {
+        claimId: row.CLAIM_ID,
+        claimNumber: row.CLAIM_NUMBER,
+        status: row.STATUS as ClaimStatus,
+      };
+    } finally {
+      if (!isExternalConn) {
+        await connection.close();
+      }
+    }
+  }
+
   async findEligibleJobsForClaims(
     asfLocationId: string,
     brandId?: string,
+    claimMonth?: number,
+    claimYear?: number,
     conn?: oracledb.Connection
   ): Promise<
     Array<{
@@ -68,10 +115,17 @@ export class ServiceClaimRepository {
     try {
       const binds: Record<string, any> = { asfLocationId };
       let brandFilter = '';
+      let periodFilter = '';
 
       if (brandId) {
         binds.brandId = brandId;
         brandFilter = 'AND sr.BRAND_ID = :brandId';
+      }
+
+      if (claimMonth && claimYear) {
+        const periodStartStr = `${claimYear}-${String(claimMonth).padStart(2, '0')}-01`;
+        binds.periodStart = periodStartStr;
+        periodFilter = `AND sr.CLOSED_AT < ADD_MONTHS(TO_DATE(:periodStart, 'YYYY-MM-DD'), 1)`;
       }
 
       // Only jobs that are CLOSED with Happy Code verified or authorized supervisor closure
@@ -87,6 +141,7 @@ export class ServiceClaimRepository {
           AND sr.STATUS = 'CLOSED'
           AND (srv.HAPPY_CODE_VERIFIED_AT IS NOT NULL OR sr.SUPERVISOR_OVERRIDE_REASON IS NOT NULL)
           ${brandFilter}
+          ${periodFilter}
           AND NOT EXISTS (
             SELECT 1 FROM CLAIM_LINE_ITEMS cli
             JOIN SERVICE_CLAIMS sc ON cli.CLAIM_ID = sc.CLAIM_ID
@@ -157,10 +212,19 @@ export class ServiceClaimRepository {
     },
     conn: oracledb.Connection
   ): Promise<ServiceClaimRecord> {
+    if (!data.claimMonth || data.claimMonth < 1 || data.claimMonth > 12) {
+      throw new Error(`Invalid claimMonth: ${data.claimMonth}. Month must be between 1 and 12.`);
+    }
+    const maxYear = new Date().getFullYear() + 1;
+    if (!data.claimYear || data.claimYear < 2020 || data.claimYear > maxYear) {
+      throw new Error(`Invalid claimYear: ${data.claimYear}. Year must be between 2020 and ${maxYear}.`);
+    }
+
     const claimId = crypto.randomUUID();
     const dateStr = `${data.claimYear}${String(data.claimMonth).padStart(2, '0')}`;
     const randPart = crypto.randomBytes(3).toString('hex').toUpperCase();
     const claimNumber = `CLM-${dateStr}-${randPart}`;
+
 
     const insertClaimSql = `
       INSERT INTO SERVICE_CLAIMS (
@@ -610,6 +674,40 @@ export class ServiceClaimRepository {
       netClaimAmount: data.netClaimAmount !== undefined ? data.netClaimAmount : null,
       penaltyDeductionAmount: data.penaltyDeductionAmount !== undefined ? data.penaltyDeductionAmount : null,
       claimId,
+    });
+  }
+
+  async updateClaimLineItem(
+    itemId: string,
+    data: {
+      auditStatus: 'VERIFIED' | 'FLAGGED' | 'REJECTED';
+      auditNote?: string;
+      deductionAmount?: number;
+      claimableLaborAmount?: number;
+      travelAmount?: number;
+      netLineAmount?: number;
+    },
+    conn: oracledb.Connection
+  ): Promise<void> {
+    const sql = `
+      UPDATE CLAIM_LINE_ITEMS
+      SET AUDIT_STATUS = :auditStatus,
+          AUDIT_NOTE = NVL(:auditNote, AUDIT_NOTE),
+          PENALTY_AMOUNT = NVL(:deductionAmount, PENALTY_AMOUNT),
+          CLAIMABLE_LABOR_AMOUNT = NVL(:claimableLaborAmount, CLAIMABLE_LABOR_AMOUNT),
+          TRAVEL_AMOUNT = NVL(:travelAmount, TRAVEL_AMOUNT),
+          NET_LINE_AMOUNT = NVL(:netLineAmount, NET_LINE_AMOUNT)
+      WHERE ITEM_ID = :itemId
+    `;
+
+    await conn.execute(sql, {
+      auditStatus: data.auditStatus,
+      auditNote: data.auditNote || null,
+      deductionAmount: data.deductionAmount !== undefined ? data.deductionAmount : null,
+      claimableLaborAmount: data.claimableLaborAmount !== undefined ? data.claimableLaborAmount : null,
+      travelAmount: data.travelAmount !== undefined ? data.travelAmount : null,
+      netLineAmount: data.netLineAmount !== undefined ? data.netLineAmount : null,
+      itemId,
     });
   }
 }

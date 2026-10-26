@@ -1,5 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { apiClient } from '../src/lib/apiClient';
+import { normalizeReconcileResult } from '../src/lib/warehouseApi';
 
 describe('Phase 3 Warehouse & Inventory Logistics Frontend API Tests', () => {
   beforeEach(() => {
@@ -36,6 +37,75 @@ describe('Phase 3 Warehouse & Inventory Logistics Frontend API Tests', () => {
 
       expect(getSpy).toHaveBeenCalledWith('/api/v1/warehouse/dashboard');
       expect(res).toEqual(mockDashboard);
+    });
+
+    it('handles empty warehouse with valid zero-valued KPI structure', async () => {
+      const emptyDashboard = {
+        kpis: {
+          totalStockOnHand: 0,
+          totalStockReserved: 0,
+          totalStockInTransit: 0,
+          totalStockDefective: 0,
+          lowStockPartCount: 0,
+          pendingPartRequestCount: 0,
+          dispatchesPendingArrival: 0,
+        },
+        locations: [],
+        recentDispatches: [],
+        recentGrns: [],
+      };
+
+      vi.spyOn(apiClient, 'get').mockResolvedValue(emptyDashboard);
+      const res = await apiClient.get('/api/v1/warehouse/dashboard');
+      expect(res).toEqual(emptyDashboard);
+      expect((res as any).kpis.totalStockOnHand).toBe(0);
+      expect((res as any).kpis.totalStockReserved).toBe(0);
+    });
+
+    it('handles flat legacy response DTO by normalizing into expected KPI contract', async () => {
+      const flatDashboard = {
+        totalSkus: 10,
+        lowStockCount: 2,
+        totalOnHandUnits: 80,
+        totalReservedUnits: 5,
+        totalInTransitUnits: 3,
+        totalDefectiveUnits: 1,
+        activeDispatchesCount: 2,
+        quarantineReturnsCount: 1,
+        pendingPnaJobsCount: 4,
+      };
+
+      vi.spyOn(apiClient, 'get').mockResolvedValue(flatDashboard);
+      const raw = await apiClient.get<any>('/api/v1/warehouse/dashboard');
+
+      // Emulate normalization logic in useWarehouseDashboard
+      const rawKpis = raw.kpis || {
+        totalStockOnHand: raw.totalOnHandUnits,
+        totalStockReserved: raw.totalReservedUnits,
+        totalStockInTransit: raw.totalInTransitUnits,
+        totalStockDefective: raw.totalDefectiveUnits,
+        lowStockPartCount: raw.lowStockCount,
+        pendingPartRequestCount: raw.pendingPnaJobsCount,
+        dispatchesPendingArrival: raw.activeDispatchesCount,
+      };
+
+      const normalized = {
+        kpis: {
+          totalStockOnHand: Number(rawKpis.totalStockOnHand ?? 0),
+          totalStockReserved: Number(rawKpis.totalStockReserved ?? 0),
+          totalStockInTransit: Number(rawKpis.totalStockInTransit ?? 0),
+          totalStockDefective: Number(rawKpis.totalStockDefective ?? 0),
+          lowStockPartCount: Number(rawKpis.lowStockPartCount ?? 0),
+          pendingPartRequestCount: Number(rawKpis.pendingPartRequestCount ?? 0),
+          dispatchesPendingArrival: Number(rawKpis.dispatchesPendingArrival ?? 0),
+        },
+        locations: Array.isArray(raw.locations) ? raw.locations : [],
+      };
+
+      expect(normalized.kpis.totalStockOnHand).toBe(80);
+      expect(normalized.kpis.totalStockReserved).toBe(5);
+      expect(normalized.kpis.lowStockPartCount).toBe(2);
+      expect(normalized.locations).toEqual([]);
     });
 
     it('queries stock balances with location and low stock filters', async () => {
@@ -347,4 +417,181 @@ describe('Phase 3 Warehouse & Inventory Logistics Frontend API Tests', () => {
       expect(res).toEqual(mockMovementsResult);
     });
   });
+
+  describe('8. Inventory Stock Reconciliation Engine & Response Normalization', () => {
+    it('normalizes complete structured balanced reconciliation payload', () => {
+      const serverPayload = {
+        locationId: 'loc-wh-01',
+        locationName: 'Central Regional Logistics Warehouse',
+        locationCode: 'WH-CENTRAL',
+        partId: 'part-01',
+        partCode: 'PART-A',
+        partName: 'Water Pump Assembly',
+        status: 'BALANCED',
+        isReconciled: true,
+        discrepanciesFound: false,
+        lastCheckedAt: '2026-10-25T10:00:00.000Z',
+        onHand: {
+          cached: 50,
+          movementSum: 50,
+          difference: 0,
+          isBalanced: true,
+        },
+        reserved: {
+          cached: 10,
+          activeReservationSum: 10,
+          difference: 0,
+          isBalanced: true,
+        },
+        cachedOnHand: 50,
+        ledgerOnHand: 50,
+        discrepancyOnHand: 0,
+        cachedReserved: 10,
+        activeReserved: 10,
+        discrepancyReserved: 0,
+      };
+
+      const normalized = normalizeReconcileResult(serverPayload);
+
+      expect(normalized.status).toBe('BALANCED');
+      expect(normalized.isReconciled).toBe(true);
+      expect(normalized.discrepanciesFound).toBe(false);
+      expect(normalized.onHand.cached).toBe(50);
+      expect(normalized.onHand.movementSum).toBe(50);
+      expect(normalized.onHand.difference).toBe(0);
+      expect(normalized.onHand.isBalanced).toBe(true);
+      expect(normalized.reserved.cached).toBe(10);
+      expect(normalized.reserved.activeReservationSum).toBe(10);
+      expect(normalized.reserved.difference).toBe(0);
+      expect(normalized.reserved.isBalanced).toBe(true);
+    });
+
+    it('normalizes structured discrepancy payload with accurate variance', () => {
+      const discrepancyPayload = {
+        locationId: 'loc-wh-01',
+        locationName: 'Central Logistics Warehouse',
+        partId: 'part-01',
+        partCode: 'PART-A',
+        partName: 'Water Pump Assembly',
+        status: 'DISCREPANCY_DETECTED',
+        isReconciled: false,
+        discrepanciesFound: true,
+        lastCheckedAt: '2026-10-25T10:00:00.000Z',
+        onHand: {
+          cached: 50,
+          movementSum: 52,
+          difference: -2,
+          isBalanced: false,
+        },
+        reserved: {
+          cached: 10,
+          activeReservationSum: 9,
+          difference: 1,
+          isBalanced: false,
+        },
+        cachedOnHand: 50,
+        ledgerOnHand: 52,
+        discrepancyOnHand: -2,
+        cachedReserved: 10,
+        activeReserved: 9,
+        discrepancyReserved: 1,
+      };
+
+      const normalized = normalizeReconcileResult(discrepancyPayload);
+
+      expect(normalized.status).toBe('DISCREPANCY_DETECTED');
+      expect(normalized.isReconciled).toBe(false);
+      expect(normalized.discrepanciesFound).toBe(true);
+      expect(normalized.onHand.difference).toBe(-2);
+      expect(normalized.onHand.isBalanced).toBe(false);
+      expect(normalized.reserved.difference).toBe(1);
+      expect(normalized.reserved.isBalanced).toBe(false);
+    });
+
+    it('normalizes legacy flat response DTO into structured frontend contract', () => {
+      const flatPayload = {
+        locationId: 'loc-wh-01',
+        locationName: 'Central Logistics Warehouse',
+        partId: 'part-01',
+        partCode: 'PART-A',
+        partName: 'Water Pump Assembly',
+        cachedOnHand: 40,
+        ledgerOnHand: 40,
+        discrepancyOnHand: 0,
+        cachedReserved: 5,
+        activeReserved: 5,
+        discrepancyReserved: 0,
+        isReconciled: true,
+        lastCheckedAt: '2026-10-25T10:00:00.000Z',
+      };
+
+      const normalized = normalizeReconcileResult(flatPayload);
+
+      expect(normalized.status).toBe('BALANCED');
+      expect(normalized.isReconciled).toBe(true);
+      expect(normalized.discrepanciesFound).toBe(false);
+      expect(normalized.onHand).toBeDefined();
+      expect(normalized.onHand.cached).toBe(40);
+      expect(normalized.onHand.movementSum).toBe(40);
+      expect(normalized.onHand.difference).toBe(0);
+      expect(normalized.onHand.isBalanced).toBe(true);
+      expect(normalized.reserved).toBeDefined();
+      expect(normalized.reserved.cached).toBe(5);
+      expect(normalized.reserved.activeReservationSum).toBe(5);
+      expect(normalized.reserved.difference).toBe(0);
+      expect(normalized.reserved.isBalanced).toBe(true);
+    });
+
+    it('normalizes valid empty inventory (0 stock) correctly', () => {
+      const emptyPayload = {
+        locationId: 'loc-wh-01',
+        locationName: 'Central Logistics Warehouse',
+        partId: 'part-empty',
+        partCode: 'PART-EMPTY',
+        partName: 'New Part With Zero Stock',
+        cachedOnHand: 0,
+        ledgerOnHand: 0,
+        discrepancyOnHand: 0,
+        cachedReserved: 0,
+        activeReserved: 0,
+        discrepancyReserved: 0,
+        isReconciled: true,
+      };
+
+      const normalized = normalizeReconcileResult(emptyPayload);
+
+      expect(normalized.status).toBe('BALANCED');
+      expect(normalized.isReconciled).toBe(true);
+      expect(normalized.onHand.cached).toBe(0);
+      expect(normalized.onHand.movementSum).toBe(0);
+      expect(normalized.onHand.difference).toBe(0);
+      expect(normalized.onHand.isBalanced).toBe(true);
+      expect(normalized.reserved.cached).toBe(0);
+      expect(normalized.reserved.activeReservationSum).toBe(0);
+      expect(normalized.reserved.difference).toBe(0);
+      expect(normalized.reserved.isBalanced).toBe(true);
+    });
+
+    it('rejects malformed payload missing balance data by throwing data-contract error', () => {
+      const malformedPayload = {
+        locationId: 'loc-wh-01',
+        partId: 'part-01',
+        // missing onHand and cachedOnHand
+      };
+
+      expect(() => normalizeReconcileResult(malformedPayload)).toThrow(
+        /Data contract error: Reconciliation response missing onHand balance data/
+      );
+    });
+
+    it('rejects null or non-object payload by throwing data-contract error', () => {
+      expect(() => normalizeReconcileResult(null)).toThrow(
+        /Data contract error: Received empty or invalid reconciliation payload/
+      );
+      expect(() => normalizeReconcileResult('invalid string')).toThrow(
+        /Data contract error: Received empty or invalid reconciliation payload/
+      );
+    });
+  });
 });
+

@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import oracledb from 'oracledb';
 import { InventoryBalanceRecord, InventoryReconciliationRecord } from '../../types/inventory.js';
+import { AppError } from '../../middleware/errorHandler.js';
 import { getOracleConnection } from '../oraclePool.js';
 
 export class InventoryRepository {
@@ -346,6 +347,36 @@ export class InventoryRepository {
       const cachedOnHand = balance ? balance.qtyOnHand : 0;
       const cachedReserved = balance ? balance.qtyReserved : 0;
 
+      let locationName = balance?.locationName;
+      let locationCode = balance?.locationCode;
+      let partCode = balance?.partCode;
+      let partName = balance?.partName;
+
+      if (!balance) {
+        // Scope existence verification for valid empty inventory
+        const locRes = await connection.execute<any>(
+          `SELECT LOCATION_NAME, LOCATION_CODE FROM LOCATIONS WHERE LOCATION_ID = :locationId`,
+          { locationId },
+          { outFormat: oracledb.OUT_FORMAT_OBJECT }
+        );
+        if (!locRes.rows?.[0]) {
+          throw new AppError(`Location '${locationId}' not found.`, 404, 'NOT_FOUND');
+        }
+        locationName = locRes.rows[0].LOCATION_NAME;
+        locationCode = locRes.rows[0].LOCATION_CODE;
+
+        const partRes = await connection.execute<any>(
+          `SELECT PART_CODE, PART_NAME FROM PART_CODES WHERE PART_ID = :partId`,
+          { partId },
+          { outFormat: oracledb.OUT_FORMAT_OBJECT }
+        );
+        if (!partRes.rows?.[0]) {
+          throw new AppError(`Part '${partId}' not found.`, 404, 'NOT_FOUND');
+        }
+        partCode = partRes.rows[0].PART_CODE;
+        partName = partRes.rows[0].PART_NAME;
+      }
+
       // 2. Calculate net sum from immutable movement ledger
       const ledgerSql = `
         SELECT 
@@ -375,22 +406,40 @@ export class InventoryRepository {
 
       const discrepancyOnHand = cachedOnHand - ledgerOnHand;
       const discrepancyReserved = cachedReserved - activeReserved;
-      const isReconciled = discrepancyOnHand === 0 && discrepancyReserved === 0;
+      const isBalancedOnHand = discrepancyOnHand === 0;
+      const isBalancedReserved = discrepancyReserved === 0;
+      const isReconciled = isBalancedOnHand && isBalancedReserved;
+      const status: 'BALANCED' | 'DISCREPANCY_DETECTED' = isReconciled ? 'BALANCED' : 'DISCREPANCY_DETECTED';
 
       return {
         locationId,
-        locationName: balance?.locationName || locationId,
+        locationName: locationName || locationId,
+        locationCode: locationCode || undefined,
         partId,
-        partCode: balance?.partCode || partId,
-        partName: balance?.partName || 'Unknown Part',
+        partCode: partCode || partId,
+        partName: partName || 'Unknown Part',
+        status,
+        isReconciled,
+        discrepanciesFound: !isReconciled,
+        lastCheckedAt: new Date(),
+        onHand: {
+          cached: cachedOnHand,
+          movementSum: ledgerOnHand,
+          difference: discrepancyOnHand,
+          isBalanced: isBalancedOnHand,
+        },
+        reserved: {
+          cached: cachedReserved,
+          activeReservationSum: activeReserved,
+          difference: discrepancyReserved,
+          isBalanced: isBalancedReserved,
+        },
         cachedOnHand,
         ledgerOnHand,
         discrepancyOnHand,
         cachedReserved,
         activeReserved,
         discrepancyReserved,
-        isReconciled,
-        lastCheckedAt: new Date(),
       };
     } finally {
       if (!isExternalConn) {
@@ -398,6 +447,7 @@ export class InventoryRepository {
       }
     }
   }
+
 }
 
 export const inventoryRepository = new InventoryRepository();

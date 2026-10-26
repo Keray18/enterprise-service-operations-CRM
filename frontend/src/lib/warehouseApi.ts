@@ -242,23 +242,41 @@ export interface WarehouseDashboardSummary {
   recentGrns: GoodsReceipt[];
 }
 
+export interface StockCategoryAudit {
+  cached: number;
+  movementSum: number;
+  isBalanced: boolean;
+  difference: number;
+}
+
+export interface ReservedStockAudit {
+  cached: number;
+  activeReservationSum: number;
+  isBalanced: boolean;
+  difference: number;
+}
+
 export interface ReconcileResult {
   locationId: string;
+  locationName: string;
+  locationCode?: string;
   partId: string;
-  onHand: {
-    cached: number;
-    movementSum: number;
-    isBalanced: boolean;
-    difference: number;
-  };
-  reserved: {
-    cached: number;
-    activeReservationSum: number;
-    isBalanced: boolean;
-    difference: number;
-  };
+  partCode: string;
+  partName: string;
+  onHand: StockCategoryAudit;
+  reserved: ReservedStockAudit;
   status: 'BALANCED' | 'DISCREPANCY_DETECTED';
+  isReconciled: boolean;
+  discrepanciesFound: boolean;
+  lastCheckedAt: string;
+  cachedOnHand: number;
+  ledgerOnHand: number;
+  discrepancyOnHand: number;
+  cachedReserved: number;
+  activeReserved: number;
+  discrepancyReserved: number;
 }
+
 
 export interface PaginatedResult<T> {
   items: T[];
@@ -276,7 +294,38 @@ export function useWarehouseDashboard() {
   return useQuery<WarehouseDashboardSummary>({
     queryKey: ['warehouse', 'dashboard'],
     queryFn: async () => {
-      return apiClient.get<WarehouseDashboardSummary>('/api/v1/warehouse/dashboard');
+      const data = await apiClient.get<any>('/api/v1/warehouse/dashboard');
+      if (!data) {
+        throw new Error('Warehouse dashboard response is empty');
+      }
+
+      // Handle both structured kpis object and flat legacy response
+      const rawKpis = data.kpis || {
+        totalStockOnHand: data.totalOnHandUnits,
+        totalStockReserved: data.totalReservedUnits,
+        totalStockInTransit: data.totalInTransitUnits,
+        totalStockDefective: data.totalDefectiveUnits,
+        lowStockPartCount: data.lowStockCount,
+        pendingPartRequestCount: data.pendingPnaJobsCount,
+        dispatchesPendingArrival: data.activeDispatchesCount,
+      };
+
+      const kpis = {
+        totalStockOnHand: Number(rawKpis.totalStockOnHand ?? 0),
+        totalStockReserved: Number(rawKpis.totalStockReserved ?? 0),
+        totalStockInTransit: Number(rawKpis.totalStockInTransit ?? 0),
+        totalStockDefective: Number(rawKpis.totalStockDefective ?? 0),
+        lowStockPartCount: Number(rawKpis.lowStockPartCount ?? 0),
+        pendingPartRequestCount: Number(rawKpis.pendingPartRequestCount ?? 0),
+        dispatchesPendingArrival: Number(rawKpis.dispatchesPendingArrival ?? 0),
+      };
+
+      return {
+        kpis,
+        locations: Array.isArray(data.locations) ? data.locations : [],
+        recentDispatches: Array.isArray(data.recentDispatches) ? data.recentDispatches : [],
+        recentGrns: Array.isArray(data.recentGrns) ? data.recentGrns : [],
+      };
     },
     staleTime: 30000,
   });
@@ -605,12 +654,95 @@ export function useAdjustStock() {
   });
 }
 
+export function normalizeReconcileResult(raw: any): ReconcileResult {
+  if (!raw || typeof raw !== 'object') {
+    throw new Error('Data contract error: Received empty or invalid reconciliation payload');
+  }
+
+  // Reject malformed payload missing both onHand and flat cachedOnHand
+  if (raw.onHand === undefined && raw.cachedOnHand === undefined) {
+    throw new Error('Data contract error: Reconciliation response missing onHand balance data');
+  }
+
+  // 1. Physical on-hand stock
+  const rawOnHand = raw.onHand;
+  const cachedOnHand = Number(rawOnHand?.cached ?? raw.cachedOnHand ?? 0);
+  const movementSum = Number(rawOnHand?.movementSum ?? raw.ledgerOnHand ?? 0);
+  const diffOnHand = rawOnHand?.difference !== undefined
+    ? Number(rawOnHand.difference)
+    : (raw.discrepancyOnHand !== undefined ? Number(raw.discrepancyOnHand) : cachedOnHand - movementSum);
+  const isBalancedOnHand = rawOnHand?.isBalanced !== undefined
+    ? Boolean(rawOnHand.isBalanced)
+    : diffOnHand === 0;
+
+  // 2. Active reserved stock
+  const rawReserved = raw.reserved;
+  const cachedReserved = Number(rawReserved?.cached ?? raw.cachedReserved ?? 0);
+  const activeReservationSum = Number(rawReserved?.activeReservationSum ?? raw.activeReserved ?? 0);
+  const diffReserved = rawReserved?.difference !== undefined
+    ? Number(rawReserved.difference)
+    : (raw.discrepancyReserved !== undefined ? Number(raw.discrepancyReserved) : cachedReserved - activeReservationSum);
+  const isBalancedReserved = rawReserved?.isBalanced !== undefined
+    ? Boolean(rawReserved.isBalanced)
+    : diffReserved === 0;
+
+  // 3. Overall audit status
+  const isReconciled = raw.isReconciled !== undefined
+    ? Boolean(raw.isReconciled)
+    : isBalancedOnHand && isBalancedReserved;
+
+  const discrepanciesFound = raw.discrepanciesFound !== undefined
+    ? Boolean(raw.discrepanciesFound)
+    : !isReconciled;
+
+  const status: 'BALANCED' | 'DISCREPANCY_DETECTED' =
+    raw.status === 'BALANCED' || (raw.status === undefined && isReconciled)
+      ? 'BALANCED'
+      : 'DISCREPANCY_DETECTED';
+
+  const lastCheckedAt = raw.lastCheckedAt
+    ? (raw.lastCheckedAt instanceof Date ? raw.lastCheckedAt.toISOString() : String(raw.lastCheckedAt))
+    : new Date().toISOString();
+
+  return {
+    locationId: String(raw.locationId || ''),
+    locationName: String(raw.locationName || ''),
+    locationCode: raw.locationCode ? String(raw.locationCode) : undefined,
+    partId: String(raw.partId || ''),
+    partCode: String(raw.partCode || ''),
+    partName: String(raw.partName || ''),
+    status,
+    isReconciled,
+    discrepanciesFound,
+    lastCheckedAt,
+    onHand: {
+      cached: cachedOnHand,
+      movementSum,
+      isBalanced: isBalancedOnHand,
+      difference: diffOnHand,
+    },
+    reserved: {
+      cached: cachedReserved,
+      activeReservationSum,
+      isBalanced: isBalancedReserved,
+      difference: diffReserved,
+    },
+    cachedOnHand,
+    ledgerOnHand: movementSum,
+    discrepancyOnHand: diffOnHand,
+    cachedReserved,
+    activeReserved: activeReservationSum,
+    discrepancyReserved: diffReserved,
+  };
+}
+
 export function useReconcileStock(locationId?: string, partId?: string) {
   return useQuery<ReconcileResult>({
     queryKey: ['warehouse', 'reconcile', locationId, partId],
     queryFn: async () => {
       if (!locationId || !partId) throw new Error('Location ID and Part ID are required');
-      return apiClient.get<ReconcileResult>(`/api/v1/warehouse/reconcile/${locationId}/${partId}`);
+      const raw = await apiClient.get<any>(`/api/v1/warehouse/reconcile/${locationId}/${partId}`);
+      return normalizeReconcileResult(raw);
     },
     enabled: Boolean(locationId && partId),
   });
