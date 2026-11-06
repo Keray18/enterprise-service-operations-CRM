@@ -17,7 +17,8 @@
     "db:bootstrap-admin": "tsx src/scripts/bootstrapAdmin.ts",
     "db:rotate-admin": "tsx src/scripts/rotateAdminPassword.ts",
     "db:users": "tsx src/scripts/listUsers.ts",
-    "db:set-password": "tsx src/scripts/setUserPassword.ts"
+    "db:set-password": "tsx src/scripts/setUserPassword.ts",
+    "db:seed-dev-accounts": "tsx src/scripts/seedDevAccounts.ts"
   },
   "dependencies": {
     "@node-rs/argon2": "^2.2.2",

@@ -40,9 +40,19 @@ describe('Part Codes, HSN/Tax, Geography & Serviceability (Phase 1B.2)', () => {
   let testCityId: string;
   let testLocationId: string;
   let testPartId: string;
-  const suffix = Math.floor(1000 + Math.random() * 9000).toString();
+  let suffix = Math.floor(1000 + Math.random() * 9000).toString();
 
   beforeAll(async () => {
+    // Ensure suffix doesn't collide with previously persisted test runs in dev DB
+    for (let i = 0; i < 100; i++) {
+      const candidate = Math.floor(1000 + Math.random() * 9000).toString();
+      const existing = await brandRepository.findByCode(`BRD_${candidate}`);
+      if (!existing) {
+        suffix = candidate;
+        break;
+      }
+    }
+
     // 1. Setup Admin user with masters:manage & masters:read
     const adminHash = await hashPassword(ADMIN_PASS);
     await userRepository.createUser({

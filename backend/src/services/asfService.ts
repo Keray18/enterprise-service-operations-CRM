@@ -37,10 +37,19 @@ export class AsfService {
     actor: AuthenticatedUser
   ): Promise<PaginatedResult<ServiceRequestWithRelationsRecord & { slaStatus: any }>> {
     const isAdmin = actor.roles.includes('ADMIN');
+    const isAsfManager = actor.roles.includes('ASF') || actor.roles.includes('ASF_MANAGER');
+    const isEngineerOnly = actor.roles.includes('ENGINEER') && !isAdmin && !isAsfManager;
     const actorLocationId = actor.locationId;
 
+    // Strict Engineer isolation: Engineers can only see service requests assigned to their own authenticated identity.
+    // Query parameter manipulation is strictly prevented by binding assignedEngineerId to actor.userId.
+    let effectiveFilters = { ...filters };
+    if (isEngineerOnly) {
+      effectiveFilters.assignedEngineerId = actor.userId;
+    }
+
     const result = await serviceRequestRepository.queryAsfQueue(
-      filters,
+      effectiveFilters,
       actorLocationId,
       isAdmin
     );
@@ -69,6 +78,11 @@ export class AsfService {
    */
   async getEligibleEngineers(locationId: string, actor: AuthenticatedUser) {
     const isAdmin = actor.roles.includes('ADMIN');
+    const isAsf = actor.roles.includes('ASF') || actor.roles.includes('ASF_MANAGER');
+    if (!isAdmin && !isAsf) {
+      throw new AppError('Unauthorized: Field engineers cannot view the technician roster', 403, 'FORBIDDEN_ROLE');
+    }
+
     if (!isAdmin && actor.locationId && actor.locationId !== locationId) {
       throw new AppError('Unauthorized access to technicians outside your franchise location', 403, 'FORBIDDEN');
     }
@@ -117,8 +131,13 @@ export class AsfService {
         );
       }
 
-      // Step C: Validate location authorization
+      // Step C: Validate role and location authorization
       const isAdmin = actor.roles.includes('ADMIN');
+      const isAsf = actor.roles.includes('ASF') || actor.roles.includes('ASF_MANAGER');
+      if (!isAdmin && !isAsf) {
+        throw new AppError('Unauthorized: Field engineers cannot dispatch or assign service requests.', 403, 'FORBIDDEN_ROLE');
+      }
+
       const targetLocationId = existing.assignedLocationId || actor.locationId;
 
       if (!isAdmin && actor.locationId && existing.assignedLocationId && existing.assignedLocationId !== actor.locationId) {
@@ -277,6 +296,21 @@ export class AsfService {
       const existing = await serviceRequestRepository.findById(input.requestId, conn);
       if (!existing) {
         throw new AppError(`Service Request ${input.requestId} not found`, 404, 'NOT_FOUND');
+      }
+
+      // Validate role, location, and assignment authorization
+      const isAdmin = actor.roles.includes('ADMIN');
+      const isAsf = actor.roles.includes('ASF') || actor.roles.includes('ASF_MANAGER');
+      const isEngineer = actor.roles.includes('ENGINEER');
+
+      if (!isAdmin && !isAsf) {
+        if (!isEngineer || existing.assignedEngineerId !== actor.userId) {
+          throw new AppError('Unauthorized: Field engineers can only regenerate OTP for their own assigned service calls.', 403, 'FORBIDDEN_ROLE');
+        }
+      }
+
+      if (!isAdmin && actor.locationId && existing.assignedLocationId && existing.assignedLocationId !== actor.locationId) {
+        throw new AppError('Cannot regenerate OTP for request assigned to another franchise center', 403, 'FORBIDDEN_LOCATION');
       }
 
       if (existing.status !== 'APPOINTMENT_SCHEDULED') {

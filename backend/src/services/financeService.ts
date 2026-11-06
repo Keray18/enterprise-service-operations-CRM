@@ -11,9 +11,11 @@ import {
   JournalType,
   PenaltyBreachType,
   PenaltyStatus,
+  PolicyApprovalStatus,
   ServiceClaimRecord,
   SettlementBatchRecord,
   SettlementStatus,
+  SlaPenaltyPolicyRecord,
   SlaPenaltyRecord,
   WalletStatus,
   WalletTransactionRecord,
@@ -26,11 +28,13 @@ import { financialJournalRepository } from '../database/repositories/financialJo
 import { serviceClaimRepository } from '../database/repositories/serviceClaimRepository.js';
 import { settlementBatchRepository } from '../database/repositories/settlementBatchRepository.js';
 import { slaPenaltyRepository } from '../database/repositories/slaPenaltyRepository.js';
+import { slaPolicyRepository } from '../database/repositories/slaPolicyRepository.js';
+import { serviceRequestRepository } from '../database/repositories/serviceRequestRepository.js';
 import { brandRepository } from '../database/repositories/brandRepository.js';
 import { getOracleConnection } from '../database/oraclePool.js';
 
 // Account IDs seeded in V015
-const GL_ACCOUNTS = {
+export const GL_ACCOUNTS = {
   CASH_BANK: '00000000-0000-0000-0008-000000000001', // 1010
   BRAND_WALLET_RESERVE: '00000000-0000-0000-0008-000000000002', // 2010
   ASF_PAYABLE: '00000000-0000-0000-0008-000000000003', // 2020
@@ -952,6 +956,14 @@ export class FinanceService {
         throw new AppError('Penalty record not found.', 404, 'PENALTY_NOT_FOUND');
       }
 
+      if (penalty.status === 'APPROVED' || penalty.status === 'POSTED' || penalty.status === 'REVERSED') {
+        throw new AppError(
+          `Penalty in status '${penalty.status}' has already been finalized and cannot be re-reviewed or re-posted.`,
+          400,
+          'DUPLICATE_POSTING'
+        );
+      }
+
       if (penalty.status !== 'PENDING_REVIEW' && penalty.status !== 'DISPUTED') {
         throw new AppError(`Penalty in status '${penalty.status}' cannot be modified.`, 400, 'INVALID_STATUS');
       }
@@ -960,25 +972,128 @@ export class FinanceService {
       let calculatedAmount = penalty.calculatedAmount;
       let policyVersion = penalty.policyVersion || 'UNCONFIGURED';
       let configStatus = penalty.configStatus || 'AWAITING_POLICY_CONFIGURATION';
+      let journalId: string | undefined = undefined;
 
       if (input.action === 'APPROVE') {
         // Enforce Financial Invariant: Missing or unapproved penalty amounts cannot silently become posted financial amounts.
-        // Human approval cannot bypass missing financial policy or required configuration.
-        const isUnconfigured = configStatus === 'AWAITING_POLICY_CONFIGURATION' || calculatedAmount <= 0;
-        if (isUnconfigured) {
-          if (!input.authorizedAmount || input.authorizedAmount <= 0 || !input.policyReference) {
+        // Reviewer supplying an amount and reference string is insufficient; reference MUST resolve to an approved active policy.
+        if (!input.policyReference || !input.policyReference.trim()) {
+          throw new AppError(
+            'Cannot approve penalty: An approved commercial penalty policy reference is strictly required. Unconfigured penalties cannot post a positive financial amount without a valid policy.',
+            400,
+            'MISSING_POLICY_REFERENCE'
+          );
+        }
+
+        const policyCode = input.policyReference.trim();
+        const policy = await slaPolicyRepository.findPolicyByCode(policyCode, conn);
+
+        if (!policy) {
+          throw new AppError(
+            `Policy reference '${policyCode}' is not a recognized approved commercial penalty policy record.`,
+            404,
+            'NONEXISTENT_POLICY'
+          );
+        }
+
+        // Strict Financial Control Invariant: Policy must be formally approved for commercial use
+        if (policy.approvalStatus !== 'APPROVED' || !policy.approvedBy) {
+          throw new AppError(
+            `Policy '${policy.policyCode}' is not formally approved for commercial use (Current status: '${policy.approvalStatus}'). Unapproved policies cannot authorize monetary penalty postings.`,
+            400,
+            'UNAPPROVED_POLICY'
+          );
+        }
+
+        if (policy.isActive !== 'Y') {
+          throw new AppError(
+            `Policy '${policy.policyCode}' is inactive. Penalties cannot be approved under inactive policies.`,
+            400,
+            'INACTIVE_POLICY'
+          );
+        }
+
+        const now = new Date();
+        if (policy.effectiveFrom > now || (policy.effectiveTo && policy.effectiveTo < now)) {
+          throw new AppError(
+            `Policy '${policy.policyCode}' is expired or not currently effective.`,
+            400,
+            'INACTIVE_POLICY'
+          );
+        }
+
+        if (policy.breachType !== penalty.breachType) {
+          throw new AppError(
+            `Policy '${policy.policyCode}' applies to breach type '${policy.breachType}', but penalty is for '${penalty.breachType}'.`,
+            400,
+            'POLICY_BREACH_TYPE_MISMATCH'
+          );
+        }
+
+        // Verify brand applicability if policy is brand-specific
+        if (policy.brandId) {
+          const sr = await serviceRequestRepository.findById(penalty.serviceRequestId, conn);
+          if (sr && sr.brandId !== policy.brandId) {
             throw new AppError(
-              'Cannot approve penalty: SLA penalty amount is awaiting policy configuration. To approve a monetary deduction, an authorized commercial rate (> 0) and policy version reference must be explicitly provided.',
+              `Policy '${policy.policyCode}' is restricted to brand '${policy.brandName || policy.brandId}' and does not apply to this service request.`,
               400,
-              'MISSING_POLICY_CONFIGURATION'
+              'POLICY_BRAND_MISMATCH'
             );
           }
-          calculatedAmount = input.authorizedAmount;
-          policyVersion = input.policyReference;
-          configStatus = 'CONFIGURED';
-        } else if (input.authorizedAmount && input.authorizedAmount > 0) {
-          calculatedAmount = input.authorizedAmount;
-          if (input.policyReference) policyVersion = input.policyReference;
+        }
+
+        // Derive amount strictly from approved policy calculation
+        calculatedAmount = policy.penaltyAmount;
+
+        // Custom positive amounts not matching approved policy are rejected
+        if (input.authorizedAmount !== undefined && input.authorizedAmount !== policy.penaltyAmount) {
+          throw new AppError(
+            `Authorized amount (INR ${input.authorizedAmount}) does not match approved policy rate (INR ${policy.penaltyAmount}) for policy '${policy.policyCode}'. Custom positive amounts without documented governance exceptions are prohibited.`,
+            400,
+            'INVALID_AUTHORIZED_AMOUNT'
+          );
+        }
+
+        policyVersion = policy.policyCode;
+        configStatus = 'CONFIGURED';
+
+        // Authoritative Financial Posting: If amount is positive, post double-entry general ledger journal
+        if (calculatedAmount > 0) {
+          const journal = await financialJournalRepository.postJournal(
+            {
+              journalType: 'SLA_PENALTY',
+              currency: 'INR',
+              sourceReferenceType: 'SLA_PENALTY',
+              sourceReferenceId: penalty.penaltyId,
+              idempotencyKey: `SLA-PEN-${penalty.penaltyId}`,
+              description: `SLA Breach Penalty Debit (${penalty.breachType}): ${policy.policyCode}`,
+              postedBy: actor.userId,
+              postedByUsername: actor.username,
+              lines: [
+                {
+                  accountId: GL_ACCOUNTS.ASF_PAYABLE, // 2020: Debit reducing ASF Payable liability
+                  debitAmount: calculatedAmount,
+                  creditAmount: 0,
+                  description: `ASF Penalty Debit - Ref: ${penalty.penaltyId}`,
+                  entityType: 'ASF',
+                  entityId: penalty.asfLocationId,
+                },
+                {
+                  accountId: GL_ACCOUNTS.PENALTY_INCOME, // 4010: Credit recognizing Penalty Recovery Income
+                  debitAmount: 0,
+                  creditAmount: calculatedAmount,
+                  description: `SLA Penalty Income Recognition - Ref: ${penalty.penaltyId}`,
+                  entityType: 'ASF',
+                  entityId: penalty.asfLocationId,
+                },
+              ],
+            },
+            conn
+          );
+          journalId = journal.journalId;
+          newStatus = 'POSTED';
+        } else {
+          newStatus = 'APPROVED';
         }
       } else if (input.action === 'WAIVE') {
         newStatus = 'WAIVED';
@@ -1000,6 +1115,7 @@ export class FinanceService {
           calculatedAmount,
           policyVersion,
           configStatus,
+          journalId: (newStatus === 'POSTED' && typeof journalId !== 'undefined') ? journalId : undefined,
         },
         conn
       );
@@ -1008,6 +1124,203 @@ export class FinanceService {
 
       const updated = await slaPenaltyRepository.getPenaltyById(penaltyId);
       if (!updated) throw new Error('Failed to retrieve updated penalty record.');
+      return updated;
+    } catch (err) {
+      await conn.rollback();
+      throw err;
+    } finally {
+      await conn.close();
+    }
+  }
+
+  async reversePenalty(
+    penaltyId: string,
+    input: { reason: string },
+    actor: AuthenticatedUser
+  ): Promise<SlaPenaltyRecord> {
+    if (!actor.permissions.includes('finance:approve') && !actor.roles.includes('ADMIN') && !actor.roles.includes('FINANCE')) {
+      throw new AppError('Forbidden: Only Finance or Admin can reverse SLA penalties.', 403, 'FORBIDDEN');
+    }
+
+    if (!input.reason || input.reason.trim().length < 10) {
+      throw new AppError('A detailed reversal justification (min 10 characters) is mandatory.', 400, 'REASON_REQUIRED');
+    }
+
+    const conn = await getOracleConnection();
+
+    try {
+      const penalty = await slaPenaltyRepository.getPenaltyById(penaltyId, conn);
+      if (!penalty) {
+        throw new AppError('Penalty record not found.', 404, 'PENALTY_NOT_FOUND');
+      }
+
+      if (penalty.status === 'REVERSED') {
+        throw new AppError('Penalty has already been reversed.', 400, 'ALREADY_REVERSED');
+      }
+
+      if (penalty.status !== 'APPROVED' && penalty.status !== 'POSTED') {
+        throw new AppError(
+          `Penalty in status '${penalty.status}' cannot be reversed. Only APPROVED or POSTED penalties can be reversed.`,
+          400,
+          'INVALID_STATUS'
+        );
+      }
+
+      // If penalty had a posted GL journal, reverse the journal with compensating entry
+      // This will invert the original lines:
+      // Original: Debit 2020 (ASF_PAYABLE), Credit 4010 (PENALTY_INCOME)
+      // Reversal: Debit 4010 (PENALTY_INCOME), Credit 2020 (ASF_PAYABLE)
+      if (penalty.journalId) {
+        await financialJournalRepository.reverseJournal(
+          penalty.journalId,
+          `Penalty Reversal: ${input.reason}`,
+          { userId: actor.userId, username: actor.username },
+          conn
+        );
+      }
+
+      await slaPenaltyRepository.reversePenaltyRecord(
+        penaltyId,
+        {
+          reversalReason: input.reason,
+          reversedBy: actor.userId,
+          reversedByUsername: actor.username,
+          reviewRemarks: (penalty.reviewRemarks ? penalty.reviewRemarks + ' | ' : '') + `REVERSED by ${actor.username}: ${input.reason}`,
+        },
+        conn
+      );
+
+      await conn.commit();
+
+      const updated = await slaPenaltyRepository.getPenaltyById(penaltyId);
+      if (!updated) throw new Error('Failed to retrieve reversed penalty record.');
+      return updated;
+    } catch (err) {
+      await conn.rollback();
+      throw err;
+    } finally {
+      await conn.close();
+    }
+  }
+
+  // ============================================================================
+  // 5.1 SLA Penalty Policy Governance & Approval Workflow
+  // ============================================================================
+
+  async listPolicies(options?: {
+    breachType?: PenaltyBreachType;
+    brandId?: string;
+    isActive?: 'Y' | 'N';
+    approvalStatus?: PolicyApprovalStatus;
+  }): Promise<SlaPenaltyPolicyRecord[]> {
+    return slaPolicyRepository.listPolicies(options);
+  }
+
+  async getPolicy(policyId: string): Promise<SlaPenaltyPolicyRecord> {
+    const policy = await slaPolicyRepository.findPolicyById(policyId);
+    if (!policy) {
+      throw new AppError(`SLA Penalty Policy '${policyId}' not found.`, 404, 'POLICY_NOT_FOUND');
+    }
+    return policy;
+  }
+
+  async createPolicy(
+    input: {
+      policyCode: string;
+      policyName: string;
+      policyVersion: string;
+      brandId?: string;
+      breachType: PenaltyBreachType;
+      calculationType?: 'FIXED' | 'PERCENTAGE';
+      penaltyAmount: number;
+      effectiveFrom?: Date;
+      effectiveTo?: Date;
+      governanceRef?: string;
+    },
+    actor: AuthenticatedUser
+  ): Promise<SlaPenaltyPolicyRecord> {
+    if (!actor.permissions.includes('finance:manage') && !actor.roles.includes('ADMIN') && !actor.roles.includes('FINANCE')) {
+      throw new AppError('Forbidden: Only Finance or Admin can draft SLA penalty policies.', 403, 'FORBIDDEN');
+    }
+
+    const conn = await getOracleConnection();
+    try {
+      const existing = await slaPolicyRepository.findPolicyByCode(input.policyCode, conn);
+      if (existing) {
+        throw new AppError(`Policy with code '${input.policyCode}' already exists.`, 409, 'DUPLICATE_POLICY_CODE');
+      }
+
+      const policy = await slaPolicyRepository.createPolicy(
+        {
+          ...input,
+          approvalStatus: 'PENDING_APPROVAL',
+          isActive: 'Y',
+          submittedBy: actor.userId,
+        },
+        conn
+      );
+
+      await conn.commit();
+      return policy;
+    } catch (err) {
+      await conn.rollback();
+      throw err;
+    } finally {
+      await conn.close();
+    }
+  }
+
+  async reviewPolicyApproval(
+    policyId: string,
+    input: { action: 'APPROVE' | 'REJECT'; remarks?: string },
+    actor: AuthenticatedUser
+  ): Promise<SlaPenaltyPolicyRecord> {
+    if (!actor.permissions.includes('finance:approve') && !actor.roles.includes('ADMIN') && !actor.roles.includes('FINANCE')) {
+      throw new AppError('Forbidden: Only Finance or Admin can approve SLA penalty policies.', 403, 'FORBIDDEN');
+    }
+
+    const conn = await getOracleConnection();
+    try {
+      const policy = await slaPolicyRepository.findPolicyById(policyId, conn);
+      if (!policy) {
+        throw new AppError(`SLA Penalty Policy '${policyId}' not found.`, 404, 'POLICY_NOT_FOUND');
+      }
+
+      if (policy.approvalStatus !== 'PENDING_APPROVAL' && policy.approvalStatus !== 'DRAFT') {
+        throw new AppError(
+          `Policy in status '${policy.approvalStatus}' cannot be reviewed for commercial approval.`,
+          400,
+          'INVALID_APPROVAL_STATUS'
+        );
+      }
+
+      // Segregation of duties: Submitter cannot approve their own policy
+      if (policy.submittedBy && policy.submittedBy === actor.userId) {
+        throw new AppError(
+          'Segregation of duties violation: Submitter cannot approve their own SLA penalty policy.',
+          403,
+          'SEGREGATION_OF_DUTIES_VIOLATION'
+        );
+      }
+
+      const newStatus: PolicyApprovalStatus = input.action === 'APPROVE' ? 'APPROVED' : 'REJECTED';
+      const isActive: 'Y' | 'N' = input.action === 'APPROVE' ? 'Y' : 'N';
+
+      await slaPolicyRepository.updatePolicyApproval(
+        policyId,
+        {
+          approvalStatus: newStatus,
+          approvedBy: actor.userId,
+          approvalRemarks: input.remarks || `Policy ${input.action.toLowerCase()}d by ${actor.username}`,
+          isActive,
+        },
+        conn
+      );
+
+      await conn.commit();
+
+      const updated = await slaPolicyRepository.findPolicyById(policyId);
+      if (!updated) throw new Error('Failed to retrieve updated policy record.');
       return updated;
     } catch (err) {
       await conn.rollback();

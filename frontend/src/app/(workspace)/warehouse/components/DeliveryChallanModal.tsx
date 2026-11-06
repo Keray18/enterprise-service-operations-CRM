@@ -17,11 +17,12 @@ import TableHead from '@mui/material/TableHead';
 import TableRow from '@mui/material/TableRow';
 import Typography from '@mui/material/Typography';
 import Chip from '@mui/material/Chip';
+import CircularProgress from '@mui/material/CircularProgress';
 
 import PrintIcon from '@mui/icons-material/Print';
 import CloseIcon from '@mui/icons-material/Close';
 
-import { StockDispatch } from '../../../../lib/warehouseApi';
+import { StockDispatch, useDispatch } from '../../../../lib/warehouseApi';
 
 interface DeliveryChallanModalProps {
   open: boolean;
@@ -30,11 +31,22 @@ interface DeliveryChallanModalProps {
 }
 
 export function DeliveryChallanModal({ open, onClose, dispatch }: DeliveryChallanModalProps) {
-  if (!dispatch) return null;
+  const dispatchId = dispatch?.dispatchId || null;
+  const { data: fullDispatch, isLoading } = useDispatch(open && dispatchId ? dispatchId : null);
+  const activeDispatch = fullDispatch || dispatch;
+
+  if (!open || !activeDispatch) return null;
 
   const handlePrint = () => {
     window.print();
   };
+
+  const subtotal = activeDispatch.subtotalTaxable ?? activeDispatch.subtotalAmount ?? 0;
+  const total = activeDispatch.totalAmount ?? 0;
+  const totalIgst = activeDispatch.totalIgst ?? 0;
+  const totalCgst = activeDispatch.totalCgst ?? 0;
+  const totalSgst = activeDispatch.totalSgst ?? 0;
+  const isDelivered = activeDispatch.status === 'ACKNOWLEDGED' || activeDispatch.status === 'DELIVERED';
 
   return (
     <Dialog open={open} onClose={onClose} maxWidth="lg" fullWidth>
@@ -70,18 +82,18 @@ export function DeliveryChallanModal({ open, onClose, dispatch }: DeliveryChalla
             </Box>
             <Box sx={{ textAlign: 'right' }}>
               <Chip
-                label={dispatch.status}
-                color={dispatch.status === 'DELIVERED' ? 'success' : 'primary'}
+                label={activeDispatch.status}
+                color={isDelivered ? 'success' : 'primary'}
                 sx={{ fontWeight: 700, mb: 1 }}
               />
               <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>
-                {dispatch.challanNumber}
+                {activeDispatch.challanNumber || activeDispatch.dispatchNumber}
               </Typography>
               <Typography variant="caption" color="text.secondary" display="block">
-                Dispatch Ref: {dispatch.dispatchNumber}
+                Dispatch Ref: {activeDispatch.dispatchNumber}
               </Typography>
               <Typography variant="caption" color="text.secondary" display="block">
-                Date: {new Date(dispatch.dispatchedAt).toLocaleDateString()}
+                Date: {activeDispatch.dispatchedAt ? new Date(activeDispatch.dispatchedAt).toLocaleDateString() : 'N/A'}
               </Typography>
             </Box>
           </Box>
@@ -96,7 +108,7 @@ export function DeliveryChallanModal({ open, onClose, dispatch }: DeliveryChalla
                   Consignor (Dispatched From)
                 </Typography>
                 <Typography variant="subtitle2" sx={{ fontWeight: 700, mt: 0.5 }}>
-                  {dispatch.fromLocationName || 'Central Logistics Warehouse'}
+                  {activeDispatch.fromLocationName || 'Central Logistics Warehouse'}
                 </Typography>
                 <Typography variant="body2" color="text.secondary">
                   GSTIN: 27AABCS1429B1Z4
@@ -112,14 +124,14 @@ export function DeliveryChallanModal({ open, onClose, dispatch }: DeliveryChalla
                   Consignee (Dispatched To)
                 </Typography>
                 <Typography variant="subtitle2" sx={{ fontWeight: 700, mt: 0.5 }}>
-                  {dispatch.toLocationName || 'Authorized Service Center (ASF)'}
+                  {activeDispatch.toLocationName || 'Authorized Service Center (ASF)'}
                 </Typography>
                 <Typography variant="body2" color="text.secondary">
                   Destination Franchise Center
                 </Typography>
-                {dispatch.jobNumber && (
+                {activeDispatch.jobNumber && (
                   <Typography variant="body2" sx={{ fontWeight: 600, color: 'primary.main', mt: 0.5 }}>
-                    Linked Service Request: {dispatch.jobNumber}
+                    Linked Service Request: {activeDispatch.jobNumber}
                   </Typography>
                 )}
               </Paper>
@@ -134,7 +146,7 @@ export function DeliveryChallanModal({ open, onClose, dispatch }: DeliveryChalla
                   Dispatch Mode
                 </Typography>
                 <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                  {dispatch.dispatchMode}
+                  {activeDispatch.dispatchMode}
                 </Typography>
               </Grid>
               <Grid item xs={12} sm={3}>
@@ -142,7 +154,7 @@ export function DeliveryChallanModal({ open, onClose, dispatch }: DeliveryChalla
                   Transporter / Courier
                 </Typography>
                 <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                  {dispatch.transporterName || '—'}
+                  {activeDispatch.transporterName || '—'}
                 </Typography>
               </Grid>
               <Grid item xs={12} sm={3}>
@@ -150,7 +162,7 @@ export function DeliveryChallanModal({ open, onClose, dispatch }: DeliveryChalla
                   Docket / AWB Tracking No
                 </Typography>
                 <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                  {dispatch.docketNo || '—'}
+                  {activeDispatch.docketNo || '—'}
                 </Typography>
               </Grid>
               <Grid item xs={12} sm={3}>
@@ -158,7 +170,7 @@ export function DeliveryChallanModal({ open, onClose, dispatch }: DeliveryChalla
                   E-Way Bill Number
                 </Typography>
                 <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                  {dispatch.ewayBillNo || '—'}
+                  {activeDispatch.ewayBillNo || '—'}
                 </Typography>
               </Grid>
             </Grid>
@@ -190,42 +202,61 @@ export function DeliveryChallanModal({ open, onClose, dispatch }: DeliveryChalla
                 </TableRow>
               </TableHead>
               <TableBody>
-                {(dispatch.items || []).map((it, idx) => (
-                  <TableRow key={it.itemId || idx}>
-                    <TableCell>{idx + 1}</TableCell>
-                    <TableCell>
-                      <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                        {it.partCode}
+                {isLoading ? (
+                  <TableRow>
+                    <TableCell colSpan={8} align="center" sx={{ py: 3 }}>
+                      <CircularProgress size={24} />
+                      <Typography variant="caption" display="block" color="text.secondary" sx={{ mt: 1 }}>
+                        Loading dispatch line items...
                       </Typography>
-                      <Typography variant="caption" color="text.secondary">
-                        {it.partName}
-                      </Typography>
-                    </TableCell>
-                    <TableCell>{it.hsnCode || '84159000'}</TableCell>
-                    <TableCell align="right">{it.quantity}</TableCell>
-                    <TableCell align="right">₹{it.unitPrice.toFixed(2)}</TableCell>
-                    <TableCell align="right">₹{it.taxableValue.toFixed(2)}</TableCell>
-                    <TableCell align="right">
-                      {it.igstAmount > 0 ? (
-                        <Typography variant="caption" display="block">
-                          IGST ({it.igstRate}%): ₹{it.igstAmount.toFixed(2)}
-                        </Typography>
-                      ) : (
-                        <>
-                          <Typography variant="caption" display="block">
-                            CGST ({it.cgstRate}%): ₹{it.cgstAmount.toFixed(2)}
-                          </Typography>
-                          <Typography variant="caption" display="block">
-                            SGST ({it.sgstRate}%): ₹{it.sgstAmount.toFixed(2)}
-                          </Typography>
-                        </>
-                      )}
-                    </TableCell>
-                    <TableCell align="right" sx={{ fontWeight: 700 }}>
-                      ₹{it.totalAmount.toFixed(2)}
                     </TableCell>
                   </TableRow>
-                ))}
+                ) : (activeDispatch.items || []).length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={8} align="center" sx={{ py: 3 }}>
+                      <Typography variant="body2" color="text.secondary">
+                        No line items recorded for this dispatch.
+                      </Typography>
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  (activeDispatch.items || []).map((it, idx) => (
+                    <TableRow key={it.itemId || idx}>
+                      <TableCell>{idx + 1}</TableCell>
+                      <TableCell>
+                        <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                          {it.partCode}
+                        </Typography>
+                        <Typography variant="caption" color="text.secondary">
+                          {it.partName}
+                        </Typography>
+                      </TableCell>
+                      <TableCell>{it.hsnCode || '84159000'}</TableCell>
+                      <TableCell align="right">{it.quantity}</TableCell>
+                      <TableCell align="right">₹{(it.unitPrice ?? 0).toFixed(2)}</TableCell>
+                      <TableCell align="right">₹{(it.taxableValue ?? ((it.unitPrice ?? 0) * it.quantity)).toFixed(2)}</TableCell>
+                      <TableCell align="right">
+                        {(it.igstAmount ?? 0) > 0 ? (
+                          <Typography variant="caption" display="block">
+                            IGST ({it.igstRate ?? 18}%): ₹{(it.igstAmount ?? 0).toFixed(2)}
+                          </Typography>
+                        ) : (
+                          <>
+                            <Typography variant="caption" display="block">
+                              CGST ({it.cgstRate ?? 9}%): ₹{(it.cgstAmount ?? 0).toFixed(2)}
+                            </Typography>
+                            <Typography variant="caption" display="block">
+                              SGST ({it.sgstRate ?? 9}%): ₹{(it.sgstAmount ?? 0).toFixed(2)}
+                            </Typography>
+                          </>
+                        )}
+                      </TableCell>
+                      <TableCell align="right" sx={{ fontWeight: 700 }}>
+                        ₹{(it.totalAmount ?? 0).toFixed(2)}
+                      </TableCell>
+                    </TableRow>
+                  ))
+                )}
               </TableBody>
             </Table>
           </TableContainer>
@@ -242,12 +273,13 @@ export function DeliveryChallanModal({ open, onClose, dispatch }: DeliveryChalla
                   servicing and customer repair fulfillment, not for retail sale.
                 </Typography>
                 <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.5 }}>
-                  2. Dispatched by: {dispatch.dispatchedBy} on {new Date(dispatch.dispatchedAt).toLocaleString()}.
+                  2. Dispatched by: {activeDispatch.dispatchedBy} on{' '}
+                  {activeDispatch.dispatchedAt ? new Date(activeDispatch.dispatchedAt).toLocaleString() : 'N/A'}.
                 </Typography>
-                {dispatch.acknowledgedBy && (
+                {activeDispatch.acknowledgedBy && (
                   <Typography variant="caption" color="success.main" display="block" sx={{ mt: 0.5, fontWeight: 600 }}>
-                    3. Acknowledged & Received at Destination by: {dispatch.acknowledgedBy} on{' '}
-                    {new Date(dispatch.acknowledgedAt!).toLocaleString()}.
+                    3. Acknowledged & Received at Destination by: {activeDispatch.acknowledgedBy} on{' '}
+                    {activeDispatch.acknowledgedAt ? new Date(activeDispatch.acknowledgedAt).toLocaleString() : 'N/A'}.
                   </Typography>
                 )}
               </Paper>
@@ -260,16 +292,16 @@ export function DeliveryChallanModal({ open, onClose, dispatch }: DeliveryChalla
                     Total Taxable Value:
                   </Typography>
                   <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                    ₹{dispatch.subtotalTaxable.toFixed(2)}
+                    ₹{subtotal.toFixed(2)}
                   </Typography>
                 </Box>
-                {dispatch.totalIgst > 0 ? (
+                {totalIgst > 0 ? (
                   <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 1 }}>
                     <Typography variant="body2" color="text.secondary">
                       Integrated GST (IGST 18%):
                     </Typography>
                     <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                      ₹{dispatch.totalIgst.toFixed(2)}
+                      ₹{totalIgst.toFixed(2)}
                     </Typography>
                   </Box>
                 ) : (
@@ -279,7 +311,7 @@ export function DeliveryChallanModal({ open, onClose, dispatch }: DeliveryChalla
                         Central GST (CGST 9%):
                       </Typography>
                       <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                        ₹{dispatch.totalCgst.toFixed(2)}
+                        ₹{totalCgst.toFixed(2)}
                       </Typography>
                     </Box>
                     <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 1 }}>
@@ -287,7 +319,7 @@ export function DeliveryChallanModal({ open, onClose, dispatch }: DeliveryChalla
                         State GST (SGST 9%):
                       </Typography>
                       <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                        ₹{dispatch.totalSgst.toFixed(2)}
+                        ₹{totalSgst.toFixed(2)}
                       </Typography>
                     </Box>
                   </>
@@ -298,7 +330,7 @@ export function DeliveryChallanModal({ open, onClose, dispatch }: DeliveryChalla
                     Grand Total:
                   </Typography>
                   <Typography variant="subtitle1" color="primary.main" sx={{ fontWeight: 800 }}>
-                    ₹{dispatch.totalAmount.toFixed(2)}
+                    ₹{total.toFixed(2)}
                   </Typography>
                 </Box>
               </Paper>

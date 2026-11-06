@@ -79,19 +79,30 @@ export class SlaPenaltyRepository {
         )
       `;
 
-      await connection.execute(sql, {
-        penaltyId,
-        penaltyNumber,
-        serviceRequestId: data.serviceRequestId,
-        asfLocationId: data.asfLocationId,
-        breachType: data.breachType,
-        breachTimestamp: data.breachTimestamp,
-        calculatedAmount: data.calculatedAmount,
-        policyVersion,
-        configStatus,
-        elapsedHours: data.elapsedHours ?? null,
-        thresholdHours: data.thresholdHours ?? null,
-      });
+      try {
+        await connection.execute(sql, {
+          penaltyId,
+          penaltyNumber,
+          serviceRequestId: data.serviceRequestId,
+          asfLocationId: data.asfLocationId,
+          breachType: data.breachType,
+          breachTimestamp: data.breachTimestamp,
+          calculatedAmount: data.calculatedAmount,
+          policyVersion,
+          configStatus,
+          elapsedHours: data.elapsedHours ?? null,
+          thresholdHours: data.thresholdHours ?? null,
+        });
+      } catch (insertErr: any) {
+        if (
+          insertErr?.message?.includes('ORA-00001') ||
+          insertErr?.message?.includes('UQ_SLA_PENALTY_BREACH')
+        ) {
+          const existing = await this.findBreachByRequestAndType(data.serviceRequestId, data.breachType, connection);
+          if (existing) return existing;
+        }
+        throw insertErr;
+      }
 
       const penalty = await this.getPenaltyById(penaltyId, connection);
       if (!penalty) throw new Error('Failed to retrieve newly created penalty record.');
@@ -101,6 +112,36 @@ export class SlaPenaltyRepository {
       }
 
       return penalty;
+    } finally {
+      if (!isExternalConn) {
+        await connection.close();
+      }
+    }
+  }
+
+  async findBreachByRequestAndType(
+    serviceRequestId: string,
+    breachType: PenaltyBreachType,
+    conn?: oracledb.Connection
+  ): Promise<SlaPenaltyRecord | null> {
+    const isExternalConn = Boolean(conn);
+    const connection = conn || (await getOracleConnection());
+
+    try {
+      const sql = `
+        SELECT PENALTY_ID FROM SLA_PENALTY_RECORDS
+        WHERE SERVICE_REQUEST_ID = :serviceRequestId
+          AND BREACH_TYPE = :breachType
+      `;
+      const res = await connection.execute<any>(
+        sql,
+        { serviceRequestId, breachType },
+        { outFormat: oracledb.OUT_FORMAT_OBJECT }
+      );
+      if (res.rows && res.rows.length > 0) {
+        return this.getPenaltyById(res.rows[0].PENALTY_ID, connection);
+      }
+      return null;
     } finally {
       if (!isExternalConn) {
         await connection.close();
@@ -119,7 +160,9 @@ export class SlaPenaltyRepository {
                p.BREACH_TYPE, p.BREACH_TIMESTAMP, p.CALCULATED_AMOUNT,
                p.STATUS, p.POLICY_VERSION, p.CONFIG_STATUS, p.ELAPSED_HOURS, p.THRESHOLD_HOURS,
                p.REVIEWED_BY, p.REVIEWED_BY_USERNAME,
-               p.REVIEWED_AT, p.REVIEW_REMARKS, p.JOURNAL_ID, p.CREATED_AT
+               p.REVIEWED_AT, p.REVIEW_REMARKS, p.JOURNAL_ID,
+               p.REVERSAL_REASON, p.REVERSED_AT, p.REVERSED_BY, p.REVERSED_BY_USERNAME,
+               p.CREATED_AT
         FROM SLA_PENALTY_RECORDS p
         JOIN SERVICE_REQUESTS sr ON p.SERVICE_REQUEST_ID = sr.REQUEST_ID
         JOIN LOCATIONS l ON p.ASF_LOCATION_ID = l.LOCATION_ID
@@ -150,6 +193,10 @@ export class SlaPenaltyRepository {
         reviewedAt: row.REVIEWED_AT ? new Date(row.REVIEWED_AT) : undefined,
         reviewRemarks: row.REVIEW_REMARKS || undefined,
         journalId: row.JOURNAL_ID || undefined,
+        reversalReason: row.REVERSAL_REASON || undefined,
+        reversedAt: row.REVERSED_AT ? new Date(row.REVERSED_AT) : undefined,
+        reversedBy: row.REVERSED_BY || undefined,
+        reversedByUsername: row.REVERSED_BY_USERNAME || undefined,
         createdAt: new Date(row.CREATED_AT),
       };
     } finally {
@@ -205,7 +252,9 @@ export class SlaPenaltyRepository {
                p.BREACH_TYPE, p.BREACH_TIMESTAMP, p.CALCULATED_AMOUNT,
                p.STATUS, p.POLICY_VERSION, p.CONFIG_STATUS, p.ELAPSED_HOURS, p.THRESHOLD_HOURS,
                p.REVIEWED_BY, p.REVIEWED_BY_USERNAME,
-               p.REVIEWED_AT, p.REVIEW_REMARKS, p.JOURNAL_ID, p.CREATED_AT
+               p.REVIEWED_AT, p.REVIEW_REMARKS, p.JOURNAL_ID,
+               p.REVERSAL_REASON, p.REVERSED_AT, p.REVERSED_BY, p.REVERSED_BY_USERNAME,
+               p.CREATED_AT
         FROM SLA_PENALTY_RECORDS p
         JOIN SERVICE_REQUESTS sr ON p.SERVICE_REQUEST_ID = sr.REQUEST_ID
         JOIN LOCATIONS l ON p.ASF_LOCATION_ID = l.LOCATION_ID
@@ -236,6 +285,10 @@ export class SlaPenaltyRepository {
         reviewedAt: row.REVIEWED_AT ? new Date(row.REVIEWED_AT) : undefined,
         reviewRemarks: row.REVIEW_REMARKS || undefined,
         journalId: row.JOURNAL_ID || undefined,
+        reversalReason: row.REVERSAL_REASON || undefined,
+        reversedAt: row.REVERSED_AT ? new Date(row.REVERSED_AT) : undefined,
+        reversedBy: row.REVERSED_BY || undefined,
+        reversedByUsername: row.REVERSED_BY_USERNAME || undefined,
         createdAt: new Date(row.CREATED_AT),
       }));
 
@@ -289,6 +342,39 @@ export class SlaPenaltyRepository {
       configStatus: data.configStatus || null,
       journalId: data.journalId || null,
       penaltyId,
+    });
+  }
+
+  async reversePenaltyRecord(
+    penaltyId: string,
+    data: {
+      reversalReason: string;
+      reversedBy: string;
+      reversedByUsername: string;
+      reviewRemarks?: string;
+    },
+    conn: oracledb.Connection
+  ): Promise<void> {
+    const sql = `
+      UPDATE SLA_PENALTY_RECORDS
+      SET STATUS = 'REVERSED',
+          REVERSAL_REASON = :reversalReason,
+          REVERSED_AT = SYSTIMESTAMP,
+          REVERSED_BY = :reversedBy,
+          REVERSED_BY_USERNAME = :reversedByUsername,
+          REVIEW_REMARKS = CASE 
+            WHEN :reviewRemarks IS NOT NULL THEN :reviewRemarks 
+            ELSE REVIEW_REMARKS 
+          END
+      WHERE PENALTY_ID = :penaltyId
+    `;
+
+    await conn.execute(sql, {
+      penaltyId,
+      reversalReason: data.reversalReason,
+      reversedBy: data.reversedBy,
+      reversedByUsername: data.reversedByUsername,
+      reviewRemarks: data.reviewRemarks || null,
     });
   }
 }

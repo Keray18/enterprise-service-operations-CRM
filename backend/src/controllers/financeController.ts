@@ -2,11 +2,14 @@ import { Request, Response } from 'express';
 import {
   approveWalletDepositSchema,
   auditClaimSchema,
+  createPenaltyPolicySchema,
   createSettlementBatchSchema,
   createWalletDepositSchema,
   generateClaimBatchSchema,
   reverseJournalSchema,
+  reversePenaltySchema,
   reviewPenaltySchema,
+  reviewPolicyApprovalSchema,
 } from '../types/finance.js';
 import { financeService } from '../services/financeService.js';
 import { AuthenticatedUser } from '../types/auth.js';
@@ -317,6 +320,76 @@ export class FinanceController {
       const validated = reviewPenaltySchema.parse(req.body);
 
       const updated = await financeService.reviewPenalty(penaltyId, validated, user);
+      sendSuccess(res, updated);
+    } catch (err: any) {
+      sendError(res, err.message, err.statusCode || 500, err.code || 'INTERNAL_ERROR');
+    }
+  }
+
+  async reversePenalty(req: Request, res: Response): Promise<void> {
+    try {
+      const user = req.user as AuthenticatedUser;
+      const penaltyId = req.params.penaltyId;
+      if (!penaltyId) {
+        sendError(res, 'penaltyId is required.', 400, 'VALIDATION_ERROR');
+        return;
+      }
+      const validated = reversePenaltySchema.parse(req.body);
+
+      const reversed = await financeService.reversePenalty(penaltyId, validated, user);
+      sendSuccess(res, reversed);
+    } catch (err: any) {
+      sendError(res, err.message, err.statusCode || 500, err.code || 'INTERNAL_ERROR');
+    }
+  }
+
+  // ============================================================================
+  // SLA Penalty Policy Administration
+  // ============================================================================
+
+  async listPolicies(req: Request, res: Response): Promise<void> {
+    try {
+      const { breachType, brandId, isActive, approvalStatus } = req.query;
+      const policies = await financeService.listPolicies({
+        breachType: breachType as any,
+        brandId: brandId ? String(brandId) : undefined,
+        isActive: isActive as any,
+        approvalStatus: approvalStatus as any,
+      });
+      sendSuccess(res, policies);
+    } catch (err: any) {
+      sendError(res, err.message, err.statusCode || 500, err.code || 'INTERNAL_ERROR');
+    }
+  }
+
+  async createPolicy(req: Request, res: Response): Promise<void> {
+    try {
+      const user = req.user as AuthenticatedUser;
+      const validated = createPenaltyPolicySchema.parse(req.body);
+      const policy = await financeService.createPolicy(
+        {
+          ...validated,
+          effectiveFrom: validated.effectiveFrom ? new Date(validated.effectiveFrom) : undefined,
+          effectiveTo: validated.effectiveTo ? new Date(validated.effectiveTo) : undefined,
+        },
+        user
+      );
+      sendSuccess(res, policy, 201);
+    } catch (err: any) {
+      sendError(res, err.message, err.statusCode || 500, err.code || 'INTERNAL_ERROR');
+    }
+  }
+
+  async reviewPolicyApproval(req: Request, res: Response): Promise<void> {
+    try {
+      const user = req.user as AuthenticatedUser;
+      const policyId = req.params.policyId;
+      if (!policyId) {
+        sendError(res, 'policyId is required.', 400, 'VALIDATION_ERROR');
+        return;
+      }
+      const validated = reviewPolicyApprovalSchema.parse(req.body);
+      const updated = await financeService.reviewPolicyApproval(policyId, validated, user);
       sendSuccess(res, updated);
     } catch (err: any) {
       sendError(res, err.message, err.statusCode || 500, err.code || 'INTERNAL_ERROR');

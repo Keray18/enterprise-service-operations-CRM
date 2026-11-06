@@ -7,6 +7,7 @@ import CategoryIcon from '@mui/icons-material/Category';
 import ChevronLeftIcon from '@mui/icons-material/ChevronLeft';
 import ChevronRightIcon from '@mui/icons-material/ChevronRight';
 import DashboardIcon from '@mui/icons-material/Dashboard';
+import DnsIcon from '@mui/icons-material/Dns';
 import HeadsetMicIcon from '@mui/icons-material/HeadsetMic';
 import Inventory2Icon from '@mui/icons-material/Inventory2';
 import LocalShippingIcon from '@mui/icons-material/LocalShipping';
@@ -60,11 +61,11 @@ const NAV_SECTIONS: NavSection[] = [
     ],
   },
   {
-    title: 'SERVICE FRANCHISE',
+    title: 'SERVICE CENTER',
     items: [
       {
-        label: 'Franchise Queue & Jobs',
-        href: '/asf',
+        label: 'Service Center Operations',
+        href: '/service-center',
         icon: <AssignmentIcon fontSize="small" />,
         requiredPermission: 'asf:read',
       },
@@ -102,12 +103,6 @@ const NAV_SECTIONS: NavSection[] = [
         icon: <AccountBalanceWalletIcon fontSize="small" />,
         requiredPermission: 'finance:read',
       },
-      {
-        label: 'System Diagnostics',
-        href: '/admin/diagnostics',
-        icon: <DashboardIcon fontSize="small" />,
-        requiredRole: 'ADMIN',
-      },
     ],
   },
   {
@@ -118,6 +113,17 @@ const NAV_SECTIONS: NavSection[] = [
         href: '/reports',
         icon: <AssessmentIcon fontSize="small" />,
         requiredPermission: 'reports:view',
+      },
+    ],
+  },
+  {
+    title: 'SYSTEM & INFRASTRUCTURE',
+    items: [
+      {
+        label: 'System Diagnostics',
+        href: '/admin/diagnostics',
+        icon: <DnsIcon fontSize="small" />,
+        requiredPermission: 'system:audit',
       },
     ],
   },
@@ -178,7 +184,9 @@ export function AppSidebar({
                 const isActive =
                   item.href === '/'
                     ? pathname === '/'
-                    : pathname.startsWith(item.href);
+                    : item.href === '/service-center'
+                      ? pathname.startsWith('/service-center') || pathname.startsWith('/asf')
+                      : pathname.startsWith(item.href);
 
                 const button = (
                   <ListItemButton

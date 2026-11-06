@@ -99,9 +99,30 @@ export interface SlaEvaluationResult {
   breachedRequestIds: string[];
 }
 
+export type ServiceCenterQueueView =
+  | 'all'
+  | 'unacknowledged'
+  | 'ready_to_assign'
+  | 'today_appointments'
+  | 'assigned_technicians'
+  | 'scheduled'
+  | 'awaiting_checkin'
+  | 'checked_in'
+  | 'diagnosis_repair'
+  | 'parts_pending'
+  | 'parts_dispatched'
+  | 'awaiting_verification'
+  | 'overdue'
+  | 'my_visits';
+
 export interface AsfQueueFilters {
-  view?: 'all' | 'unacknowledged' | 'ready_to_assign' | 'scheduled' | 'checked_in' | 'overdue';
+  view?: ServiceCenterQueueView;
   locationId?: string;
+  assignedEngineerId?: string;
+  productId?: string;
+  status?: string;
+  startDate?: string;
+  endDate?: string;
   q?: string;
   page?: number;
   limit?: number;
@@ -114,8 +135,13 @@ export interface AsfQueueFilters {
 export const asfApi = {
   getQueue: async (filters: AsfQueueFilters = {}): Promise<PaginatedResult<AsfQueueItem>> => {
     const query = new URLSearchParams();
-    if (filters.view) query.set('view', filters.view);
+    if (filters.view && filters.view !== 'all') query.set('view', filters.view);
     if (filters.locationId) query.set('locationId', filters.locationId);
+    if (filters.assignedEngineerId) query.set('assignedEngineerId', filters.assignedEngineerId);
+    if (filters.productId) query.set('productId', filters.productId);
+    if (filters.status) query.set('status', filters.status);
+    if (filters.startDate) query.set('startDate', filters.startDate);
+    if (filters.endDate) query.set('endDate', filters.endDate);
     if (filters.q) query.set('q', filters.q);
     if (filters.page) query.set('page', String(filters.page));
     if (filters.limit) query.set('limit', String(filters.limit));

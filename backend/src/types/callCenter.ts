@@ -206,10 +206,12 @@ export interface NotificationOutboxRecord {
   encryptionIv?: string;
   authTag?: string;
   keyVersion?: string;
-  status: 'QUEUED' | 'SENT' | 'FAILED';
+  status: 'QUEUED' | 'PROCESSING' | 'SENT' | 'FAILED' | 'DEAD_LETTER';
   providerMessageId?: string;
   errorMessage?: string;
   retryCount: number;
+  nextRetryAt?: Date;
+  updatedAt?: Date;
   sentAt?: Date;
   createdAt: Date;
 }

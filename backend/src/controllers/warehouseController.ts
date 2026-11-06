@@ -300,8 +300,11 @@ export class WarehouseController {
       const fromLocationId = typeof req.query['fromLocationId'] === 'string' ? req.query['fromLocationId'] : undefined;
       const toLocationId = typeof req.query['toLocationId'] === 'string' ? req.query['toLocationId'] : undefined;
       const requestId = typeof req.query['requestId'] === 'string' ? req.query['requestId'] : undefined;
+      const jobNumber = typeof req.query['jobNumber'] === 'string' ? req.query['jobNumber'] : undefined;
       const status = typeof req.query['status'] === 'string' ? (req.query['status'] as any) : undefined;
       const search = typeof req.query['search'] === 'string' ? req.query['search'] : undefined;
+      const fromDate = typeof req.query['fromDate'] === 'string' ? req.query['fromDate'] : undefined;
+      const toDate = typeof req.query['toDate'] === 'string' ? req.query['toDate'] : undefined;
       const page = req.query['page'] ? Number(req.query['page']) : 1;
       const limit = req.query['limit'] ? Number(req.query['limit']) : 20;
 
@@ -309,8 +312,11 @@ export class WarehouseController {
         fromLocationId,
         toLocationId,
         requestId,
+        jobNumber,
         status,
         search,
+        fromDate,
+        toDate,
         page,
         limit,
       });
@@ -542,7 +548,9 @@ export class WarehouseController {
         customerName: row.CUSTOMER_NAME,
         customerPhone: row.CUSTOMER_PHONE,
         asfLocationId: row.ASF_LOCATION_ID,
+        assignedLocationId: row.ASF_LOCATION_ID,
         asfName: row.ASF_NAME,
+        assignedLocationName: row.ASF_NAME,
         modelName: row.MODEL_NAME,
         partId: row.PART_ID,
         partCode: row.PART_CODE,
@@ -551,8 +559,10 @@ export class WarehouseController {
         entryType: row.ENTRY_TYPE,
         partStatus: row.PART_STATUS,
         whAvailableQty: Number(row.WH_AVAILABLE_QTY || 0),
+        availableStock: Number(row.WH_AVAILABLE_QTY || 0),
         isReserved: Boolean(row.RESERVATION_STATUS === 'ACTIVE'),
         createdAt: new Date(row.CREATED_AT),
+        requestedAt: new Date(row.CREATED_AT).toISOString(),
       }));
 
       sendSuccess(res, { items, total: items.length });

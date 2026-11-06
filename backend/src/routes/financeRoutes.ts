@@ -114,6 +114,36 @@ financeRouter.post(
   financeController.reviewPenalty.bind(financeController)
 );
 
+financeRouter.post(
+  '/penalties/:penaltyId/reverse',
+  requireCsrf,
+  requirePermission('finance:approve'),
+  financeController.reversePenalty.bind(financeController)
+);
+
+/**
+ * 4.1 SLA Penalty Policy Administration
+ */
+financeRouter.get(
+  '/policies',
+  requirePermission('finance:read'),
+  financeController.listPolicies.bind(financeController)
+);
+
+financeRouter.post(
+  '/policies',
+  requireCsrf,
+  requirePermission('finance:manage'),
+  financeController.createPolicy.bind(financeController)
+);
+
+financeRouter.post(
+  '/policies/:policyId/approve',
+  requireCsrf,
+  requirePermission('finance:approve'),
+  financeController.reviewPolicyApproval.bind(financeController)
+);
+
 /**
  * 5. Settlement Batches
  */

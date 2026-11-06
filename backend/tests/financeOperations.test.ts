@@ -6,6 +6,7 @@ import { brandWalletRepository } from '../src/database/repositories/brandWalletR
 import { claimRateMatrixRepository } from '../src/database/repositories/claimRateMatrixRepository.js';
 import { serviceClaimRepository } from '../src/database/repositories/serviceClaimRepository.js';
 import { slaPenaltyRepository } from '../src/database/repositories/slaPenaltyRepository.js';
+import { slaPolicyRepository } from '../src/database/repositories/slaPolicyRepository.js';
 import { settlementBatchRepository } from '../src/database/repositories/settlementBatchRepository.js';
 import { financeService } from '../src/services/financeService.js';
 import { AuthenticatedUser } from '../src/types/auth.js';
@@ -660,20 +661,53 @@ describe('Phase 4: Finance, Brand Wallets, Service Claims & Settlement Operation
       expect(penalty.calculatedAmount).toBe(500.0);
       expect(penalty.journalId).toBeUndefined(); // NEVER automatically debited!
 
-      // Review and approve with authorized commercial rate and policy reference
+      // 1. Attempting to approve with unapproved seeded policy POL-SLA-48H-STD is strictly rejected
+      await expect(
+        financeService.reviewPenalty(
+          penalty.penaltyId,
+          {
+            action: 'APPROVE',
+            authorizedAmount: 500.0,
+            policyReference: 'POL-SLA-48H-STD',
+            reviewRemarks: 'Attempting to approve under unapproved seeded policy',
+          },
+          adminActor
+        )
+      ).rejects.toThrow(/not formally approved for commercial use|UNAPPROVED_POLICY/i);
+
+      // 2. Ensure an approved policy exists for authorized approval
+      const testPolCode = `POL-FIN-48H-${Date.now().toString().slice(-5)}`;
+      await slaPolicyRepository.createPolicy({
+        policyCode: testPolCode,
+        policyName: 'Finance Test Approved Policy',
+        policyVersion: '1.0',
+        breachType: 'SLA_48H_ACKNOWLEDGEMENT',
+        calculationType: 'FIXED',
+        penaltyAmount: 500.0,
+        effectiveFrom: new Date(Date.now() - 3600 * 1000),
+        isActive: 'Y',
+        governanceRef: 'AUDIT-FIN-01',
+        approvalStatus: 'APPROVED',
+        approvedBy: adminActor.userId,
+        approvedAt: new Date(),
+        approvalRemarks: 'Approved for finance tests',
+      });
+
+      // 3. Review and approve with authorized commercial rate and approved policy reference
       const reviewed = await financeService.reviewPenalty(
         penalty.penaltyId,
         {
           action: 'APPROVE',
           authorizedAmount: 500.0,
-          policyReference: 'ANNEXURE_B_SLA_2026',
+          policyReference: testPolCode,
           reviewRemarks: 'Acknowledged SLA delay verified with franchise logs',
         },
         adminActor
       );
 
-      expect(reviewed.status).toBe('APPROVED');
+      expect(reviewed.status).toBe('POSTED');
       expect(reviewed.reviewRemarks).toContain('franchise logs');
+      expect(reviewed.journalId).toBeDefined();
     });
 
     it('should support waiving a penalty with documented audit reasoning', async () => {

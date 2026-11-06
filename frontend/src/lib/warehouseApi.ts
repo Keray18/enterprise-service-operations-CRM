@@ -138,12 +138,13 @@ export interface StockDispatch {
   transporterName?: string;
   docketNo?: string;
   ewayBillNo?: string;
-  subtotalTaxable: number;
-  totalCgst: number;
-  totalSgst: number;
-  totalIgst: number;
+  subtotalTaxable?: number;
+  subtotalAmount?: number;
+  totalCgst?: number;
+  totalSgst?: number;
+  totalIgst?: number;
   totalAmount: number;
-  status: 'DISPATCHED' | 'DELIVERED' | 'CANCELLED';
+  status: 'IN_TRANSIT' | 'ACKNOWLEDGED' | 'CANCELLED' | 'DISPATCHED' | 'DELIVERED';
   dispatchedBy: string;
   dispatchedAt: string;
   acknowledgedBy?: string;
@@ -471,20 +472,30 @@ export function useReceiveGrn() {
   });
 }
 
-export function useDispatches(params?: {
+export interface DispatchesQueryParams {
   fromLocationId?: string;
   toLocationId?: string;
+  jobNumber?: string;
   status?: string;
+  search?: string;
+  fromDate?: string;
+  toDate?: string;
   page?: number;
   limit?: number;
-}) {
+}
+
+export function useDispatches(params?: DispatchesQueryParams) {
   return useQuery<PaginatedResult<StockDispatch>>({
     queryKey: ['warehouse', 'dispatches', params],
     queryFn: async () => {
       const q = new URLSearchParams();
       if (params?.fromLocationId) q.append('fromLocationId', params.fromLocationId);
       if (params?.toLocationId) q.append('toLocationId', params.toLocationId);
+      if (params?.jobNumber) q.append('jobNumber', params.jobNumber);
       if (params?.status) q.append('status', params.status);
+      if (params?.search) q.append('search', params.search);
+      if (params?.fromDate) q.append('fromDate', params.fromDate);
+      if (params?.toDate) q.append('toDate', params.toDate);
       if (params?.page) q.append('page', params.page.toString());
       if (params?.limit) q.append('limit', params.limit.toString());
       return apiClient.get<PaginatedResult<StockDispatch>>(`/api/v1/warehouse/dispatches?${q.toString()}`);

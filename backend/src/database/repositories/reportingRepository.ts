@@ -51,12 +51,16 @@ export interface WarrantyClaimReportRow {
   claimNumber: string;
   claimPeriod: string;
   asfLocationName: string;
+  asfName?: string;
   brandName: string;
   totalJobsCount: number;
   grossLaborAmount: number;
   grossTravelAmount: number;
+  penaltyDeductionAmount: number | null;
   netClaimAmount: number;
   status: string;
+  submittedAt?: Date;
+  approvedAt?: Date;
   settlementNumber?: string;
   settledAt?: Date;
   journalNumber?: string;
@@ -319,8 +323,11 @@ export class ReportingRepository {
           sc.TOTAL_JOBS_COUNT,
           sc.GROSS_LABOR_AMOUNT,
           sc.GROSS_TRAVEL_AMOUNT,
+          sc.PENALTY_DEDUCTION_AMOUNT,
           sc.NET_CLAIM_AMOUNT,
           sc.STATUS,
+          sc.SUBMITTED_AT,
+          sc.APPROVED_AT,
           fj.JOURNAL_NUMBER,
           sc.CREATED_AT
         FROM SERVICE_CLAIMS sc
@@ -337,12 +344,16 @@ export class ReportingRepository {
         claimNumber: row.CLAIM_NUMBER,
         claimPeriod: row.CLAIM_PERIOD,
         asfLocationName: row.ASF_NAME,
+        asfName: row.ASF_NAME,
         brandName: row.BRAND_NAME,
         totalJobsCount: Number(row.TOTAL_JOBS_COUNT || 0),
         grossLaborAmount: Number(row.GROSS_LABOR_AMOUNT || 0),
         grossTravelAmount: Number(row.GROSS_TRAVEL_AMOUNT || 0),
+        penaltyDeductionAmount: row.PENALTY_DEDUCTION_AMOUNT != null ? Number(row.PENALTY_DEDUCTION_AMOUNT) : null,
         netClaimAmount: Number(row.NET_CLAIM_AMOUNT || 0),
         status: row.STATUS,
+        submittedAt: row.SUBMITTED_AT ? new Date(row.SUBMITTED_AT) : undefined,
+        approvedAt: row.APPROVED_AT ? new Date(row.APPROVED_AT) : undefined,
         journalNumber: row.JOURNAL_NUMBER || undefined,
         createdAt: new Date(row.CREATED_AT),
       }));
@@ -488,6 +499,574 @@ export class ReportingRepository {
       await conn.close();
     }
   }
+
+  /**
+   * Enterprise Admin Operations Dashboard Summary.
+   * Delivers accurate, Oracle-backed KPIs, charts, exceptions, and recent events.
+   */
+  async getAdminDashboardSummary(
+    preset = '7d',
+    customFromDate?: string,
+    customToDate?: string,
+    userPermissions: string[] = []
+  ): Promise<AdminDashboardData> {
+    const conn = await getOracleConnection();
+    try {
+      const now = new Date();
+      let fromDate: Date;
+      let toDate: Date;
+      let effectivePreset = preset;
+
+      if (preset === 'today') {
+        fromDate = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+        toDate = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+      } else if (preset === '30d') {
+        fromDate = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 29, 0, 0, 0, 0);
+        toDate = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+      } else if (preset === '90d') {
+        fromDate = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 89, 0, 0, 0, 0);
+        toDate = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+      } else if (preset === 'custom' && customFromDate && customToDate) {
+        if (/^\d{4}-\d{2}-\d{2}$/.test(customFromDate) && /^\d{4}-\d{2}-\d{2}$/.test(customToDate)) {
+          const partsF = customFromDate.split('-').map(Number);
+          const partsT = customToDate.split('-').map(Number);
+          const fy = partsF[0] ?? now.getFullYear();
+          const fm = partsF[1] ?? (now.getMonth() + 1);
+          const fd = partsF[2] ?? now.getDate();
+          const ty = partsT[0] ?? now.getFullYear();
+          const tm = partsT[1] ?? (now.getMonth() + 1);
+          const td = partsT[2] ?? now.getDate();
+          fromDate = new Date(fy, fm - 1, fd, 0, 0, 0, 0);
+          toDate = new Date(ty, tm - 1, td, 23, 59, 59, 999);
+        } else {
+          const parsedFrom = new Date(customFromDate);
+          const parsedTo = new Date(customToDate);
+          if (!isNaN(parsedFrom.getTime()) && !isNaN(parsedTo.getTime())) {
+            fromDate = parsedFrom;
+            toDate = parsedTo;
+          } else {
+            effectivePreset = '7d';
+            fromDate = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 6, 0, 0, 0, 0);
+            toDate = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+          }
+        }
+      } else {
+        effectivePreset = '7d';
+        fromDate = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 6, 0, 0, 0, 0);
+        toDate = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+      }
+
+      const binds = { fromDate, toDate };
+
+      // 1. KPI Aggregations (Single round-trip for main service request counts)
+      const kpiSql = `
+        SELECT 
+          COUNT(CASE WHEN REGISTERED_AT >= :fromDate AND REGISTERED_AT <= :toDate THEN 1 END) AS TOTAL_PERIOD_REG,
+          COUNT(CASE WHEN STATUS = 'CLOSED' AND CLOSED_AT >= :fromDate AND CLOSED_AT <= :toDate THEN 1 END) AS CLOSED_PERIOD,
+          COUNT(CASE WHEN STATUS NOT IN ('CLOSED', 'CANCELLED', 'REPLACED') THEN 1 END) AS OPEN_BACKLOG,
+          COUNT(CASE WHEN STATUS IN ('REGISTERED', 'ASSIGNED_TO_ASF') AND ACKNOWLEDGED_AT IS NULL THEN 1 END) AS AWAITING_ACK,
+          COUNT(CASE WHEN STATUS NOT IN ('CLOSED', 'CANCELLED', 'REPLACED') AND (SLA_BREACHED_48H = 'Y' OR (ACKNOWLEDGED_AT IS NULL AND SLA_48H_EXPIRES_AT < SYSTIMESTAMP)) THEN 1 END) AS OVERDUE_48H_ACK,
+          COUNT(CASE WHEN STATUS NOT IN ('CLOSED', 'CANCELLED', 'REPLACED') AND (SLA_BREACHED_168H = 'Y' OR (CLOSED_AT IS NULL AND STATUS NOT IN ('PENDING_SPARE_PART', 'PENDING_SPECIAL_PART_ESTIMATE') AND (SYSDATE - CAST(REGISTERED_AT AS DATE)) * 24 > 168)) THEN 1 END) AS OVERDUE_168H_RES,
+          COUNT(CASE WHEN STATUS = 'PENDING_SPARE_PART' THEN 1 END) AS PENDING_PARTS
+        FROM SERVICE_REQUESTS
+      `;
+      const kpiResult = await conn.execute<any>(kpiSql, binds, { outFormat: oracledb.OUT_FORMAT_OBJECT });
+      const kpiRow = kpiResult.rows?.[0] || {};
+
+      // Pending replacement and cancellation counts
+      const repResult = await conn.execute<any>(
+        "SELECT COUNT(*) AS CNT FROM REPLACEMENT_REQUESTS WHERE STATUS = 'PENDING'",
+        {},
+        { outFormat: oracledb.OUT_FORMAT_OBJECT }
+      );
+      const pendingReplacements = Number(repResult.rows?.[0]?.CNT || 0);
+
+      const canResult = await conn.execute<any>(
+        "SELECT COUNT(*) AS CNT FROM CANCELLATION_REQUESTS WHERE STATUS = 'PENDING'",
+        {},
+        { outFormat: oracledb.OUT_FORMAT_OBJECT }
+      );
+      const pendingCancellations = Number(canResult.rows?.[0]?.CNT || 0);
+      const pendingApprovals = pendingReplacements + pendingCancellations;
+
+      // 2. Volume Trend: Registered and Closed per day in period with calendar date keys
+      const regTrendSql = `
+        SELECT 
+          TO_CHAR(CAST(REGISTERED_AT AS DATE), 'YYYY-MM-DD') AS DAY_KEY,
+          COUNT(*) AS CNT
+        FROM SERVICE_REQUESTS
+        WHERE REGISTERED_AT >= :fromDate AND REGISTERED_AT <= :toDate
+        GROUP BY TO_CHAR(CAST(REGISTERED_AT AS DATE), 'YYYY-MM-DD')
+        ORDER BY DAY_KEY
+      `;
+      const regTrendRes = await conn.execute<any>(regTrendSql, binds, { outFormat: oracledb.OUT_FORMAT_OBJECT });
+      const regTrendMap = new Map<string, number>();
+      (regTrendRes.rows || []).forEach((r) => regTrendMap.set(r.DAY_KEY, Number(r.CNT || 0)));
+
+      const closedTrendSql = `
+        SELECT 
+          TO_CHAR(CAST(CLOSED_AT AS DATE), 'YYYY-MM-DD') AS DAY_KEY,
+          COUNT(*) AS CNT
+        FROM SERVICE_REQUESTS
+        WHERE STATUS = 'CLOSED' AND CLOSED_AT >= :fromDate AND CLOSED_AT <= :toDate
+        GROUP BY TO_CHAR(CAST(CLOSED_AT AS DATE), 'YYYY-MM-DD')
+        ORDER BY DAY_KEY
+      `;
+      const closedTrendRes = await conn.execute<any>(closedTrendSql, binds, { outFormat: oracledb.OUT_FORMAT_OBJECT });
+      const closedTrendMap = new Map<string, number>();
+      (closedTrendRes.rows || []).forEach((r) => closedTrendMap.set(r.DAY_KEY, Number(r.CNT || 0)));
+
+      // Generate continuous daily buckets without timezone offset skew
+      const volumeTrend: Array<{ date: string; registered: number; closed: number }> = [];
+      const cursor = new Date(fromDate);
+      cursor.setHours(0, 0, 0, 0);
+      const endLimit = new Date(toDate);
+      endLimit.setHours(23, 59, 59, 999);
+
+      while (cursor <= endLimit) {
+        const y = cursor.getFullYear();
+        const m = String(cursor.getMonth() + 1).padStart(2, '0');
+        const d = String(cursor.getDate()).padStart(2, '0');
+        const key = `${y}-${m}-${d}`;
+        volumeTrend.push({
+          date: key,
+          registered: regTrendMap.get(key) || 0,
+          closed: closedTrendMap.get(key) || 0,
+        });
+        cursor.setDate(cursor.getDate() + 1);
+      }
+
+      // 3. Current Workflow Distribution (all active workflow statuses)
+      const wfSql = `
+        SELECT STATUS, COUNT(*) AS CNT
+        FROM SERVICE_REQUESTS
+        GROUP BY STATUS
+        ORDER BY CNT DESC
+      `;
+      const wfRes = await conn.execute<any>(wfSql, {}, { outFormat: oracledb.OUT_FORMAT_OBJECT });
+      const totalRequestsAll = (wfRes.rows || []).reduce((sum, r) => sum + Number(r.CNT || 0), 0);
+      const workflowDistribution = (wfRes.rows || []).map((r) => ({
+        status: r.STATUS,
+        count: Number(r.CNT || 0),
+        percentage: totalRequestsAll > 0 ? Number(((Number(r.CNT || 0) / totalRequestsAll) * 100).toFixed(1)) : 0,
+      }));
+
+      // 4. SLA Compliance with Authoritative Timestamps and Defined Eligible Cohorts
+      // 48h Acknowledgment: Eligible cohort strictly includes requests whose 48h window has
+      // concluded (either acknowledged, or deadline has elapsed). In-flight requests within their
+      // initial 48h window are explicitly tracked separately and not counted as SLA failures.
+      const sla48Sql = `
+        SELECT 
+          COUNT(*) AS TOTAL_REGISTERED,
+          COUNT(CASE 
+            WHEN ACKNOWLEDGED_AT IS NULL 
+             AND (SLA_48H_EXPIRES_AT > SYSTIMESTAMP OR SLA_48H_EXPIRES_AT IS NULL)
+             AND STATUS NOT IN ('CLOSED', 'CANCELLED', 'REPLACED')
+            THEN 1 END) AS IN_FLIGHT,
+          COUNT(CASE 
+            WHEN ACKNOWLEDGED_AT IS NOT NULL 
+              OR (SLA_48H_EXPIRES_AT <= SYSTIMESTAMP AND STATUS != 'CANCELLED')
+              OR SLA_BREACHED_48H = 'Y'
+            THEN 1 END) AS TOTAL_ELIGIBLE,
+          COUNT(CASE 
+            WHEN ACKNOWLEDGED_AT IS NOT NULL 
+             AND (ACKNOWLEDGED_AT <= SLA_48H_EXPIRES_AT OR SLA_48H_EXPIRES_AT IS NULL)
+            THEN 1 END) AS ON_TIME,
+          COUNT(CASE 
+            WHEN (ACKNOWLEDGED_AT IS NOT NULL AND SLA_48H_EXPIRES_AT IS NOT NULL AND ACKNOWLEDGED_AT > SLA_48H_EXPIRES_AT)
+              OR (ACKNOWLEDGED_AT IS NULL AND SLA_48H_EXPIRES_AT <= SYSTIMESTAMP AND STATUS != 'CANCELLED')
+              OR SLA_BREACHED_48H = 'Y'
+            THEN 1 END) AS BREACHED
+        FROM SERVICE_REQUESTS
+        WHERE REGISTERED_AT >= :fromDate AND REGISTERED_AT <= :toDate
+      `;
+      const sla48Res = await conn.execute<any>(sla48Sql, binds, { outFormat: oracledb.OUT_FORMAT_OBJECT });
+      const sla48Row = sla48Res.rows?.[0] || {};
+      const tot48 = Number(sla48Row.TOTAL_ELIGIBLE || 0);
+      const onTime48 = Number(sla48Row.ON_TIME || 0);
+      const breached48 = Number(sla48Row.BREACHED || 0);
+      const inFlight48 = Number(sla48Row.IN_FLIGHT || 0);
+      const totalRegistered48 = Number(sla48Row.TOTAL_REGISTERED || 0);
+      const rate48 = tot48 > 0 ? Number(((onTime48 / tot48) * 100).toFixed(1)) : 100;
+
+      // 168h Resolution SLA: Evaluates all requests closed in the period.
+      // Incorporates pause rules per Decision 2.2 (PNA spare parts transit and customer estimate pause).
+      // Authoritative timestamps govern even if background worker flag is stale.
+      const sla168Sql = `
+        SELECT 
+          COUNT(*) AS TOTAL_CLOSED,
+          COUNT(CASE 
+            WHEN sr.SLA_BREACHED_168H = 'N' AND (
+              (CAST(sr.CLOSED_AT AS DATE) - CAST(sr.REGISTERED_AT AS DATE)) * 24 <= 168
+              OR EXISTS (
+                SELECT 1 FROM SERVICE_REQUEST_EVENTS sre 
+                WHERE sre.REQUEST_ID = sr.REQUEST_ID 
+                  AND (sre.TO_STATE IN ('PENDING_SPARE_PART', 'PENDING_SPECIAL_PART_ESTIMATE')
+                       OR sre.EVENT_TYPE IN ('PART_DISPATCHED', 'SPARE_PART_REQUESTED'))
+              )
+            ) THEN 1 
+          END) AS ON_TIME,
+          COUNT(CASE 
+            WHEN sr.SLA_BREACHED_168H = 'Y'
+              OR (
+                (CAST(sr.CLOSED_AT AS DATE) - CAST(sr.REGISTERED_AT AS DATE)) * 24 > 168
+                AND NOT EXISTS (
+                  SELECT 1 FROM SERVICE_REQUEST_EVENTS sre 
+                  WHERE sre.REQUEST_ID = sr.REQUEST_ID 
+                    AND (sre.TO_STATE IN ('PENDING_SPARE_PART', 'PENDING_SPECIAL_PART_ESTIMATE')
+                         OR sre.EVENT_TYPE IN ('PART_DISPATCHED', 'SPARE_PART_REQUESTED'))
+                )
+              ) THEN 1 
+          END) AS BREACHED,
+          AVG(CASE WHEN sr.CLOSED_AT IS NOT NULL AND sr.REGISTERED_AT IS NOT NULL THEN (CAST(sr.CLOSED_AT AS DATE) - CAST(sr.REGISTERED_AT AS DATE)) * 24 END) AS AVG_TAT,
+          COUNT(CASE WHEN srv.HAPPY_CODE_VERIFIED_AT IS NOT NULL THEN 1 END) AS HAPPY_COUNT
+        FROM SERVICE_REQUESTS sr
+        LEFT JOIN SERVICE_REQUEST_VERIFICATIONS srv ON sr.REQUEST_ID = srv.REQUEST_ID
+        WHERE sr.STATUS = 'CLOSED' AND sr.CLOSED_AT >= :fromDate AND sr.CLOSED_AT <= :toDate
+      `;
+      const sla168Res = await conn.execute<any>(sla168Sql, binds, { outFormat: oracledb.OUT_FORMAT_OBJECT });
+      const sla168Row = sla168Res.rows?.[0] || {};
+      const tot168 = Number(sla168Row.TOTAL_CLOSED || 0);
+      const onTime168 = Number(sla168Row.ON_TIME || 0);
+      const breached168 = Number(sla168Row.BREACHED || 0);
+      const rate168 = tot168 > 0 ? Number(((onTime168 / tot168) * 100).toFixed(1)) : 100;
+      const avgTat = sla168Row.AVG_TAT != null ? Number(Number(sla168Row.AVG_TAT).toFixed(1)) : 0;
+      const happyCount = Number(sla168Row.HAPPY_COUNT || 0);
+      const happyRate = tot168 > 0 ? Number(((happyCount / tot168) * 100).toFixed(1)) : 100;
+
+      // 5. Aging Buckets for Open Backlog
+      const agingSql = `
+        SELECT 
+          COUNT(CASE WHEN (SYSDATE - CAST(REGISTERED_AT AS DATE)) * 24 < 24 THEN 1 END) AS AGE_LT_24,
+          COUNT(CASE WHEN (SYSDATE - CAST(REGISTERED_AT AS DATE)) * 24 >= 24 AND (SYSDATE - CAST(REGISTERED_AT AS DATE)) * 24 < 48 THEN 1 END) AS AGE_24_48,
+          COUNT(CASE WHEN (SYSDATE - CAST(REGISTERED_AT AS DATE)) * 24 >= 48 AND (SYSDATE - CAST(REGISTERED_AT AS DATE)) * 24 < 72 THEN 1 END) AS AGE_48_72,
+          COUNT(CASE WHEN (SYSDATE - CAST(REGISTERED_AT AS DATE)) * 24 >= 72 AND (SYSDATE - CAST(REGISTERED_AT AS DATE)) * 24 < 168 THEN 1 END) AS AGE_72_168,
+          COUNT(CASE WHEN (SYSDATE - CAST(REGISTERED_AT AS DATE)) * 24 >= 168 THEN 1 END) AS AGE_GT_168
+        FROM SERVICE_REQUESTS
+        WHERE STATUS NOT IN ('CLOSED', 'CANCELLED', 'REPLACED')
+      `;
+      const agingRes = await conn.execute<any>(agingSql, {}, { outFormat: oracledb.OUT_FORMAT_OBJECT });
+      const agingRow = agingRes.rows?.[0] || {};
+      const openBacklogTotal = Number(kpiRow.OPEN_BACKLOG || 0);
+
+      const agingBuckets = [
+        { bucket: '< 24 Hours', count: Number(agingRow.AGE_LT_24 || 0) },
+        { bucket: '24 - 48 Hours', count: Number(agingRow.AGE_24_48 || 0) },
+        { bucket: '48 - 72 Hours', count: Number(agingRow.AGE_48_72 || 0) },
+        { bucket: '3 - 7 Days', count: Number(agingRow.AGE_72_168 || 0) },
+        { bucket: '> 7 Days (Critical)', count: Number(agingRow.AGE_GT_168 || 0) },
+      ].map((b) => ({
+        ...b,
+        percentage: openBacklogTotal > 0 ? Number(((b.count / openBacklogTotal) * 100).toFixed(1)) : 0,
+      }));
+
+      // 6. Top Brands & Products by Request Volume in Period
+      const brandsSql = `
+        SELECT b.BRAND_NAME, COUNT(*) AS CNT
+        FROM SERVICE_REQUESTS sr
+        JOIN BRANDS b ON sr.BRAND_ID = b.BRAND_ID
+        WHERE sr.REGISTERED_AT >= :fromDate AND sr.REGISTERED_AT <= :toDate
+        GROUP BY b.BRAND_NAME
+        ORDER BY CNT DESC
+        FETCH FIRST 5 ROWS ONLY
+      `;
+      const brandsRes = await conn.execute<any>(brandsSql, binds, { outFormat: oracledb.OUT_FORMAT_OBJECT });
+      const topBrands = (brandsRes.rows || []).map((r) => ({
+        brandName: r.BRAND_NAME,
+        count: Number(r.CNT || 0),
+      }));
+
+      const prodsSql = `
+        SELECT p.PRODUCT_NAME, COUNT(*) AS CNT
+        FROM SERVICE_REQUESTS sr
+        JOIN PRODUCTS p ON sr.PRODUCT_ID = p.PRODUCT_ID
+        WHERE sr.REGISTERED_AT >= :fromDate AND sr.REGISTERED_AT <= :toDate
+        GROUP BY p.PRODUCT_NAME
+        ORDER BY CNT DESC
+        FETCH FIRST 5 ROWS ONLY
+      `;
+      const prodsRes = await conn.execute<any>(prodsSql, binds, { outFormat: oracledb.OUT_FORMAT_OBJECT });
+      const topProducts = (prodsRes.rows || []).map((r) => ({
+        productName: r.PRODUCT_NAME,
+        count: Number(r.CNT || 0),
+      }));
+
+      // 7. Dead Letter Notifications
+      const deadLetterRes = await conn.execute<any>(
+        "SELECT COUNT(*) AS CNT FROM NOTIFICATIONS_OUTBOX WHERE STATUS = 'DEAD_LETTER'",
+        {},
+        { outFormat: oracledb.OUT_FORMAT_OBJECT }
+      );
+      const deadLetterCount = Number(deadLetterRes.rows?.[0]?.CNT || 0);
+
+      // Financial queues (only if user has authorized permissions)
+      let pendingClaimsCount: number | undefined;
+      let pendingPenaltiesCount: number | undefined;
+
+      if (userPermissions.includes('finance:read') || userPermissions.includes('finance:claims')) {
+        const clmRes = await conn.execute<any>(
+          "SELECT COUNT(*) AS CNT FROM SERVICE_CLAIMS WHERE STATUS = 'SUBMITTED'",
+          {},
+          { outFormat: oracledb.OUT_FORMAT_OBJECT }
+        );
+        pendingClaimsCount = Number(clmRes.rows?.[0]?.CNT || 0);
+      }
+
+      if (userPermissions.includes('finance:read') || userPermissions.includes('sla:manage')) {
+        const penRes = await conn.execute<any>(
+          "SELECT COUNT(*) AS CNT FROM SLA_PENALTY_RECORDS WHERE STATUS = 'PENDING_REVIEW'",
+          {},
+          { outFormat: oracledb.OUT_FORMAT_OBJECT }
+        );
+        pendingPenaltiesCount = Number(penRes.rows?.[0]?.CNT || 0);
+      }
+
+      // 8. Recent Operational Events (Sanitized - no OTPs, secrets, or raw attachments)
+      const activitySql = `
+        SELECT 
+          sre.EVENT_ID,
+          sr.JOB_NUMBER,
+          sre.EVENT_TYPE,
+          sre.FROM_STATE,
+          sre.TO_STATE,
+          sre.TRIGGERED_BY_USERNAME,
+          sre.TRIGGERED_BY_ROLE,
+          sre.REMARKS,
+          sre.CREATED_AT
+        FROM SERVICE_REQUEST_EVENTS sre
+        JOIN SERVICE_REQUESTS sr ON sre.REQUEST_ID = sr.REQUEST_ID
+        ORDER BY sre.CREATED_AT DESC
+        FETCH FIRST 10 ROWS ONLY
+      `;
+      const actRes = await conn.execute<any>(activitySql, {}, { outFormat: oracledb.OUT_FORMAT_OBJECT });
+      const recentActivity = (actRes.rows || []).map((r) => ({
+        eventId: r.EVENT_ID,
+        jobNumber: r.JOB_NUMBER,
+        eventType: r.EVENT_TYPE,
+        fromState: r.FROM_STATE,
+        toState: r.TO_STATE,
+        triggeredByUsername: r.TRIGGERED_BY_USERNAME,
+        triggeredByRole: r.TRIGGERED_BY_ROLE,
+        remarks: r.REMARKS || undefined,
+        createdAt: new Date(r.CREATED_AT).toISOString(),
+      }));
+
+      // 9. Operational Network Overview & Service Center Capacity Breakdown
+      const networkSql = `
+        SELECT 
+          (SELECT COUNT(*) FROM LOCATIONS WHERE PARTY_TYPE = 'ASF' AND IS_ACTIVE = 'Y') AS TOTAL_CENTERS,
+          (SELECT COUNT(DISTINCT u.USER_ID) FROM APP_USERS u JOIN USER_ROLES ur ON u.USER_ID = ur.USER_ID JOIN ROLES r ON ur.ROLE_ID = r.ROLE_ID WHERE r.CODE = 'ENGINEER' AND u.IS_ACTIVE = 'Y') AS TOTAL_TECHNICIANS,
+          (SELECT COUNT(*) FROM SERVICE_REQUESTS WHERE ASSIGNED_LOCATION_ID IS NOT NULL AND STATUS NOT IN ('CLOSED', 'CANCELLED', 'REPLACED')) AS ASSIGNED_REQUESTS,
+          (SELECT COUNT(*) FROM SERVICE_REQUESTS WHERE STATUS NOT IN ('CLOSED', 'CANCELLED', 'REPLACED')) AS ACTIVE_JOBS,
+          (SELECT COUNT(*) FROM SERVICE_REQUESTS WHERE STATUS IN ('REGISTERED', 'ASSIGNED_TO_ASF') AND ACKNOWLEDGED_AT IS NULL) AS AWAITING_ACK,
+          (SELECT COUNT(*) FROM SERVICE_REQUESTS WHERE STATUS IN ('PENDING_SPARE_PART', 'PENDING_SPECIAL_PART_ESTIMATE', 'SPECIAL_PART_ESTIMATE_PROVIDED')) AS PENDING_PARTS,
+          (SELECT COUNT(*) FROM SERVICE_REQUESTS WHERE TRUNC(CAST(APPOINTMENT_DATE AS DATE)) = TRUNC(SYSDATE) AND STATUS NOT IN ('CLOSED', 'CANCELLED', 'REPLACED')) AS TODAY_APPOINTMENTS,
+          (SELECT COUNT(*) FROM STOCK_DISPATCHES WHERE STATUS = 'IN_TRANSIT') AS DISPATCHES_AWAITING_ACK
+        FROM DUAL
+      `;
+      const netRes = await conn.execute<any>(networkSql, {}, { outFormat: oracledb.OUT_FORMAT_OBJECT });
+      const netRow = netRes.rows?.[0] || {};
+
+      const operationalNetwork = {
+        totalActiveServiceCenters: Number(netRow.TOTAL_CENTERS || 0),
+        totalActiveTechnicians: Number(netRow.TOTAL_TECHNICIANS || 0),
+        assignedRequests: Number(netRow.ASSIGNED_REQUESTS || 0),
+        activeJobs: Number(netRow.ACTIVE_JOBS || 0),
+        awaitingAck: Number(netRow.AWAITING_ACK || 0),
+        openBacklog: openBacklogTotal,
+        pendingParts: Number(netRow.PENDING_PARTS || 0),
+        todayAppointments: Number(netRow.TODAY_APPOINTMENTS || 0),
+        dispatchesAwaitingAck: Number(netRow.DISPATCHES_AWAITING_ACK || 0),
+      };
+
+      const scWorkloadSql = `
+        SELECT 
+          l.LOCATION_ID,
+          l.LOCATION_CODE,
+          l.LOCATION_NAME,
+          COUNT(CASE WHEN sr.STATUS NOT IN ('CLOSED', 'CANCELLED', 'REPLACED') THEN 1 END) AS ASSIGNED_OPEN_JOBS,
+          COUNT(CASE WHEN sr.STATUS IN ('REGISTERED', 'ASSIGNED_TO_ASF') AND sr.ACKNOWLEDGED_AT IS NULL THEN 1 END) AS AWAITING_ACK,
+          COUNT(CASE WHEN sr.STATUS IN ('APPOINTMENT_SCHEDULED', 'TECHNICIAN_CHECKED_IN', 'IN_PROGRESS_REPAIR') THEN 1 END) AS IN_PROGRESS,
+          COUNT(CASE WHEN sr.STATUS IN ('PENDING_SPARE_PART', 'PENDING_SPECIAL_PART_ESTIMATE', 'SPECIAL_PART_ESTIMATE_PROVIDED') THEN 1 END) AS PENDING_PARTS,
+          COUNT(CASE WHEN sr.STATUS = 'CLOSED' AND sr.CLOSED_AT >= :fromDate AND sr.CLOSED_AT <= :toDate THEN 1 END) AS COMPLETED_PERIOD,
+          COUNT(CASE WHEN sr.STATUS NOT IN ('CLOSED', 'CANCELLED', 'REPLACED') AND (sr.SLA_BREACHED_48H = 'Y' OR (sr.ACKNOWLEDGED_AT IS NULL AND SYSTIMESTAMP > sr.SLA_48H_EXPIRES_AT) OR sr.SLA_BREACHED_168H = 'Y') THEN 1 END) AS OVERDUE_JOBS,
+          (SELECT COUNT(DISTINCT u.USER_ID) FROM APP_USERS u JOIN USER_ROLES ur ON u.USER_ID = ur.USER_ID JOIN ROLES r ON ur.ROLE_ID = r.ROLE_ID WHERE r.CODE = 'ENGINEER' AND u.LOCATION_ID = l.LOCATION_ID AND u.IS_ACTIVE = 'Y') AS ACTIVE_TECHNICIANS
+        FROM LOCATIONS l
+        LEFT JOIN SERVICE_REQUESTS sr ON l.LOCATION_ID = sr.ASSIGNED_LOCATION_ID
+        WHERE l.PARTY_TYPE = 'ASF' AND l.IS_ACTIVE = 'Y'
+        GROUP BY l.LOCATION_ID, l.LOCATION_CODE, l.LOCATION_NAME
+        ORDER BY ASSIGNED_OPEN_JOBS DESC, l.LOCATION_NAME ASC
+      `;
+      const scRes = await conn.execute<any>(scWorkloadSql, binds, { outFormat: oracledb.OUT_FORMAT_OBJECT });
+      const serviceCenterWorkload = (scRes.rows || []).map((r) => ({
+        locationId: r.LOCATION_ID,
+        locationCode: r.LOCATION_CODE,
+        locationName: r.LOCATION_NAME,
+        assignedOpenJobs: Number(r.ASSIGNED_OPEN_JOBS || 0),
+        awaitingAck: Number(r.AWAITING_ACK || 0),
+        inProgress: Number(r.IN_PROGRESS || 0),
+        pendingParts: Number(r.PENDING_PARTS || 0),
+        completedInPeriod: Number(r.COMPLETED_PERIOD || 0),
+        overdueJobs: Number(r.OVERDUE_JOBS || 0),
+        activeTechnicians: Number(r.ACTIVE_TECHNICIANS || 0),
+        capacityConfigured: false,
+        configuredCapacity: null,
+      }));
+
+      return {
+        period: {
+          preset: effectivePreset,
+          fromDate: fromDate.toISOString(),
+          toDate: toDate.toISOString(),
+        },
+        kpis: {
+          totalInPeriod: Number(kpiRow.TOTAL_PERIOD_REG || 0),
+          openBacklog: openBacklogTotal,
+          awaitingAck: Number(kpiRow.AWAITING_ACK || 0),
+          overdue48hAck: Number(kpiRow.OVERDUE_48H_ACK || 0),
+          overdue168hResolution: Number(kpiRow.OVERDUE_168H_RES || 0),
+          closedInPeriod: Number(kpiRow.CLOSED_PERIOD || 0),
+          pendingApprovals,
+          pendingParts: Number(kpiRow.PENDING_PARTS || 0),
+        },
+        operationalNetwork,
+        serviceCenterWorkload,
+        charts: {
+          volumeTrend,
+          workflowDistribution,
+          slaCompliance: {
+            ack48h: {
+              totalEligible: tot48,
+              onTime: onTime48,
+              breached: breached48,
+              rate: rate48,
+              inFlight: inFlight48,
+              totalRegistered: totalRegistered48,
+            },
+            resolution168h: {
+              totalClosed: tot168,
+              onTime: onTime168,
+              breached: breached168,
+              rate: rate168,
+            },
+          },
+          agingBuckets,
+          topBrands,
+          topProducts,
+          customerOutcomes: {
+            happyCodeVerificationRate: happyRate,
+            avgResolutionTatHours: avgTat,
+            totalClosedWithTat: tot168,
+          },
+        },
+        pendingActions: {
+          overdueAckCount: Number(kpiRow.OVERDUE_48H_ACK || 0),
+          overdueResolutionCount: Number(kpiRow.OVERDUE_168H_RES || 0),
+          pendingReplacementCount: pendingReplacements,
+          pendingCancellationCount: pendingCancellations,
+          pendingPnaCount: Number(kpiRow.PENDING_PARTS || 0),
+          deadLetterNotificationCount: deadLetterCount,
+          pendingClaimsAuditCount: pendingClaimsCount,
+          pendingSlaPenaltyCount: pendingPenaltiesCount,
+        },
+        recentActivity,
+      };
+    } finally {
+      await conn.close();
+    }
+  }
+}
+
+export interface AdminDashboardData {
+  period: {
+    preset: string;
+    fromDate: string;
+    toDate: string;
+  };
+  kpis: {
+    totalInPeriod: number;
+    openBacklog: number;
+    awaitingAck: number;
+    overdue48hAck: number;
+    overdue168hResolution: number;
+    closedInPeriod: number;
+    pendingApprovals: number;
+    pendingParts: number;
+  };
+  operationalNetwork: {
+    totalActiveServiceCenters: number;
+    totalActiveTechnicians: number;
+    assignedRequests: number;
+    activeJobs: number;
+    awaitingAck: number;
+    openBacklog: number;
+    pendingParts: number;
+    todayAppointments: number;
+    dispatchesAwaitingAck: number;
+  };
+  serviceCenterWorkload: Array<{
+    locationId: string;
+    locationCode: string;
+    locationName: string;
+    assignedOpenJobs: number;
+    awaitingAck: number;
+    inProgress: number;
+    pendingParts: number;
+    completedInPeriod: number;
+    overdueJobs: number;
+    activeTechnicians: number;
+    capacityConfigured: boolean;
+    configuredCapacity: number | null;
+  }>;
+  charts: {
+    volumeTrend: Array<{ date: string; registered: number; closed: number }>;
+    workflowDistribution: Array<{ status: string; count: number; percentage: number }>;
+    slaCompliance: {
+      ack48h: {
+        totalEligible: number;
+        onTime: number;
+        breached: number;
+        rate: number;
+        inFlight?: number;
+        totalRegistered?: number;
+      };
+      resolution168h: {
+        totalClosed: number;
+        onTime: number;
+        breached: number;
+        rate: number;
+      };
+    };
+    agingBuckets: Array<{ bucket: string; count: number; percentage: number }>;
+    topBrands: Array<{ brandName: string; count: number }>;
+    topProducts: Array<{ productName: string; count: number }>;
+    customerOutcomes: {
+      happyCodeVerificationRate: number;
+      avgResolutionTatHours: number;
+      totalClosedWithTat: number;
+    };
+  };
+  pendingActions: {
+    overdueAckCount: number;
+    overdueResolutionCount: number;
+    pendingReplacementCount: number;
+    pendingCancellationCount: number;
+    pendingPnaCount: number;
+    deadLetterNotificationCount: number;
+    pendingClaimsAuditCount?: number;
+    pendingSlaPenaltyCount?: number;
+  };
+  recentActivity: Array<{
+    eventId: string;
+    jobNumber: string;
+    eventType: string;
+    fromState: string;
+    toState: string;
+    triggeredByUsername: string;
+    triggeredByRole: string;
+    remarks?: string;
+    createdAt: string;
+  }>;
 }
 
 export const reportingRepository = new ReportingRepository();

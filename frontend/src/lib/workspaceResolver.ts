@@ -36,6 +36,9 @@ export function resolveDefaultWorkspace(user: AuthUser | null): string | null {
   if (roles.includes('FINANCE') || roles.includes('BRAND')) {
     return '/finance';
   }
+  if (roles.includes('INFRA_OPS') || permissions.includes('system:audit')) {
+    return '/admin/diagnostics';
+  }
 
   // 2. Permission-based fallback
   if (permissions.includes('users:read') || permissions.includes('masters:manage')) {
@@ -68,7 +71,14 @@ export function isAuthorizedForPath(user: AuthUser | null, pathname: string): bo
   const roles = user.roles || [];
   const permissions = user.permissions || [];
 
-  // 1. Admin Workspace (/admin, /admin/masters, /admin/diagnostics)
+  // 1. Technical Infrastructure Diagnostics (/admin/diagnostics)
+  // Strictly requires dedicated system:audit operational permission.
+  // Business ADMIN role without system:audit is denied access to infrastructure telemetry.
+  if (pathname.startsWith('/admin/diagnostics')) {
+    return permissions.includes('system:audit');
+  }
+
+  // 2. Admin Workspace (/admin, /admin/masters)
   if (pathname.startsWith('/admin')) {
     return (
       roles.includes('ADMIN') ||
@@ -88,8 +98,8 @@ export function isAuthorizedForPath(user: AuthUser | null, pathname: string): bo
     );
   }
 
-  // 3. ASF / Technician Workspace (/asf, /asf/jobs/...)
-  if (pathname.startsWith('/asf')) {
+  // 3. Service Center / ASF / Technician Workspace (/service-center, /asf, /asf/jobs/...)
+  if (pathname.startsWith('/service-center') || pathname.startsWith('/asf')) {
     return (
       roles.includes('ADMIN') ||
       roles.includes('ASF') ||

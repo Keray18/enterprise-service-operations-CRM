@@ -33,7 +33,17 @@ export function PenaltyReviewModal({ open, onClose, penalty }: PenaltyReviewModa
   const [action, setAction] = useState<'APPROVE' | 'WAIVE' | 'DISPUTE'>('APPROVE');
   const [reviewRemarks, setReviewRemarks] = useState('');
   const [waiverPercentage, setWaiverPercentage] = useState<number>(100);
+  const [policyReference, setPolicyReference] = useState('POL-SLA-48H-STD');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  React.useEffect(() => {
+    if (penalty) {
+      const defaultPol = penalty.policyVersion && penalty.policyVersion !== 'UNCONFIGURED'
+        ? penalty.policyVersion
+        : (penalty.breachType === 'SLA_168H_CLOSURE' ? 'POL-SLA-168H-STD' : 'POL-SLA-48H-STD');
+      setPolicyReference(defaultPol);
+    }
+  }, [penalty]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -45,6 +55,11 @@ export function PenaltyReviewModal({ open, onClose, penalty }: PenaltyReviewModa
       return;
     }
 
+    if (action === 'APPROVE' && (!policyReference || !policyReference.trim())) {
+      setErrorMsg('An approved commercial penalty policy reference is strictly required to approve liability.');
+      return;
+    }
+
     try {
       await reviewMutation.mutateAsync({
         penaltyId: penalty.penaltyId,
@@ -52,6 +67,7 @@ export function PenaltyReviewModal({ open, onClose, penalty }: PenaltyReviewModa
           action,
           reviewRemarks: reviewRemarks.trim(),
           waiverPercentage: action === 'WAIVE' ? waiverPercentage : undefined,
+          policyReference: action === 'APPROVE' ? policyReference.trim() : (action === 'WAIVE' && policyReference ? policyReference.trim() : undefined),
         },
       });
       setReviewRemarks('');
@@ -124,6 +140,19 @@ export function PenaltyReviewModal({ open, onClose, penalty }: PenaltyReviewModa
               <MenuItem value="DISPUTE">Flag Disputed (Refer to Operations Committee)</MenuItem>
             </Select>
           </FormControl>
+
+          {action === 'APPROVE' && (
+            <TextField
+              label="Approved Commercial Policy Code"
+              size="small"
+              fullWidth
+              required
+              value={policyReference}
+              onChange={(e) => setPolicyReference(e.target.value)}
+              placeholder="e.g. POL-SLA-48H-STD or POL-SLA-168H-STD"
+              helperText="Must match an approved active policy in SLA_PENALTY_POLICIES. Rates are derived strictly from policy."
+            />
+          )}
 
           {action === 'WAIVE' && (
             <FormControl fullWidth size="small">

@@ -38,6 +38,8 @@ function mapRowToNotification(row: any, sanitizeForApi = false): NotificationOut
     providerMessageId: row.PROVIDER_MESSAGE_ID || undefined,
     errorMessage: row.ERROR_MESSAGE || undefined,
     retryCount: Number(row.RETRY_COUNT || 0),
+    nextRetryAt: row.NEXT_RETRY_AT ? new Date(row.NEXT_RETRY_AT) : undefined,
+    updatedAt: row.UPDATED_AT ? new Date(row.UPDATED_AT) : undefined,
     sentAt: row.SENT_AT ? new Date(row.SENT_AT) : undefined,
     createdAt: new Date(row.CREATED_AT),
   };
@@ -82,7 +84,8 @@ export class NotificationRepository {
         AUTH_TAG,
         KEY_VERSION,
         STATUS,
-        RETRY_COUNT
+        RETRY_COUNT,
+        UPDATED_AT
       ) VALUES (
         :notificationId,
         :requestId,
@@ -96,7 +99,8 @@ export class NotificationRepository {
         :authTag,
         :keyVersion,
         :status,
-        0
+        0,
+        SYSTIMESTAMP
       )
     `;
 
@@ -155,7 +159,7 @@ export class NotificationRepository {
           NOTIFICATION_ID, REQUEST_ID, CHANNEL, RECIPIENT, TEMPLATE_CODE,
           MESSAGE_BODY, IS_ENCRYPTED, ENCRYPTED_PAYLOAD, ENCRYPTION_IV,
           AUTH_TAG, KEY_VERSION, STATUS, PROVIDER_MESSAGE_ID, ERROR_MESSAGE,
-          RETRY_COUNT, SENT_AT, CREATED_AT
+          RETRY_COUNT, NEXT_RETRY_AT, UPDATED_AT, SENT_AT, CREATED_AT
         FROM NOTIFICATIONS_OUTBOX
         WHERE NOTIFICATION_ID = :notificationId
       `;
@@ -271,6 +275,186 @@ export class NotificationRepository {
   }
 
   /**
+   * Concurrently claims pending or failed notifications for dispatch using FOR UPDATE SKIP LOCKED.
+   * Atomically transitions claimed records to PROCESSING status within a single transaction commit.
+   * This guarantees across multiple worker processes that no message is double-claimed or double-dispatched.
+   */
+  async claimPendingForDispatch(maxRetries = 3, limit = 50): Promise<NotificationOutboxRecord[]> {
+    const conn = await getOracleConnection();
+    try {
+      const selectSql = `
+        SELECT 
+          NOTIFICATION_ID, REQUEST_ID, CHANNEL, RECIPIENT, TEMPLATE_CODE,
+          MESSAGE_BODY, IS_ENCRYPTED, ENCRYPTED_PAYLOAD, ENCRYPTION_IV,
+          AUTH_TAG, KEY_VERSION, STATUS, PROVIDER_MESSAGE_ID, ERROR_MESSAGE,
+          RETRY_COUNT, NEXT_RETRY_AT, UPDATED_AT, SENT_AT, CREATED_AT
+        FROM NOTIFICATIONS_OUTBOX
+        WHERE STATUS IN ('QUEUED', 'FAILED')
+          AND RETRY_COUNT < :maxRetries
+          AND (NEXT_RETRY_AT IS NULL OR NEXT_RETRY_AT <= SYSTIMESTAMP)
+          AND ROWNUM <= :limit
+        FOR UPDATE SKIP LOCKED
+      `;
+
+      const result = await conn.execute<any>(
+        selectSql,
+        { maxRetries, limit },
+        {
+          outFormat: oracledb.OUT_FORMAT_OBJECT,
+          fetchInfo: { ENCRYPTED_PAYLOAD: { type: oracledb.STRING } },
+        }
+      );
+
+      const rows = result.rows || [];
+      if (rows.length === 0) {
+        await conn.commit();
+        return [];
+      }
+
+      const records = rows.map((row: any) => mapRowToNotification(row, false));
+
+      for (const rec of records) {
+        await conn.execute(
+          `UPDATE NOTIFICATIONS_OUTBOX
+           SET STATUS = 'PROCESSING', UPDATED_AT = SYSTIMESTAMP
+           WHERE NOTIFICATION_ID = :notificationId`,
+          { notificationId: rec.notificationId }
+        );
+      }
+
+      await conn.commit();
+      return records;
+    } catch (err) {
+      await conn.rollback();
+      throw err;
+    } finally {
+      await conn.close();
+    }
+  }
+
+  /**
+   * Records a successful notification dispatch.
+   * Purges sensitive ciphertext payloads and wipes plaintext for cryptographic hygiene.
+   */
+  async recordDispatchSuccess(notificationId: string, providerMessageId?: string): Promise<void> {
+    const conn = await getOracleConnection();
+    try {
+      const sql = `
+        UPDATE NOTIFICATIONS_OUTBOX
+        SET 
+          STATUS = 'SENT',
+          PROVIDER_MESSAGE_ID = :providerMessageId,
+          ERROR_MESSAGE = NULL,
+          SENT_AT = SYSTIMESTAMP,
+          NEXT_RETRY_AT = NULL,
+          UPDATED_AT = SYSTIMESTAMP,
+          ENCRYPTED_PAYLOAD = CASE WHEN IS_ENCRYPTED = 'Y' THEN NULL ELSE ENCRYPTED_PAYLOAD END,
+          ENCRYPTION_IV = CASE WHEN IS_ENCRYPTED = 'Y' THEN NULL ELSE ENCRYPTION_IV END,
+          AUTH_TAG = CASE WHEN IS_ENCRYPTED = 'Y' THEN NULL ELSE AUTH_TAG END,
+          MESSAGE_BODY = CASE WHEN IS_ENCRYPTED = 'Y' THEN '[DELIVERED_AND_PURGED]' ELSE MESSAGE_BODY END
+        WHERE NOTIFICATION_ID = :notificationId
+      `;
+
+      await conn.execute(sql, {
+        notificationId,
+        providerMessageId: providerMessageId || null,
+      }, { autoCommit: true });
+    } finally {
+      await conn.close();
+    }
+  }
+
+  /**
+   * Records a dispatch failure, advancing retry count and applying exponential backoff.
+   * If retries reach maxRetries, escalates record to DEAD_LETTER state.
+   */
+  async recordDispatchFailure(
+    notificationId: string,
+    currentRetryCount: number,
+    errorMessage: string,
+    maxRetries = 3
+  ): Promise<{ status: 'FAILED' | 'DEAD_LETTER'; retryCount: number }> {
+    const conn = await getOracleConnection();
+    try {
+      const nextCount = currentRetryCount + 1;
+      const isDeadLetter = nextCount >= maxRetries;
+
+      let nextRetryMinutes = 1; // Retry 1: 1 minute
+      if (nextCount === 2) {
+        nextRetryMinutes = 5; // Retry 2: 5 minutes
+      }
+
+      const sql = isDeadLetter
+        ? `
+          UPDATE NOTIFICATIONS_OUTBOX
+          SET 
+            STATUS = 'DEAD_LETTER',
+            ERROR_MESSAGE = :errorMessage,
+            RETRY_COUNT = :nextCount,
+            NEXT_RETRY_AT = NULL,
+            UPDATED_AT = SYSTIMESTAMP
+          WHERE NOTIFICATION_ID = :notificationId
+        `
+        : `
+          UPDATE NOTIFICATIONS_OUTBOX
+          SET 
+            STATUS = 'FAILED',
+            ERROR_MESSAGE = :errorMessage,
+            RETRY_COUNT = :nextCount,
+            NEXT_RETRY_AT = SYSTIMESTAMP + NUMTODSINTERVAL(:nextRetryMinutes, 'MINUTE'),
+            UPDATED_AT = SYSTIMESTAMP
+          WHERE NOTIFICATION_ID = :notificationId
+        `;
+
+      const formattedError = isDeadLetter
+        ? `MAX_RETRIES_EXCEEDED: Dead-lettered after ${maxRetries} attempts. Last error: ${errorMessage}`
+        : errorMessage;
+
+      const binds: Record<string, any> = {
+        notificationId,
+        errorMessage: formattedError,
+        nextCount,
+      };
+
+      if (!isDeadLetter) {
+        binds.nextRetryMinutes = nextRetryMinutes;
+      }
+
+      await conn.execute(sql, binds, { autoCommit: true });
+
+      return {
+        status: isDeadLetter ? 'DEAD_LETTER' : 'FAILED',
+        retryCount: nextCount,
+      };
+    } finally {
+      await conn.close();
+    }
+  }
+
+  /**
+   * Recovers any messages stranded in PROCESSING status (e.g. from an abrupt worker crash).
+   * Resets rows older than staleThresholdMinutes back to FAILED for retry.
+   */
+  async recoverStaleProcessing(staleThresholdMinutes = 5): Promise<number> {
+    const conn = await getOracleConnection();
+    try {
+      const sql = `
+        UPDATE NOTIFICATIONS_OUTBOX
+        SET 
+          STATUS = 'FAILED',
+          ERROR_MESSAGE = 'CRASH_RECOVERY: Reset from stale PROCESSING state following worker restart',
+          UPDATED_AT = SYSTIMESTAMP
+        WHERE STATUS = 'PROCESSING'
+          AND UPDATED_AT < (SYSTIMESTAMP - NUMTODSINTERVAL(:staleThresholdMinutes, 'MINUTE'))
+      `;
+      const res = await conn.execute(sql, { staleThresholdMinutes }, { autoCommit: true });
+      return res.rowsAffected || 0;
+    } finally {
+      await conn.close();
+    }
+  }
+
+  /**
    * Retrieves pending or failed notifications eligible for daemon retry.
    */
   async findPendingRetries(maxRetries = 3, limit = 50): Promise<NotificationOutboxRecord[]> {
@@ -281,10 +465,11 @@ export class NotificationRepository {
           NOTIFICATION_ID, REQUEST_ID, CHANNEL, RECIPIENT, TEMPLATE_CODE,
           MESSAGE_BODY, IS_ENCRYPTED, ENCRYPTED_PAYLOAD, ENCRYPTION_IV,
           AUTH_TAG, KEY_VERSION, STATUS, PROVIDER_MESSAGE_ID, ERROR_MESSAGE,
-          RETRY_COUNT, SENT_AT, CREATED_AT
+          RETRY_COUNT, NEXT_RETRY_AT, UPDATED_AT, SENT_AT, CREATED_AT
         FROM NOTIFICATIONS_OUTBOX
         WHERE STATUS IN ('QUEUED', 'FAILED')
           AND RETRY_COUNT < :maxRetries
+          AND (NEXT_RETRY_AT IS NULL OR NEXT_RETRY_AT <= SYSTIMESTAMP)
         ORDER BY CREATED_AT ASC
         FETCH FIRST :limit ROWS ONLY
       `;
@@ -313,9 +498,10 @@ export class NotificationRepository {
       const sql = `
         UPDATE NOTIFICATIONS_OUTBOX
         SET 
-          STATUS = 'FAILED',
+          STATUS = 'DEAD_LETTER',
           ERROR_MESSAGE = 'MAX_RETRIES_EXCEEDED: Dead-lettered notification escalated for supervisor intervention.',
-          RETRY_COUNT = RETRY_COUNT + 1
+          NEXT_RETRY_AT = NULL,
+          UPDATED_AT = SYSTIMESTAMP
         WHERE NOTIFICATION_ID = :notificationId
       `;
       await conn.execute(sql, { notificationId }, { autoCommit: true });
@@ -329,6 +515,7 @@ export class NotificationRepository {
    */
   async getOutboxMetrics(): Promise<{
     queued: number;
+    processing: number;
     sent: number;
     failed: number;
     deadLetter: number;
@@ -339,9 +526,10 @@ export class NotificationRepository {
       const sql = `
         SELECT 
           NVL(SUM(CASE WHEN STATUS = 'QUEUED' THEN 1 ELSE 0 END), 0) AS QUEUED_COUNT,
+          NVL(SUM(CASE WHEN STATUS = 'PROCESSING' THEN 1 ELSE 0 END), 0) AS PROCESSING_COUNT,
           NVL(SUM(CASE WHEN STATUS = 'SENT' THEN 1 ELSE 0 END), 0) AS SENT_COUNT,
           NVL(SUM(CASE WHEN STATUS = 'FAILED' AND RETRY_COUNT < 3 THEN 1 ELSE 0 END), 0) AS FAILED_COUNT,
-          NVL(SUM(CASE WHEN STATUS = 'FAILED' AND RETRY_COUNT >= 3 THEN 1 ELSE 0 END), 0) AS DEAD_LETTER_COUNT,
+          NVL(SUM(CASE WHEN STATUS = 'DEAD_LETTER' OR (STATUS = 'FAILED' AND RETRY_COUNT >= 3) THEN 1 ELSE 0 END), 0) AS DEAD_LETTER_COUNT,
           COUNT(*) AS TOTAL_COUNT
         FROM NOTIFICATIONS_OUTBOX
       `;
@@ -350,6 +538,7 @@ export class NotificationRepository {
       const row = result.rows?.[0] || {};
       return {
         queued: Number(row.QUEUED_COUNT || 0),
+        processing: Number(row.PROCESSING_COUNT || 0),
         sent: Number(row.SENT_COUNT || 0),
         failed: Number(row.FAILED_COUNT || 0),
         deadLetter: Number(row.DEAD_LETTER_COUNT || 0),

@@ -44,8 +44,26 @@ export interface RegenerateOtpResponse {
 }
 
 export interface AsfQueueFilters {
-  view?: 'all' | 'unacknowledged' | 'ready_to_assign' | 'scheduled' | 'checked_in' | 'overdue';
+  view?:
+    | 'all'
+    | 'unacknowledged'
+    | 'ready_to_assign'
+    | 'today_appointments'
+    | 'assigned_technicians'
+    | 'scheduled'
+    | 'awaiting_checkin'
+    | 'checked_in'
+    | 'diagnosis_repair'
+    | 'parts_pending'
+    | 'parts_dispatched'
+    | 'awaiting_verification'
+    | 'overdue';
   locationId?: string;
+  assignedEngineerId?: string;
+  productId?: string;
+  status?: string;
+  startDate?: string;
+  endDate?: string;
   q?: string;
   page?: number;
   limit?: number;

@@ -37,10 +37,29 @@ export const regenerateOtpSchema = z.object({
 
 export const asfQueueQuerySchema = z.object({
   view: z
-    .enum(['all', 'unacknowledged', 'ready_to_assign', 'scheduled', 'checked_in', 'overdue'])
+    .enum([
+      'all',
+      'unacknowledged',
+      'ready_to_assign',
+      'today_appointments',
+      'assigned_technicians',
+      'scheduled',
+      'awaiting_checkin',
+      'checked_in',
+      'diagnosis_repair',
+      'parts_pending',
+      'parts_dispatched',
+      'awaiting_verification',
+      'overdue',
+    ])
     .optional()
     .default('all'),
   locationId: z.string().uuid().optional(),
+  assignedEngineerId: z.string().uuid().optional(),
+  productId: z.string().uuid().optional(),
+  status: z.string().max(50).optional(),
+  startDate: z.string().optional(),
+  endDate: z.string().optional(),
   q: z.string().max(100).optional(),
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(100).default(20),

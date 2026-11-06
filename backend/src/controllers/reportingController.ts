@@ -248,6 +248,28 @@ export class ReportingController {
       res.status(500).json({ success: false, message: err.message || 'Internal server error' });
     }
   }
+
+  async getAdminDashboardSummary(req: Request, res: Response): Promise<void> {
+    try {
+      const user = req.user as AuthenticatedUser;
+      const { period, fromDate, toDate } = req.query;
+
+      const summary = await reportingService.getAdminDashboardSummary(
+        (period as string) || '7d',
+        fromDate as string,
+        toDate as string,
+        user
+      );
+
+      res.json({
+        success: true,
+        data: summary,
+      });
+    } catch (err: any) {
+      logger.error('Failed to generate admin dashboard summary', err);
+      res.status(500).json({ success: false, message: err.message || 'Internal server error' });
+    }
+  }
 }
 
 export const reportingController = new ReportingController();

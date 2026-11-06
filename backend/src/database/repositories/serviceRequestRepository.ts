@@ -642,32 +642,36 @@ export class ServiceRequestRepository {
 
   /**
    * Marks a service request as having breached the 48-hour acknowledgement threshold.
+   * Returns true if the breach flag was transitioned from 'N' to 'Y', false if already marked.
    */
-  async markSlaBreach(requestId: string, conn: oracledb.Connection): Promise<void> {
+  async markSlaBreach(requestId: string, conn: oracledb.Connection): Promise<boolean> {
     const sql = `
       UPDATE SERVICE_REQUESTS
       SET 
         SLA_BREACHED_48H = 'Y',
         SLA_BREACHED_48H_AT = SYSTIMESTAMP,
         UPDATED_AT = SYSTIMESTAMP
-      WHERE REQUEST_ID = :requestId
+      WHERE REQUEST_ID = :requestId AND SLA_BREACHED_48H = 'N'
     `;
-    await conn.execute(sql, { requestId });
+    const res = await conn.execute(sql, { requestId });
+    return Boolean(res.rowsAffected && res.rowsAffected > 0);
   }
 
   /**
    * Marks a service request as having breached the 168-hour closure threshold.
+   * Returns true if the breach flag was transitioned from 'N' to 'Y', false if already marked.
    */
-  async mark168hSlaBreach(requestId: string, conn: oracledb.Connection): Promise<void> {
+  async mark168hSlaBreach(requestId: string, conn: oracledb.Connection): Promise<boolean> {
     const sql = `
       UPDATE SERVICE_REQUESTS
       SET 
         SLA_BREACHED_168H = 'Y',
         SLA_BREACHED_168H_AT = SYSTIMESTAMP,
         UPDATED_AT = SYSTIMESTAMP
-      WHERE REQUEST_ID = :requestId
+      WHERE REQUEST_ID = :requestId AND SLA_BREACHED_168H = 'N'
     `;
-    await conn.execute(sql, { requestId });
+    const res = await conn.execute(sql, { requestId });
+    return Boolean(res.rowsAffected && res.rowsAffected > 0);
   }
 
   /**
@@ -992,8 +996,26 @@ export class ServiceRequestRepository {
    */
   async queryAsfQueue(
     filters: {
-      view?: 'all' | 'unacknowledged' | 'ready_to_assign' | 'scheduled' | 'checked_in' | 'overdue';
+      view?:
+        | 'all'
+        | 'unacknowledged'
+        | 'ready_to_assign'
+        | 'today_appointments'
+        | 'assigned_technicians'
+        | 'scheduled'
+        | 'awaiting_checkin'
+        | 'checked_in'
+        | 'diagnosis_repair'
+        | 'parts_pending'
+        | 'parts_dispatched'
+        | 'awaiting_verification'
+        | 'overdue';
       locationId?: string;
+      assignedEngineerId?: string;
+      productId?: string;
+      status?: string;
+      startDate?: string;
+      endDate?: string;
       q?: string;
       page?: number;
       limit?: number;
@@ -1028,31 +1050,71 @@ export class ServiceRequestRepository {
         whereClauses.push("sr.ACKNOWLEDGED_AT IS NULL AND sr.STATUS IN ('REGISTERED', 'ASSIGNED_TO_ASF')");
       } else if (filters.view === 'ready_to_assign') {
         whereClauses.push("sr.STATUS IN ('REGISTERED', 'ASSIGNED_TO_ASF', 'ACKNOWLEDGED') AND sr.ASSIGNED_ENGINEER_ID IS NULL");
-      } else if (filters.view === 'scheduled') {
+      } else if (filters.view === 'today_appointments') {
+        whereClauses.push("TRUNC(CAST(sr.APPOINTMENT_DATE AS DATE)) = TRUNC(SYSDATE) AND sr.STATUS NOT IN ('CLOSED', 'CANCELLED', 'REPLACED')");
+      } else if (filters.view === 'assigned_technicians') {
+        whereClauses.push("sr.ASSIGNED_ENGINEER_ID IS NOT NULL AND sr.STATUS NOT IN ('CLOSED', 'CANCELLED', 'REPLACED')");
+      } else if (filters.view === 'scheduled' || filters.view === 'awaiting_checkin') {
         whereClauses.push("sr.STATUS = 'APPOINTMENT_SCHEDULED'");
       } else if (filters.view === 'checked_in') {
         whereClauses.push("sr.STATUS = 'TECHNICIAN_CHECKED_IN'");
+      } else if (filters.view === 'diagnosis_repair') {
+        whereClauses.push("sr.STATUS IN ('TECHNICIAN_CHECKED_IN', 'IN_PROGRESS_REPAIR')");
+      } else if (filters.view === 'parts_pending') {
+        whereClauses.push("sr.STATUS IN ('PENDING_SPARE_PART', 'PENDING_SPECIAL_PART_ESTIMATE', 'SPECIAL_PART_ESTIMATE_PROVIDED')");
+      } else if (filters.view === 'parts_dispatched') {
+        whereClauses.push("EXISTS (SELECT 1 FROM STOCK_DISPATCHES sd WHERE sd.REQUEST_ID = sr.REQUEST_ID AND sd.STATUS = 'IN_TRANSIT')");
+      } else if (filters.view === 'awaiting_verification') {
+        whereClauses.push("sr.STATUS = 'CALL_CLOSURE_SUBMITTED'");
       } else if (filters.view === 'overdue') {
-        whereClauses.push("(sr.SLA_BREACHED_48H = 'Y' OR (sr.ACKNOWLEDGED_AT IS NULL AND SYSTIMESTAMP > sr.SLA_48H_EXPIRES_AT))");
+        whereClauses.push("(sr.SLA_BREACHED_48H = 'Y' OR (sr.ACKNOWLEDGED_AT IS NULL AND SYSTIMESTAMP > sr.SLA_48H_EXPIRES_AT) OR sr.SLA_BREACHED_168H = 'Y')");
       } else {
         // 'all' active operational jobs
         whereClauses.push("sr.STATUS NOT IN ('CLOSED', 'CANCELLED', 'REPLACED')");
       }
 
+      // Additional Filters
+      if (filters.assignedEngineerId) {
+        binds.filterEngineerId = filters.assignedEngineerId;
+        whereClauses.push('sr.ASSIGNED_ENGINEER_ID = :filterEngineerId');
+      }
+
+      if (filters.productId) {
+        binds.filterProductId = filters.productId;
+        whereClauses.push('sr.PRODUCT_ID = :filterProductId');
+      }
+
+      if (filters.status) {
+        binds.filterStatus = filters.status;
+        whereClauses.push('sr.STATUS = :filterStatus');
+      }
+
+      if (filters.startDate) {
+        binds.filterStartDate = new Date(filters.startDate);
+        whereClauses.push('sr.REGISTERED_AT >= :filterStartDate');
+      }
+
+      if (filters.endDate) {
+        const endD = new Date(filters.endDate);
+        endD.setHours(23, 59, 59, 999);
+        binds.filterEndDate = endD;
+        whereClauses.push('sr.REGISTERED_AT <= :filterEndDate');
+      }
+
       // Search term
       if (filters.q && filters.q.trim()) {
         const cleanQ = filters.q.trim();
-        binds.searchExact = cleanQ.toUpperCase();
+        binds.searchUpper = `%${cleanQ.toUpperCase()}%`;
         binds.searchLike = `%${cleanQ.toLowerCase()}%`;
         const phone = normalizeIndianMobile(cleanQ);
         if (phone) {
           binds.searchPhone = phone;
           whereClauses.push(
-            '(sr.JOB_NUMBER = :searchExact OR sr.SERIAL_NUMBER = :searchExact OR sr.CUSTOMER_PHONE = :searchPhone OR LOWER(c.FULL_NAME) LIKE :searchLike)'
+            '(UPPER(sr.JOB_NUMBER) LIKE :searchUpper OR UPPER(sr.SERIAL_NUMBER) LIKE :searchUpper OR sr.CUSTOMER_PHONE = :searchPhone OR LOWER(c.FULL_NAME) LIKE :searchLike)'
           );
         } else {
           whereClauses.push(
-            '(sr.JOB_NUMBER = :searchExact OR sr.SERIAL_NUMBER = :searchExact OR LOWER(c.FULL_NAME) LIKE :searchLike)'
+            '(UPPER(sr.JOB_NUMBER) LIKE :searchUpper OR UPPER(sr.SERIAL_NUMBER) LIKE :searchUpper OR LOWER(c.FULL_NAME) LIKE :searchLike)'
           );
         }
       }

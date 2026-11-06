@@ -1,0 +1,19 @@
+-- ==============================================================================
+-- Rollback Migration: U021__rollback_segregate_infrastructure_diagnostics_role.sql
+-- ==============================================================================
+
+MERGE INTO ROLE_PERMISSIONS rp
+USING (
+    SELECT '00000000-0000-0000-0000-000000000001' AS ROLE_ID,
+           '10000000-0000-0000-0000-000000000021' AS PERMISSION_ID
+    FROM DUAL
+) s ON (rp.ROLE_ID = s.ROLE_ID AND rp.PERMISSION_ID = s.PERMISSION_ID)
+WHEN NOT MATCHED THEN
+    INSERT (ROLE_ID, PERMISSION_ID)
+    VALUES (s.ROLE_ID, s.PERMISSION_ID);
+
+DELETE FROM ROLE_PERMISSIONS WHERE ROLE_ID = '00000000-0000-0000-0000-000000000009';
+DELETE FROM USER_ROLES WHERE ROLE_ID = '00000000-0000-0000-0000-000000000009';
+DELETE FROM ROLES WHERE ROLE_ID = '00000000-0000-0000-0000-000000000009';
+
+COMMIT;

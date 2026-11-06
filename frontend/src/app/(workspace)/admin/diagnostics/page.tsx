@@ -43,14 +43,17 @@ interface LivenessData {
   timestamp: string;
 }
 
-interface ReadinessData {
+interface DiagnosticData {
   status: string;
+  uptimeSeconds: number;
+  timestamp: string;
+  nodeVersion: string;
   database: {
     connected: boolean;
     latencyMs?: number;
-    details?: {
-      user: string;
-      connectString: string;
+    pool?: {
+      connectionsOpen?: number;
+      connectionsInUse?: number;
     };
   };
 }
@@ -71,26 +74,26 @@ export default function AdminDiagnosticsPage() {
     refetchInterval: 10000,
   });
 
-  // Query 3: Oracle Database Readiness Probe (Real query: SELECT 1 FROM DUAL)
+  // Query 3: Authorized Infrastructure Diagnostics (gated with system:audit)
   const {
-    data: readiness,
-    error: readyError,
-    refetch: refetchReady,
-    isLoading: readyLoading,
+    data: diagnostics,
+    error: diagError,
+    refetch: refetchDiag,
+    isLoading: diagLoading,
   } = useQuery({
-    queryKey: ['health', 'ready'],
-    queryFn: () => apiClient.get<ReadinessData>('/health/ready'),
+    queryKey: ['system', 'diagnostics'],
+    queryFn: () => apiClient.get<DiagnosticData>('/api/v1/system/diagnostics'),
     retry: false,
   });
 
   const handleRefreshAll = () => {
     refetchInfo();
     refetchLive();
-    refetchReady();
+    refetchDiag();
   };
 
   return (
-    <ProtectedRoute requiredRole="ADMIN">
+    <ProtectedRoute requiredPermission="system:audit">
       {/* Page Header */}
       <PageHeader
         title="Infrastructure & System Diagnostics"
@@ -170,7 +173,7 @@ export default function AdminDiagnosticsPage() {
             title="Oracle Database"
             subtitle="node-oracledb (Thin Mode)"
             action={
-              readiness?.status === 'READY' ? (
+              diagnostics?.database?.connected ? (
                 <Chip size="small" label="CONNECTED" color="success" />
               ) : (
                 <Chip size="small" label="STANDBY" color="warning" />
@@ -180,21 +183,21 @@ export default function AdminDiagnosticsPage() {
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, mb: 1 }}>
               <StorageIcon
                 sx={{
-                  color: readiness?.status === 'READY' ? 'success.main' : 'warning.main',
+                  color: diagnostics?.database?.connected ? 'success.main' : 'warning.main',
                   fontSize: '2rem',
                 }}
               />
               <Box>
                 <Typography variant="body1" sx={{ fontWeight: 600 }}>
-                  {readyLoading
+                  {diagLoading
                     ? 'Probing Readiness...'
-                    : readiness?.status === 'READY'
-                    ? `Ready (${readiness.database.latencyMs}ms latency)`
+                    : diagnostics?.database?.connected
+                    ? `Ready (${diagnostics.database.latencyMs}ms)`
                     : 'Awaiting Database'}
                 </Typography>
                 <Typography variant="body2" sx={{ color: 'text.secondary', fontSize: '0.75rem' }}>
-                  {readiness?.status === 'READY'
-                    ? `Target: ${readiness.database.details?.connectString}`
+                  {diagnostics?.database?.connected
+                    ? `Pool: ${diagnostics.database.pool?.connectionsOpen ?? 0} open, ${diagnostics.database.pool?.connectionsInUse ?? 0} in use`
                     : 'Check Oracle Container'}
                 </Typography>
               </Box>

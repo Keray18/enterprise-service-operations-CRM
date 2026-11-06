@@ -35,13 +35,13 @@ asfRoutes.get(
  */
 asfRoutes.get(
   '/engineers',
-  requireAnyPermission('asf:read', 'calls:assign', 'asf:manage'),
+  requireAnyPermission('asf:read', 'asf:manage'),
   asfController.getEligibleEngineers.bind(asfController)
 );
 
 asfRoutes.get(
   '/engineers/:locationId',
-  requireAnyPermission('asf:read', 'calls:assign', 'asf:manage'),
+  requireAnyPermission('asf:read', 'asf:manage'),
   asfController.getEligibleEngineers.bind(asfController)
 );
 
@@ -64,7 +64,7 @@ asfRoutes.post(
 asfRoutes.post(
   '/requests/:id/regenerate-otp',
   requireCsrf,
-  requireAnyPermission('calls:assign', 'calls:update', 'asf:manage'),
+  requireAnyPermission('asf:manage', 'calls:update', 'calls:assign'),
   asfController.regenerateOtp.bind(asfController)
 );
 

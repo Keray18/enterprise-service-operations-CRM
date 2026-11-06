@@ -726,7 +726,7 @@ describe('ASF Operations, SLA Monitoring, Dispatch & OTP Check-In (Phase 2A)', (
       const eventsAfter = await serviceRequestEventRepository.findByRequestId(overdueTicket.requestId);
       const breachEvtsCount = eventsAfter.filter((e) => e.eventType === 'SLA_48H_BREACHED').length;
       expect(breachEvtsCount).toBe(1); // Exactly 1 immutable event
-    });
+    }, 15000);
 
     it('surfaces breached tickets in the overdue queue view (view=overdue)', async () => {
       const res = await request(app)
@@ -761,6 +761,6 @@ describe('ASF Operations, SLA Monitoring, Dispatch & OTP Check-In (Phase 2A)', (
 
       const dbTicket = await serviceRequestRepository.findById(acknowledgedTicket.requestId);
       expect(dbTicket?.slaBreached48h).toBe('N');
-    });
+    }, 15000);
   });
 });

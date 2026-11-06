@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState } from 'react';
+import Link from 'next/link';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
 import Card from '@mui/material/Card';
@@ -32,6 +33,7 @@ import Alert from '@mui/material/Alert';
 import AssessmentIcon from '@mui/icons-material/Assessment';
 import AssignmentReturnIcon from '@mui/icons-material/AssignmentReturn';
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
+import ClearIcon from '@mui/icons-material/Clear';
 import FactCheckIcon from '@mui/icons-material/FactCheck';
 import HistoryIcon from '@mui/icons-material/History';
 import LocalShippingIcon from '@mui/icons-material/LocalShipping';
@@ -90,6 +92,14 @@ export default function WarehousePage() {
   const [returnPage, setReturnPage] = useState(0);
   const [movementPage, setMovementPage] = useState(0);
 
+  // Filters for Dispatches Tab 4
+  const [dispatchSearch, setDispatchSearch] = useState('');
+  const [dispatchToLocationId, setDispatchToLocationId] = useState('');
+  const [dispatchStatus, setDispatchStatus] = useState('');
+  const [dispatchJobNumber, setDispatchJobNumber] = useState('');
+  const [dispatchFromDate, setDispatchFromDate] = useState('');
+  const [dispatchToDate, setDispatchToDate] = useState('');
+
   // Modals state
   const [grnModalOpen, setGrnModalOpen] = useState(false);
   const [dispatchModalOpen, setDispatchModalOpen] = useState(false);
@@ -132,7 +142,17 @@ export default function WarehousePage() {
     limit: 20,
   });
 
-  const { data: dispatchData, isLoading: isDispatchLoading } = useDispatches({
+  const {
+    data: dispatchData,
+    isLoading: isDispatchLoading,
+    refetch: refetchDispatches,
+  } = useDispatches({
+    search: dispatchSearch.trim() || undefined,
+    toLocationId: dispatchToLocationId || undefined,
+    status: dispatchStatus || undefined,
+    jobNumber: dispatchJobNumber.trim() || undefined,
+    fromDate: dispatchFromDate || undefined,
+    toDate: dispatchToDate || undefined,
     page: dispatchPage + 1,
     limit: 20,
   });
@@ -185,6 +205,7 @@ export default function WarehousePage() {
     if (window.confirm('Acknowledge arrival of this delivery challan and transfer stock to destination on-hand?')) {
       try {
         await acknowledgeDispatchMutation.mutateAsync(dispatchId);
+        refetchDispatches();
         refetchStock();
         refetchDashboard();
       } catch (err: any) {
@@ -830,11 +851,15 @@ export default function WarehousePage() {
           {/* ========================================================================= */}
           {activeTab === 3 && (
             <Box sx={{ p: 2 }}>
-              <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 2, alignItems: 'center' }}>
-                <Typography variant="subtitle2" color="text.secondary">
-                  Outbound Delivery Challans & GST Tax Invoices. Dispatched goods remain in <code>IN_TRANSIT</code> until
-                  destination acknowledgment.
-                </Typography>
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 2, alignItems: 'center', flexWrap: 'wrap', gap: 2 }}>
+                <Box>
+                  <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
+                    Tab 4 — Outbound Dispatches & Statutory Delivery Challans
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    GST-compliant delivery challans for spare-parts distribution. Dispatched items remain <code>IN_TRANSIT</code> until verified and acknowledged at destination.
+                  </Typography>
+                </Box>
                 <Button
                   variant="contained"
                   startIcon={<LocalShippingIcon />}
@@ -849,6 +874,142 @@ export default function WarehousePage() {
                 </Button>
               </Box>
 
+              {/* Filters Toolbar */}
+              <Paper variant="outlined" sx={{ p: 1.5, mb: 2, bgcolor: 'background.default' }}>
+                <Grid container spacing={1.5} alignItems="center">
+                  <Grid item xs={12} sm={6} md={3}>
+                    <TextField
+                      fullWidth
+                      size="small"
+                      placeholder="Search Challan #, AWB, Courier..."
+                      value={dispatchSearch}
+                      onChange={(e) => {
+                        setDispatchSearch(e.target.value);
+                        setDispatchPage(0);
+                      }}
+                      InputProps={{
+                        startAdornment: (
+                          <InputAdornment position="start">
+                            <SearchIcon fontSize="small" color="action" />
+                          </InputAdornment>
+                        ),
+                      }}
+                    />
+                  </Grid>
+
+                  <Grid item xs={12} sm={6} md={2}>
+                    <TextField
+                      fullWidth
+                      size="small"
+                      placeholder="Linked Job #"
+                      value={dispatchJobNumber}
+                      onChange={(e) => {
+                        setDispatchJobNumber(e.target.value);
+                        setDispatchPage(0);
+                      }}
+                    />
+                  </Grid>
+
+                  <Grid item xs={12} sm={6} md={2}>
+                    <TextField
+                      fullWidth
+                      size="small"
+                      select
+                      label="Destination ASF"
+                      value={dispatchToLocationId}
+                      onChange={(e) => {
+                        setDispatchToLocationId(e.target.value);
+                        setDispatchPage(0);
+                      }}
+                      InputLabelProps={{ shrink: true }}
+                    >
+                      <MenuItem value="">
+                        <em>All Destinations</em>
+                      </MenuItem>
+                      {locations.map((loc) => (
+                        <MenuItem key={loc.locationId} value={loc.locationId}>
+                          {loc.locationName}
+                        </MenuItem>
+                      ))}
+                    </TextField>
+                  </Grid>
+
+                  <Grid item xs={12} sm={6} md={2}>
+                    <TextField
+                      fullWidth
+                      size="small"
+                      select
+                      label="Dispatch Status"
+                      value={dispatchStatus}
+                      onChange={(e) => {
+                        setDispatchStatus(e.target.value);
+                        setDispatchPage(0);
+                      }}
+                      InputLabelProps={{ shrink: true }}
+                    >
+                      <MenuItem value="">
+                        <em>All Statuses</em>
+                      </MenuItem>
+                      <MenuItem value="IN_TRANSIT">IN_TRANSIT</MenuItem>
+                      <MenuItem value="ACKNOWLEDGED">ACKNOWLEDGED</MenuItem>
+                      <MenuItem value="CANCELLED">CANCELLED</MenuItem>
+                    </TextField>
+                  </Grid>
+
+                  <Grid item xs={6} sm={3} md={1.2}>
+                    <TextField
+                      fullWidth
+                      size="small"
+                      type="date"
+                      label="From Date"
+                      value={dispatchFromDate}
+                      onChange={(e) => {
+                        setDispatchFromDate(e.target.value);
+                        setDispatchPage(0);
+                      }}
+                      InputLabelProps={{ shrink: true }}
+                    />
+                  </Grid>
+
+                  <Grid item xs={6} sm={3} md={1.2}>
+                    <TextField
+                      fullWidth
+                      size="small"
+                      type="date"
+                      label="To Date"
+                      value={dispatchToDate}
+                      onChange={(e) => {
+                        setDispatchToDate(e.target.value);
+                        setDispatchPage(0);
+                      }}
+                      InputLabelProps={{ shrink: true }}
+                    />
+                  </Grid>
+
+                  <Grid item xs={12} sm={6} md={0.6}>
+                    {(dispatchSearch || dispatchToLocationId || dispatchStatus || dispatchJobNumber || dispatchFromDate || dispatchToDate) && (
+                      <Tooltip title="Reset filters">
+                        <IconButton
+                          color="secondary"
+                          size="small"
+                          onClick={() => {
+                            setDispatchSearch('');
+                            setDispatchToLocationId('');
+                            setDispatchStatus('');
+                            setDispatchJobNumber('');
+                            setDispatchFromDate('');
+                            setDispatchToDate('');
+                            setDispatchPage(0);
+                          }}
+                        >
+                          <ClearIcon fontSize="small" />
+                        </IconButton>
+                      </Tooltip>
+                    )}
+                  </Grid>
+                </Grid>
+              </Paper>
+
               {isDispatchLoading ? (
                 <Box sx={{ display: 'flex', justifyContent: 'center', p: 5 }}>
                   <CircularProgress />
@@ -856,15 +1017,15 @@ export default function WarehousePage() {
               ) : (dispatchData?.items || []).length === 0 ? (
                 <EmptyState
                   icon={<LocalShippingIcon sx={{ fontSize: '3rem', opacity: 0.5 }} />}
-                  title="No Dispatches Recorded"
-                  description="Click 'Create Stock Dispatch' or fulfill a Job Part Request from the PNA queue to issue delivery challans."
+                  title="No Dispatches Found"
+                  description="No dispatch records match the selected filters. Click 'Create Stock Dispatch' or fulfill a Job Part Request from the PNA queue to issue delivery challans."
                 />
               ) : (
                 <TableContainer>
                   <Table size="small">
                     <TableHead sx={{ bgcolor: 'action.hover' }}>
                       <TableRow>
-                        <TableCell sx={{ fontWeight: 700 }}>Challan No</TableCell>
+                        <TableCell sx={{ fontWeight: 700 }}>Challan No & Date</TableCell>
                         <TableCell sx={{ fontWeight: 700 }}>Linked Job</TableCell>
                         <TableCell sx={{ fontWeight: 700 }}>From Warehouse</TableCell>
                         <TableCell sx={{ fontWeight: 700 }}>To ASF Destination</TableCell>
@@ -882,61 +1043,110 @@ export default function WarehousePage() {
                       </TableRow>
                     </TableHead>
                     <TableBody>
-                      {dispatchData?.items.map((d) => (
-                        <TableRow key={d.dispatchId} hover>
-                          <TableCell sx={{ fontWeight: 700 }}>{d.challanNumber}</TableCell>
-                          <TableCell sx={{ fontWeight: 600, color: 'primary.main' }}>
-                            {d.jobNumber || 'Stock Transfer'}
-                          </TableCell>
-                          <TableCell>{d.fromLocationName || 'Central Warehouse'}</TableCell>
-                          <TableCell>{d.toLocationName || 'Franchise Center'}</TableCell>
-                          <TableCell>
-                            <Typography variant="body2">{d.transporterName || d.dispatchMode}</Typography>
-                            <Typography variant="caption" color="text.secondary">
-                              AWB: {d.docketNo || '—'}
-                            </Typography>
-                          </TableCell>
-                          <TableCell align="right">₹{d.subtotalTaxable.toFixed(2)}</TableCell>
-                          <TableCell align="right" sx={{ fontWeight: 700 }}>
-                            ₹{d.totalAmount.toFixed(2)}
-                          </TableCell>
-                          <TableCell>
-                            <Chip
-                              label={d.status}
-                              size="small"
-                              color={d.status === 'DELIVERED' ? 'success' : 'primary'}
-                            />
-                          </TableCell>
-                          <TableCell align="center">
-                            <Box sx={{ display: 'flex', gap: 0.5, justifyContent: 'center' }}>
-                              <Tooltip title="View / Print Delivery Challan">
-                                <IconButton
-                                  size="small"
-                                  color="primary"
-                                  onClick={() => setSelectedChallanDispatch(d)}
-                                >
-                                  <PrintIcon fontSize="small" />
-                                </IconButton>
-                              </Tooltip>
+                      {dispatchData?.items.map((d) => {
+                        const isAcknowledged = d.status === 'ACKNOWLEDGED' || d.status === 'DELIVERED';
+                        const isInTransit = d.status === 'IN_TRANSIT' || d.status === 'DISPATCHED';
+                        const taxableVal = d.subtotalTaxable ?? d.subtotalAmount ?? 0;
+                        const totalVal = d.totalAmount ?? 0;
 
-                              {d.status === 'DISPATCHED' && (
-                                <Tooltip title="Acknowledge Delivery Arrival">
-                                  <Button
-                                    size="small"
-                                    variant="outlined"
-                                    color="success"
-                                    onClick={() => handleAcknowledgeDelivery(d.dispatchId)}
-                                    disabled={acknowledgeDispatchMutation.isPending}
-                                    sx={{ textTransform: 'none', py: 0.2 }}
+                        return (
+                          <TableRow key={d.dispatchId} hover>
+                            <TableCell>
+                              <Typography variant="body2" sx={{ fontWeight: 700 }}>
+                                {d.challanNumber || d.dispatchNumber}
+                              </Typography>
+                              <Typography variant="caption" color="text.secondary" display="block">
+                                Ref: {d.dispatchNumber}
+                              </Typography>
+                              <Typography variant="caption" color="text.secondary">
+                                {d.dispatchedAt ? new Date(d.dispatchedAt).toLocaleDateString() : 'N/A'}
+                              </Typography>
+                            </TableCell>
+                            <TableCell>
+                              {d.jobNumber ? (
+                                d.requestId ? (
+                                  <Link
+                                    href={`/asf/jobs/${d.requestId}`}
+                                    style={{ textDecoration: 'none', fontWeight: 600, color: '#1976d2' }}
                                   >
-                                    Acknowledge
-                                  </Button>
-                                </Tooltip>
+                                    #{d.jobNumber}
+                                  </Link>
+                                ) : (
+                                  <Typography variant="body2" sx={{ fontWeight: 600, color: 'primary.main' }}>
+                                    #{d.jobNumber}
+                                  </Typography>
+                                )
+                              ) : (
+                                <Chip label="Stock Transfer" size="small" variant="outlined" />
                               )}
-                            </Box>
-                          </TableCell>
-                        </TableRow>
-                      ))}
+                            </TableCell>
+                            <TableCell>{d.fromLocationName || 'Central Warehouse'}</TableCell>
+                            <TableCell>
+                              <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                                {d.toLocationName || 'Franchise Center'}
+                              </Typography>
+                              <Typography variant="caption" color="text.secondary">
+                                ID: {d.toLocationId}
+                              </Typography>
+                            </TableCell>
+                            <TableCell>
+                              <Typography variant="body2">{d.transporterName || d.dispatchMode}</Typography>
+                              <Typography variant="caption" color="text.secondary" display="block">
+                                AWB / Docket: {d.docketNo || '—'}
+                              </Typography>
+                              {d.ewayBillNo && (
+                                <Typography variant="caption" color="text.disabled" display="block">
+                                  E-Way: {d.ewayBillNo}
+                                </Typography>
+                              )}
+                            </TableCell>
+                            <TableCell align="right">₹{taxableVal.toFixed(2)}</TableCell>
+                            <TableCell align="right" sx={{ fontWeight: 700 }}>
+                              ₹{totalVal.toFixed(2)}
+                            </TableCell>
+                            <TableCell>
+                              <Chip
+                                label={d.status}
+                                size="small"
+                                color={isAcknowledged ? 'success' : isInTransit ? 'warning' : d.status === 'CANCELLED' ? 'error' : 'primary'}
+                              />
+                              {d.acknowledgedAt && (
+                                <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.5 }}>
+                                  Ack: {new Date(d.acknowledgedAt).toLocaleDateString()}
+                                </Typography>
+                              )}
+                            </TableCell>
+                            <TableCell align="center">
+                              <Box sx={{ display: 'flex', gap: 0.5, justifyContent: 'center' }}>
+                                <Tooltip title="View / Print Delivery Challan">
+                                  <IconButton
+                                    size="small"
+                                    color="primary"
+                                    onClick={() => setSelectedChallanDispatch(d)}
+                                  >
+                                    <PrintIcon fontSize="small" />
+                                  </IconButton>
+                                </Tooltip>
+
+                                {isInTransit && (
+                                  <Tooltip title="Acknowledge Delivery Arrival (Updates destination stock)">
+                                    <Button
+                                      size="small"
+                                      variant="outlined"
+                                      color="success"
+                                      onClick={() => handleAcknowledgeDelivery(d.dispatchId)}
+                                      disabled={acknowledgeDispatchMutation.isPending}
+                                      sx={{ textTransform: 'none', py: 0.2 }}
+                                    >
+                                      Acknowledge
+                                    </Button>
+                                  </Tooltip>
+                                )}
+                              </Box>
+                            </TableCell>
+                          </TableRow>
+                        );
+                      })}
                     </TableBody>
                   </Table>
                   <TablePagination

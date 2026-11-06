@@ -183,7 +183,7 @@ export type PenaltyBreachType =
   | 'REPLACEMENT_DEBIT'
   | 'UNAUTHORIZED_DISPOSITION';
 
-export type PenaltyStatus = 'PENDING_REVIEW' | 'APPROVED' | 'WAIVED' | 'DISPUTED' | 'POSTED';
+export type PenaltyStatus = 'PENDING_REVIEW' | 'APPROVED' | 'WAIVED' | 'DISPUTED' | 'POSTED' | 'REVERSED';
 
 export interface SlaPenalty {
   penaltyId: string;
@@ -196,12 +196,44 @@ export interface SlaPenalty {
   breachTimestamp: string;
   calculatedAmount: number;
   status: PenaltyStatus;
+  policyVersion?: string;
+  configStatus?: 'AWAITING_POLICY_CONFIGURATION' | 'CONFIGURED' | 'EXEMPT';
   reviewedBy?: string;
   reviewedByUsername?: string;
   reviewedAt?: string;
   reviewRemarks?: string;
   journalId?: string;
+  reversalReason?: string;
+  reversedAt?: string;
+  reversedBy?: string;
+  reversedByUsername?: string;
   createdAt: string;
+}
+
+export type PolicyApprovalStatus = 'DRAFT' | 'PENDING_APPROVAL' | 'APPROVED' | 'REJECTED';
+
+export interface SlaPenaltyPolicy {
+  policyId: string;
+  policyCode: string;
+  policyName: string;
+  policyVersion: string;
+  brandId?: string;
+  brandName?: string;
+  breachType: PenaltyBreachType;
+  calculationType: 'FIXED' | 'PERCENTAGE';
+  penaltyAmount: number;
+  effectiveFrom: string;
+  effectiveTo?: string;
+  isActive: 'Y' | 'N';
+  governanceRef?: string;
+  approvalStatus: PolicyApprovalStatus;
+  approvedBy?: string;
+  approvedAt?: string;
+  approvalRemarks?: string;
+  submittedBy?: string;
+  submittedAt?: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export type SettlementStatus = 'DRAFT' | 'APPROVED' | 'DISBURSED' | 'RECONCILED';
@@ -523,8 +555,68 @@ export function useReviewPenalty() {
         action: 'APPROVE' | 'WAIVE' | 'DISPUTE';
         reviewRemarks: string;
         waiverPercentage?: number;
+        policyReference?: string;
+        authorizedAmount?: number;
       };
     }) => apiClient.post<SlaPenalty>(`/api/v1/finance/penalties/${penaltyId}/review`, body),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['finance'] });
+    },
+  });
+}
+
+export function useReversePenalty() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      penaltyId,
+      body,
+    }: {
+      penaltyId: string;
+      body: {
+        reason: string;
+      };
+    }) => apiClient.post<SlaPenalty>(`/api/v1/finance/penalties/${penaltyId}/reverse`, body),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['finance'] });
+    },
+  });
+}
+
+export function usePolicies(params?: {
+  breachType?: PenaltyBreachType;
+  brandId?: string;
+  isActive?: 'Y' | 'N';
+  approvalStatus?: PolicyApprovalStatus;
+}) {
+  const searchParams = new URLSearchParams();
+  if (params?.breachType) searchParams.set('breachType', params.breachType);
+  if (params?.brandId) searchParams.set('brandId', params.brandId);
+  if (params?.isActive) searchParams.set('isActive', params.isActive);
+  if (params?.approvalStatus) searchParams.set('approvalStatus', params.approvalStatus);
+
+  const queryStr = searchParams.toString();
+  const endpoint = `/api/v1/finance/policies${queryStr ? `?${queryStr}` : ''}`;
+
+  return useQuery<SlaPenaltyPolicy[]>({
+    queryKey: ['finance', 'policies', params],
+    queryFn: () => apiClient.get<SlaPenaltyPolicy[]>(endpoint),
+  });
+}
+
+export function useApprovePolicy() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      policyId,
+      body,
+    }: {
+      policyId: string;
+      body: {
+        action: 'APPROVE' | 'REJECT';
+        remarks?: string;
+      };
+    }) => apiClient.post<SlaPenaltyPolicy>(`/api/v1/finance/policies/${policyId}/approve`, body),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['finance'] });
     },

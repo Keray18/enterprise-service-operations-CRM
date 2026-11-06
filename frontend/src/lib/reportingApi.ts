@@ -42,15 +42,18 @@ export interface WarrantyClaimReportRow {
   claimNumber: string;
   claimPeriod: string;
   asfName: string;
+  asfLocationName?: string;
   brandName?: string;
   totalJobsCount: number;
-  grossLaborAmount: number;
-  grossTravelAmount: number;
-  penaltyDeductionAmount: number;
-  netClaimAmount: number;
+  grossLaborAmount: number | null;
+  grossTravelAmount: number | null;
+  penaltyDeductionAmount: number | null;
+  netClaimAmount: number | null;
   status: string;
   submittedAt?: string;
   approvedAt?: string;
+  journalNumber?: string;
+  createdAt?: string;
 }
 
 export interface StockValuationRow {
@@ -126,16 +129,19 @@ export function downloadReportCsv(endpoint: string, params: Record<string, any> 
     });
 }
 
-export function useCallRegisterReport(params: {
-  fromDate?: string;
-  toDate?: string;
-  brandId?: string;
-  locationId?: string;
-  status?: string;
-  callType?: string;
-  limit?: number;
-  offset?: number;
-}) {
+export function useCallRegisterReport(
+  params: {
+    fromDate?: string;
+    toDate?: string;
+    brandId?: string;
+    locationId?: string;
+    status?: string;
+    callType?: string;
+    limit?: number;
+    offset?: number;
+  },
+  options?: { enabled?: boolean }
+) {
   return useQuery({
     queryKey: ['reports', 'calls', params],
     queryFn: () => {
@@ -147,17 +153,21 @@ export function useCallRegisterReport(params: {
       });
       return apiClient.get<CallRegisterRow[]>(`/api/v1/reports/calls?${searchParams.toString()}`);
     },
+    enabled: options?.enabled ?? true,
     staleTime: 30000,
   });
 }
 
-export function usePartConsumptionReport(params: {
-  brandId?: string;
-  locationId?: string;
-  fromDate?: string;
-  toDate?: string;
-  limit?: number;
-}) {
+export function usePartConsumptionReport(
+  params: {
+    brandId?: string;
+    locationId?: string;
+    fromDate?: string;
+    toDate?: string;
+    limit?: number;
+  },
+  options?: { enabled?: boolean }
+) {
   return useQuery({
     queryKey: ['reports', 'parts-consumption', params],
     queryFn: () => {
@@ -169,18 +179,22 @@ export function usePartConsumptionReport(params: {
       });
       return apiClient.get<PartConsumptionRow[]>(`/api/v1/reports/parts-consumption?${searchParams.toString()}`);
     },
+    enabled: options?.enabled ?? true,
     staleTime: 30000,
   });
 }
 
-export function useWarrantyClaimsReport(params: {
-  brandId?: string;
-  asfLocationId?: string;
-  claimYear?: number;
-  claimMonth?: number;
-  status?: string;
-  limit?: number;
-}) {
+export function useWarrantyClaimsReport(
+  params: {
+    brandId?: string;
+    asfLocationId?: string;
+    claimYear?: number;
+    claimMonth?: number;
+    status?: string;
+    limit?: number;
+  },
+  options?: { enabled?: boolean }
+) {
   return useQuery({
     queryKey: ['reports', 'warranty-claims', params],
     queryFn: () => {
@@ -192,15 +206,19 @@ export function useWarrantyClaimsReport(params: {
       });
       return apiClient.get<WarrantyClaimReportRow[]>(`/api/v1/reports/warranty-claims?${searchParams.toString()}`);
     },
+    enabled: options?.enabled ?? true,
     staleTime: 30000,
   });
 }
 
-export function useStockValuationReport(params: {
-  locationId?: string;
-  category?: string;
-  limit?: number;
-}) {
+export function useStockValuationReport(
+  params: {
+    locationId?: string;
+    category?: string;
+    limit?: number;
+  },
+  options?: { enabled?: boolean }
+) {
   return useQuery({
     queryKey: ['reports', 'stock-valuation', params],
     queryFn: () => {
@@ -212,22 +230,25 @@ export function useStockValuationReport(params: {
       });
       return apiClient.get<StockValuationRow[]>(`/api/v1/reports/stock-valuation?${searchParams.toString()}`);
     },
+    enabled: options?.enabled ?? true,
     staleTime: 30000,
   });
 }
 
-export function useOperationalQueues() {
+export function useOperationalQueues(options?: { enabled?: boolean }) {
   return useQuery({
     queryKey: ['reports', 'operational-queues'],
     queryFn: () => apiClient.get<OperationalQueuesKpis>('/api/v1/reports/operational-queues'),
+    enabled: options?.enabled ?? true,
     staleTime: 15000,
   });
 }
 
-export function useNotificationMetrics() {
+export function useNotificationMetrics(options?: { enabled?: boolean }) {
   return useQuery({
     queryKey: ['reports', 'notifications-metrics'],
     queryFn: () => apiClient.get<NotificationMetrics>('/api/v1/reports/notifications/metrics'),
+    enabled: options?.enabled ?? true,
     staleTime: 15000,
   });
 }
@@ -239,5 +260,122 @@ export function useRetryNotifications() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['reports', 'notifications-metrics'] });
     },
+  });
+}
+
+export interface OperationalNetworkHealth {
+  totalActiveServiceCenters: number;
+  totalActiveTechnicians: number;
+  assignedRequests: number;
+  activeJobs: number;
+  awaitingAck: number;
+  openBacklog: number;
+  pendingParts: number;
+  todayAppointments: number;
+  dispatchesAwaitingAck: number;
+}
+
+export interface ServiceCenterWorkloadItem {
+  locationId: string;
+  locationCode: string;
+  locationName: string;
+  assignedOpenJobs: number;
+  awaitingAck: number;
+  inProgress: number;
+  pendingParts: number;
+  completedInPeriod: number;
+  overdueJobs: number;
+  activeTechnicians: number;
+  capacityConfigured: boolean;
+  configuredCapacity: number | null;
+}
+
+export interface AdminDashboardData {
+  period: {
+    preset: string;
+    fromDate: string;
+    toDate: string;
+  };
+  operationalNetwork?: OperationalNetworkHealth;
+  serviceCenterWorkload?: ServiceCenterWorkloadItem[];
+  kpis: {
+    totalInPeriod: number;
+    openBacklog: number;
+    awaitingAck: number;
+    overdue48hAck: number;
+    overdue168hResolution: number;
+    closedInPeriod: number;
+    pendingApprovals: number;
+    pendingParts: number;
+  };
+  charts: {
+    volumeTrend: Array<{ date: string; registered: number; closed: number }>;
+    workflowDistribution: Array<{ status: string; count: number; percentage: number }>;
+    slaCompliance: {
+      ack48h: {
+        totalEligible: number;
+        onTime: number;
+        breached: number;
+        rate: number;
+        inFlight?: number;
+        totalRegistered?: number;
+      };
+      resolution168h: {
+        totalClosed: number;
+        onTime: number;
+        breached: number;
+        rate: number;
+      };
+    };
+    agingBuckets: Array<{ bucket: string; count: number; percentage: number }>;
+    topBrands: Array<{ brandName: string; count: number }>;
+    topProducts: Array<{ productName: string; count: number }>;
+    customerOutcomes: {
+      happyCodeVerificationRate: number;
+      avgResolutionTatHours: number;
+      totalClosedWithTat: number;
+    };
+  };
+  pendingActions: {
+    overdueAckCount: number;
+    overdueResolutionCount: number;
+    pendingReplacementCount: number;
+    pendingCancellationCount: number;
+    pendingPnaCount: number;
+    deadLetterNotificationCount: number;
+    pendingClaimsAuditCount?: number;
+    pendingSlaPenaltyCount?: number;
+  };
+  recentActivity: Array<{
+    eventId: string;
+    jobNumber: string;
+    eventType: string;
+    fromState: string;
+    toState: string;
+    triggeredByUsername: string;
+    triggeredByRole: string;
+    remarks?: string;
+    createdAt: string;
+  }>;
+}
+
+export function useAdminDashboard(
+  params: {
+    period?: string;
+    fromDate?: string;
+    toDate?: string;
+  } = {}
+) {
+  return useQuery({
+    queryKey: ['reports', 'admin-dashboard', params],
+    queryFn: () => {
+      const searchParams = new URLSearchParams();
+      if (params.period) searchParams.append('period', params.period);
+      if (params.fromDate) searchParams.append('fromDate', params.fromDate);
+      if (params.toDate) searchParams.append('toDate', params.toDate);
+      const queryStr = searchParams.toString();
+      return apiClient.get<AdminDashboardData>(`/api/v1/reports/admin/dashboard${queryStr ? `?${queryStr}` : ''}`);
+    },
+    staleTime: 30000,
   });
 }

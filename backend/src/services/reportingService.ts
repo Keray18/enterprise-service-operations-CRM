@@ -258,6 +258,7 @@ export class ReportingService {
       'Total Jobs',
       'Gross Labor (INR)',
       'Gross Travel (INR)',
+      'Penalty Deductions (INR)',
       'Net Claim Amount (INR)',
       'Status',
       'Journal Number',
@@ -269,12 +270,13 @@ export class ReportingService {
       const row = [
         this.escapeCsv(r.claimNumber),
         this.escapeCsv(r.claimPeriod),
-        this.escapeCsv(r.asfLocationName),
+        this.escapeCsv(r.asfLocationName || r.asfName),
         this.escapeCsv(r.brandName),
         this.escapeCsv(r.totalJobsCount),
-        this.escapeCsv(r.grossLaborAmount),
-        this.escapeCsv(r.grossTravelAmount),
-        this.escapeCsv(r.netClaimAmount),
+        this.escapeCsv(r.grossLaborAmount != null ? Number(r.grossLaborAmount).toFixed(2) : '0.00'),
+        this.escapeCsv(r.grossTravelAmount != null ? Number(r.grossTravelAmount).toFixed(2) : '0.00'),
+        this.escapeCsv(r.penaltyDeductionAmount != null ? Number(r.penaltyDeductionAmount).toFixed(2) : ''),
+        this.escapeCsv(r.netClaimAmount != null ? Number(r.netClaimAmount).toFixed(2) : '0.00'),
         this.escapeCsv(r.status),
         this.escapeCsv(r.journalNumber || ''),
         this.escapeCsv(r.createdAt ? r.createdAt.toISOString().slice(0, 19).replace('T', ' ') : ''),
@@ -347,6 +349,19 @@ export class ReportingService {
   async retryNotifications(): Promise<any> {
     const { notificationService } = await import('./notificationService.js');
     return notificationService.retryFailedNotifications();
+  }
+
+  /**
+   * Generates aggregated Admin Operations Dashboard metrics and trends.
+   */
+  async getAdminDashboardSummary(
+    preset = '7d',
+    fromDate?: string,
+    toDate?: string,
+    user?: AuthenticatedUser
+  ): Promise<any> {
+    const permissions = user?.permissions || [];
+    return reportingRepository.getAdminDashboardSummary(preset, fromDate, toDate, permissions);
   }
 }
 

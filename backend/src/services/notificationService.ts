@@ -140,9 +140,9 @@ export class NotificationService {
 
   /**
    * Asynchronously attempts delivery for an enqueued outbox notification.
-   * Gateway errors update the outbox status to FAILED without throwing errors back to caller.
+   * Gateway errors update the outbox status to FAILED/DEAD_LETTER without throwing errors back to caller.
    */
-  async processNotification(notification: NotificationOutboxRecord): Promise<void> {
+  async processNotification(notification: NotificationOutboxRecord, maxRetries = 3): Promise<void> {
     try {
       if (notification.channel === 'SMS') {
         let textToSend = notification.messageBody;
@@ -178,22 +178,29 @@ export class NotificationService {
         );
 
         if (res.success) {
-          await notificationRepository.updateStatus(notification.notificationId, 'SENT', {
-            providerMessageId: res.providerMessageId,
-          });
+          await notificationRepository.recordDispatchSuccess(
+            notification.notificationId,
+            res.providerMessageId
+          );
         } else {
-          await notificationRepository.updateStatus(notification.notificationId, 'FAILED', {
-            errorMessage: res.errorMessage,
-          });
+          await notificationRepository.recordDispatchFailure(
+            notification.notificationId,
+            notification.retryCount,
+            res.errorMessage || 'GATEWAY_ERROR',
+            maxRetries
+          );
         }
       }
     } catch (err: any) {
       // Do not log the decrypted message or sensitive payload
       logger.error(`[NOTIFICATION PROCESSOR] Failed to dispatch notification ${notification.notificationId}: ${err?.message || err}`);
       try {
-        await notificationRepository.updateStatus(notification.notificationId, 'FAILED', {
-          errorMessage: err?.message || 'UNKNOWN_DISPATCH_ERROR',
-        });
+        await notificationRepository.recordDispatchFailure(
+          notification.notificationId,
+          notification.retryCount,
+          err?.message || 'UNKNOWN_DISPATCH_ERROR',
+          maxRetries
+        );
       } catch (dbErr) {
         logger.error(`[NOTIFICATION PROCESSOR] Failed to record notification failure: ${dbErr}`);
       }
@@ -202,47 +209,39 @@ export class NotificationService {
 
   /**
    * Scans and processes pending or failed notifications with retry daemon.
-   * If retries reach maxRetries, escalates to DEAD_LETTER for supervisor intervention.
+   * Concurrency-safe: atomically claims rows via SELECT ... FOR UPDATE SKIP LOCKED.
+   * If retries reach maxRetries (3), escalates to DEAD_LETTER for supervisor intervention.
    */
-  async retryFailedNotifications(maxRetries = 3): Promise<{
+  async retryFailedNotifications(maxRetries = 3, limit = 50): Promise<{
     processedCount: number;
     succeededCount: number;
     failedCount: number;
     escalatedCount: number;
   }> {
-    const pending = await notificationRepository.findPendingRetries(maxRetries);
+    // 1. Recover any stale PROCESSING records from previous crashed workers
+    await notificationRepository.recoverStaleProcessing(5);
+
+    // 2. Concurrency-safe claim with FOR UPDATE SKIP LOCKED
+    const pending = await notificationRepository.claimPendingForDispatch(maxRetries, limit);
     let succeededCount = 0;
     let failedCount = 0;
     let escalatedCount = 0;
 
     for (const item of pending) {
-      if (item.retryCount >= maxRetries - 1) {
-        try {
-          await this.processNotification(item);
-          const check = await notificationRepository.findById(item.notificationId);
-          if (check?.status === 'SENT') {
-            succeededCount++;
-          } else {
-            await notificationRepository.markExhausted(item.notificationId);
-            escalatedCount++;
-            logger.warn(`[NOTIFICATION DAEMON] Notification ${item.notificationId} exhausted max retries (${maxRetries}). Escalated to dead-letter.`);
-          }
-        } catch {
-          await notificationRepository.markExhausted(item.notificationId);
+      try {
+        await this.processNotification(item, maxRetries);
+        const check = await notificationRepository.findById(item.notificationId);
+        if (check?.status === 'SENT') {
+          succeededCount++;
+        } else if (check?.status === 'DEAD_LETTER') {
           escalatedCount++;
-        }
-      } else {
-        try {
-          await this.processNotification(item);
-          const check = await notificationRepository.findById(item.notificationId);
-          if (check?.status === 'SENT') {
-            succeededCount++;
-          } else {
-            failedCount++;
-          }
-        } catch {
+          logger.warn(`[NOTIFICATION DAEMON] Notification ${item.notificationId} exhausted max retries (${maxRetries}). Escalated to DEAD_LETTER.`);
+        } else {
           failedCount++;
         }
+      } catch (dispatchErr) {
+        logger.error(`[NOTIFICATION DAEMON] Unexpected error processing ${item.notificationId}: ${dispatchErr}`);
+        failedCount++;
       }
     }
 

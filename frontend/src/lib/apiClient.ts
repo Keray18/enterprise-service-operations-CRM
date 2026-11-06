@@ -170,7 +170,7 @@ export function triggerBlobDownload(blob: Blob, filename: string): void {
     if (typeof document !== 'undefined' && document.body && document.body.contains(a)) {
       document.body.removeChild(a);
     }
-    if (typeof window !== 'undefined' && window.URL) {
+    if (typeof window !== 'undefined' && window.URL && typeof window.URL.revokeObjectURL === 'function') {
       window.URL.revokeObjectURL(url);
     }
   }, 100);

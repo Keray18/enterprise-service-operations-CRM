@@ -18,6 +18,8 @@ import { warehouseRouter } from './routes/warehouseRoutes.js';
 import { financeRouter } from './routes/financeRoutes.js';
 import { workspaceRouter } from './routes/workspaceRoutes.js';
 import reportingRouter from './routes/reportingRoutes.js';
+import { requireAuth } from './middleware/authMiddleware.js';
+import { AuthenticatedUser } from './types/auth.js';
 
 export function createApp(): Express {
   const app: Express = express();
@@ -104,7 +106,6 @@ export function createApp(): Express {
         database: {
           connected: true,
           latencyMs: dbStatus.latencyMs,
-          details: dbStatus.details,
         },
       });
     } else {
@@ -117,14 +118,13 @@ export function createApp(): Express {
         {
           error: dbStatus.error,
           latencyMs: dbStatus.latencyMs,
-          details: dbStatus.details,
         }
       );
     }
   });
 
   /**
-   * System Info Endpoint: Basic architectural metadata for frontend verification.
+   * System Info Endpoint: Basic architectural metadata for verification.
    */
   app.get('/api/v1/system/info', (_req: Request, res: Response) => {
     sendSuccess(res, {
@@ -135,6 +135,40 @@ export function createApp(): Express {
       architecture: 'High-Integrity Modular Monolith',
       authoritativeBoundary: 'Express REST API',
       database: 'Oracle Database 19c/23c (Thin Mode)',
+    });
+  });
+
+  /**
+   * Dedicated Infrastructure & System Diagnostics Endpoint.
+   * Gated: Strictly requires authentication and 'system:audit' operational permission.
+   * Ordinary business ADMIN role without 'system:audit' is denied (403 Forbidden).
+   */
+  app.get('/api/v1/system/diagnostics', requireAuth, async (req: Request, res: Response): Promise<void> => {
+    const user = req.user as AuthenticatedUser;
+    if (!user?.permissions?.includes('system:audit')) {
+      sendError(
+        res,
+        'Access denied: Infrastructure diagnostics require system:audit permission',
+        403,
+        'FORBIDDEN'
+      );
+      return;
+    }
+
+    const dbStatus = await checkDatabaseReadiness();
+    sendSuccess(res, {
+      status: 'UP',
+      uptimeSeconds: Math.floor(process.uptime()),
+      timestamp: new Date().toISOString(),
+      nodeVersion: process.version,
+      database: {
+        connected: dbStatus.isReady,
+        latencyMs: dbStatus.latencyMs,
+        pool: {
+          connectionsOpen: (dbStatus.details as any)?.poolConnectionsOpen,
+          connectionsInUse: (dbStatus.details as any)?.poolConnectionsInUse,
+        },
+      },
     });
   });
 

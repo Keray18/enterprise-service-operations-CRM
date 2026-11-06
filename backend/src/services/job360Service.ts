@@ -141,7 +141,10 @@ export class Job360Service {
     const isCallCenter = actor.roles.includes('CALL_CENTER');
 
     if (!isAdmin) {
-      if (isEngineer && request.assignedEngineerId !== actor.userId && actor.locationId !== request.assignedLocationId) {
+      const isAsfManager = actor.roles.includes('ASF') || actor.roles.includes('ASF_MANAGER');
+      const isEngineerOnly = isEngineer && !isAsfManager;
+
+      if (isEngineerOnly && request.assignedEngineerId !== actor.userId) {
         throw new AppError('Access denied: You cannot view jobs assigned to other technicians', 403, 'FORBIDDEN');
       }
       if (isAsf && actor.locationId && request.assignedLocationId !== actor.locationId) {

@@ -66,11 +66,6 @@ const NAV_SECTIONS: NavSection[] = [
         href: '/finance',
         requiredPermission: 'finance:read',
       },
-      {
-        label: 'System Diagnostics',
-        href: '/admin/diagnostics',
-        requiredRole: 'ADMIN',
-      },
     ],
   },
 ];
@@ -91,7 +86,7 @@ function getVisibleNavItems(user: { roles: string[]; permissions: string[] }) {
 }
 
 describe('AppSidebar Navigation Visibility & RBAC Protection', () => {
-  it('Admin sees all items including Catalog Masters, Diagnostics, and Admin Console', () => {
+  it('Admin sees all business items including Catalog Masters, Admin Console, but NOT System Diagnostics', () => {
     const admin = {
       roles: ['ADMIN'],
       permissions: [
@@ -124,7 +119,7 @@ describe('AppSidebar Navigation Visibility & RBAC Protection', () => {
 
     expect(visibleLabels).toContain('Catalog Masters');
     expect(visibleLabels).toContain('Admin Console');
-    expect(visibleLabels).toContain('System Diagnostics');
+    expect(visibleLabels).not.toContain('System Diagnostics');
     expect(visibleLabels).toContain('Finance & Settlements');
     expect(visibleLabels).toContain('Call Center Workspace');
     expect(visibleLabels).toContain('Warehouse & PNA Hub');

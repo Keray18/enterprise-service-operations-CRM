@@ -614,7 +614,7 @@ export class InventoryService {
   async acknowledgeDispatchArrival(
     dispatchId: string,
     actor: AuthenticatedUser
-  ): Promise<{ success: boolean }> {
+  ): Promise<{ success: boolean; status: 'ACKNOWLEDGED' }> {
     const conn = await getOracleConnection();
 
     try {
@@ -624,6 +624,22 @@ export class InventoryService {
       }
       if (dispatch.status !== 'IN_TRANSIT') {
         throw new AppError(`Dispatch is in '${dispatch.status}' status and cannot be acknowledged.`, 400, 'INVALID_STATUS');
+      }
+
+      // Security check: Only Admin, Warehouse, or authorized destination ASF managers can acknowledge delivery challans.
+      // Field Engineers and other roles are strictly unauthorized.
+      const isAdmin = actor.roles.includes('ADMIN');
+      const isWarehouse = actor.roles.includes('WAREHOUSE');
+      const isAsf = actor.roles.includes('ASF') || actor.roles.includes('ASF_MANAGER');
+
+      if (!isAdmin && !isWarehouse && !isAsf) {
+        throw new AppError('Unauthorized: Field engineers and non-operational roles cannot acknowledge delivery challans.', 403, 'FORBIDDEN');
+      }
+
+      if (isAsf && !isAdmin && !isWarehouse) {
+        if (!actor.locationId || actor.locationId !== dispatch.toLocationId) {
+          throw new AppError('Unauthorized: You can only acknowledge deliveries dispatched to your assigned service center.', 403, 'FORBIDDEN');
+        }
       }
 
       // 1. Mark dispatch as ACKNOWLEDGED
@@ -677,8 +693,100 @@ export class InventoryService {
         }
       }
 
+      // 3. Operational Handoff: If linked to a service request, update request state and log event
+      if (dispatch.requestId) {
+        const srResult = await conn.execute<any>(
+          'SELECT STATUS, JOB_NUMBER FROM SERVICE_REQUESTS WHERE REQUEST_ID = :reqId FOR UPDATE',
+          { reqId: dispatch.requestId },
+          { outFormat: oracledb.OUT_FORMAT_OBJECT }
+        );
+        const srRow = srResult.rows?.[0];
+        if (srRow) {
+          const prevStatus = srRow.STATUS;
+          const isPartsAwaitingStatus = prevStatus === 'PENDING_SPARE_PART' || prevStatus === 'PART_DISPATCHED_TO_ASF';
+
+          // Update only the parts included in this specific delivery challan to COMMITTED
+          if (dispatch.items && dispatch.items.length > 0) {
+            for (const item of dispatch.items) {
+              await conn.execute(
+                `UPDATE SERVICE_REQUEST_PARTS 
+                 SET STATUS = 'COMMITTED', UPDATED_AT = SYSTIMESTAMP 
+                 WHERE REQUEST_ID = :reqId 
+                   AND PART_ID = :partId 
+                   AND STATUS = 'PENDING_FULFILLMENT' 
+                   AND ROWNUM <= :qty`,
+                { reqId: dispatch.requestId, partId: item.partId, qty: item.quantity }
+              );
+            }
+          }
+
+          // Check if any required parts remain pending fulfillment
+          const pendingCheck = await conn.execute<any>(
+            `SELECT COUNT(*) AS PENDING_COUNT 
+             FROM SERVICE_REQUEST_PARTS 
+             WHERE REQUEST_ID = :reqId AND STATUS = 'PENDING_FULFILLMENT'`,
+            { reqId: dispatch.requestId },
+            { outFormat: oracledb.OUT_FORMAT_OBJECT }
+          );
+          const pendingCount = Number(pendingCheck.rows?.[0]?.PENDING_COUNT || 0);
+
+          if (pendingCount === 0) {
+            // All required parts have arrived! Advance workflow to IN_PROGRESS_REPAIR
+            if (isPartsAwaitingStatus) {
+              await conn.execute(
+                `UPDATE SERVICE_REQUESTS 
+                 SET STATUS = 'IN_PROGRESS_REPAIR', UPDATED_AT = SYSTIMESTAMP, VERSION_NO = VERSION_NO + 1 
+                 WHERE REQUEST_ID = :reqId`,
+                { reqId: dispatch.requestId }
+              );
+            }
+
+            // Record immutable lifecycle event
+            await serviceRequestEventRepository.createEvent(
+              {
+                requestId: dispatch.requestId,
+                fromState: prevStatus,
+                toState: isPartsAwaitingStatus ? 'IN_PROGRESS_REPAIR' : prevStatus,
+                eventType: 'PART_RECEIVED',
+                triggeredByUserId: actor.userId,
+                triggeredByUsername: actor.username,
+                triggeredByRole: actor.roles[0] || 'SERVICE_CENTER',
+                remarks: `All required spare parts fulfilled and received via Delivery Challan #${dispatch.dispatchNumber}. Ready for repair continuation.`,
+              },
+              conn
+            );
+          } else {
+            // Partial fulfillment: some required parts are still outstanding
+            // Request remains or returns to PENDING_SPARE_PART so technician does not attempt repair prematurely
+            const targetStatus = 'PENDING_SPARE_PART';
+            if (prevStatus === 'PART_DISPATCHED_TO_ASF') {
+              await conn.execute(
+                `UPDATE SERVICE_REQUESTS 
+                 SET STATUS = 'PENDING_SPARE_PART', UPDATED_AT = SYSTIMESTAMP, VERSION_NO = VERSION_NO + 1 
+                 WHERE REQUEST_ID = :reqId`,
+                { reqId: dispatch.requestId }
+              );
+            }
+
+            await serviceRequestEventRepository.createEvent(
+              {
+                requestId: dispatch.requestId,
+                fromState: prevStatus,
+                toState: targetStatus,
+                eventType: 'PART_RECEIVED',
+                triggeredByUserId: actor.userId,
+                triggeredByUsername: actor.username,
+                triggeredByRole: actor.roles[0] || 'SERVICE_CENTER',
+                remarks: `Partial spare parts receipt via Delivery Challan #${dispatch.dispatchNumber}. ${pendingCount} required part(s) remain outstanding.`,
+              },
+              conn
+            );
+          }
+        }
+      }
+
       await conn.commit();
-      return { success: true };
+      return { success: true, status: 'ACKNOWLEDGED' as const };
     } catch (err) {
       await conn.rollback();
       throw err;
@@ -691,8 +799,11 @@ export class InventoryService {
     fromLocationId?: string;
     toLocationId?: string;
     requestId?: string;
+    jobNumber?: string;
     status?: 'IN_TRANSIT' | 'ACKNOWLEDGED' | 'CANCELLED';
     search?: string;
+    fromDate?: string;
+    toDate?: string;
     page?: number;
     limit?: number;
   }): Promise<{ items: StockDispatchRecord[]; total: number; page: number; limit: number; totalPages: number }> {

@@ -138,6 +138,7 @@ export interface GoodsReceiptRecord {
 
 export interface DispatchItemRecord {
   dispatchItemId: string;
+  itemId?: string;
   dispatchId: string;
   partId: string;
   partCode?: string;
@@ -145,6 +146,7 @@ export interface DispatchItemRecord {
   hsnCode?: string;
   quantity: number;
   unitPrice: number;
+  taxableValue?: number;
   cgstRate: number;
   sgstRate: number;
   igstRate: number;
@@ -157,6 +159,7 @@ export interface DispatchItemRecord {
 export interface StockDispatchRecord {
   dispatchId: string;
   dispatchNumber: string;
+  challanNumber?: string;
   documentType: DispatchDocumentType;
   fromLocationId: string;
   fromLocationName?: string;
@@ -165,15 +168,23 @@ export interface StockDispatchRecord {
   requestId?: string;
   jobNumber?: string;
   courierName: string;
+  transporterName?: string;
   docketNumber: string;
+  docketNo?: string;
+  dispatchMode?: string;
   dispatchDate: Date;
+  dispatchedAt?: string;
   dispatchedBy: string;
   dispatchedByName?: string;
   totalQuantity: number;
   subtotalAmount: number;
+  subtotalTaxable?: number;
   cgstAmount: number;
+  totalCgst?: number;
   sgstAmount: number;
+  totalSgst?: number;
   igstAmount: number;
+  totalIgst?: number;
   totalAmount: number;
   status: DispatchStatus;
   acknowledgedBy?: string;

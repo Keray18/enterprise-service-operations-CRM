@@ -87,7 +87,7 @@ describe('Role-Based Landing Page Resolver (P0 Fix)', () => {
       expect(isAuthorizedForPath(null, '/finance')).toBe(false);
     });
 
-    it('should allow Admin on all workspaces', () => {
+    it('should allow Admin on all workspaces, but deny /admin/diagnostics without system:audit', () => {
       const admin = createMockUser(['ADMIN'], ['users:read', 'masters:read']);
       expect(isAuthorizedForPath(admin, '/admin')).toBe(true);
       expect(isAuthorizedForPath(admin, '/admin/masters')).toBe(true);
@@ -95,6 +95,13 @@ describe('Role-Based Landing Page Resolver (P0 Fix)', () => {
       expect(isAuthorizedForPath(admin, '/warehouse')).toBe(true);
       expect(isAuthorizedForPath(admin, '/asf')).toBe(true);
       expect(isAuthorizedForPath(admin, '/finance')).toBe(true);
+
+      // Business Admin is strictly denied /admin/diagnostics without system:audit
+      expect(isAuthorizedForPath(admin, '/admin/diagnostics')).toBe(false);
+
+      // Operational auditor with system:audit is authorized
+      const opsAuditor = createMockUser(['ADMIN'], ['users:read', 'system:audit']);
+      expect(isAuthorizedForPath(opsAuditor, '/admin/diagnostics')).toBe(true);
     });
 
     it('should allow FINANCE user on /finance and deny on unauthorized admin masters', () => {

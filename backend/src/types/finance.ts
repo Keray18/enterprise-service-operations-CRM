@@ -203,7 +203,7 @@ export type PenaltyBreachType =
   | 'REPLACEMENT_DEBIT'
   | 'UNAUTHORIZED_DISPOSITION';
 
-export type PenaltyStatus = 'PENDING_REVIEW' | 'APPROVED' | 'WAIVED' | 'DISPUTED' | 'POSTED';
+export type PenaltyStatus = 'PENDING_REVIEW' | 'APPROVED' | 'WAIVED' | 'DISPUTED' | 'POSTED' | 'REVERSED';
 
 export interface SlaPenaltyRecord {
   penaltyId: string;
@@ -225,7 +225,37 @@ export interface SlaPenaltyRecord {
   reviewedAt?: Date;
   reviewRemarks?: string;
   journalId?: string;
+  reversalReason?: string;
+  reversedAt?: Date;
+  reversedBy?: string;
+  reversedByUsername?: string;
   createdAt: Date;
+}
+
+export type PolicyApprovalStatus = 'DRAFT' | 'PENDING_APPROVAL' | 'APPROVED' | 'REJECTED';
+
+export interface SlaPenaltyPolicyRecord {
+  policyId: string;
+  policyCode: string;
+  policyName: string;
+  policyVersion: string;
+  brandId?: string;
+  brandName?: string;
+  breachType: PenaltyBreachType;
+  calculationType: 'FIXED' | 'PERCENTAGE';
+  penaltyAmount: number;
+  effectiveFrom: Date;
+  effectiveTo?: Date;
+  isActive: 'Y' | 'N';
+  governanceRef?: string;
+  approvalStatus: PolicyApprovalStatus;
+  approvedBy?: string;
+  approvedAt?: Date;
+  approvalRemarks?: string;
+  submittedBy?: string;
+  submittedAt?: Date;
+  createdAt: Date;
+  updatedAt: Date;
 }
 
 export type SettlementStatus = 'DRAFT' | 'APPROVED' | 'DISBURSED' | 'RECONCILED';
@@ -336,4 +366,26 @@ export const createSettlementBatchSchema = z.object({
 export const reverseJournalSchema = z.object({
   journalId: z.string().uuid(),
   reason: z.string().min(10, 'A detailed reversal justification (min 10 chars) is mandatory.'),
+});
+
+export const reversePenaltySchema = z.object({
+  reason: z.string().min(10, 'A detailed reversal justification (min 10 chars) is mandatory.'),
+});
+
+export const reviewPolicyApprovalSchema = z.object({
+  action: z.enum(['APPROVE', 'REJECT']),
+  remarks: z.string().max(500).optional(),
+});
+
+export const createPenaltyPolicySchema = z.object({
+  policyCode: z.string().min(3).max(50),
+  policyName: z.string().min(3).max(150),
+  policyVersion: z.string().min(1).max(30),
+  brandId: z.string().uuid().optional(),
+  breachType: z.enum(['SLA_48H_ACKNOWLEDGEMENT', 'SLA_168H_CLOSURE', 'REPLACEMENT_DEBIT', 'UNAUTHORIZED_DISPOSITION']),
+  calculationType: z.enum(['FIXED', 'PERCENTAGE']).default('FIXED'),
+  penaltyAmount: z.number().min(0),
+  effectiveFrom: z.string().datetime().or(z.date()).optional(),
+  effectiveTo: z.string().datetime().or(z.date()).optional(),
+  governanceRef: z.string().max(100).optional(),
 });

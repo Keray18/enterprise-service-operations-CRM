@@ -18,7 +18,8 @@
     "db:bootstrap-admin": "pnpm --filter backend db:bootstrap-admin",
     "db:rotate-admin": "pnpm --filter backend db:rotate-admin",
     "db:users": "pnpm --filter backend db:users",
-    "db:set-password": "pnpm --filter backend db:set-password"
+    "db:set-password": "pnpm --filter backend db:set-password",
+    "db:seed-dev-accounts": "pnpm --filter backend db:seed-dev-accounts"
   },
   "devDependencies": {
     "typescript": "^5.8.2"

@@ -170,8 +170,11 @@ export class StockDispatchRepository {
     fromLocationId?: string;
     toLocationId?: string;
     requestId?: string;
+    jobNumber?: string;
     status?: DispatchStatus;
     search?: string;
+    fromDate?: string;
+    toDate?: string;
     page?: number;
     limit?: number;
   }): Promise<{ items: StockDispatchRecord[]; total: number; page: number; limit: number; totalPages: number }> {
@@ -195,14 +198,31 @@ export class StockDispatchRepository {
         whereClauses.push('d.REQUEST_ID = :requestId');
       }
 
+      if (options.jobNumber) {
+        binds.jobNumber = options.jobNumber.trim().toUpperCase();
+        whereClauses.push('sr.JOB_NUMBER = :jobNumber');
+      }
+
       if (options.status) {
         binds.status = options.status;
         whereClauses.push('d.STATUS = :status');
       }
 
+      if (options.fromDate) {
+        binds.fromDate = new Date(options.fromDate);
+        whereClauses.push('d.DISPATCH_DATE >= :fromDate');
+      }
+
+      if (options.toDate) {
+        const toDateObj = new Date(options.toDate);
+        toDateObj.setHours(23, 59, 59, 999);
+        binds.toDate = toDateObj;
+        whereClauses.push('d.DISPATCH_DATE <= :toDate');
+      }
+
       if (options.search && options.search.trim()) {
         binds.search = `%${options.search.trim().toLowerCase()}%`;
-        whereClauses.push('(LOWER(d.DISPATCH_NUMBER) LIKE :search OR LOWER(d.DOCKET_NUMBER) LIKE :search OR LOWER(d.COURIER_NAME) LIKE :search)');
+        whereClauses.push('(LOWER(d.DISPATCH_NUMBER) LIKE :search OR LOWER(d.DOCKET_NUMBER) LIKE :search OR LOWER(d.COURIER_NAME) LIKE :search OR LOWER(sr.JOB_NUMBER) LIKE :search)');
       }
 
       const whereSql = `WHERE ${whereClauses.join(' AND ')}`;
@@ -210,6 +230,7 @@ export class StockDispatchRepository {
       const countSql = `
         SELECT COUNT(*) AS CNT
         FROM STOCK_DISPATCHES d
+        LEFT JOIN SERVICE_REQUESTS sr ON d.REQUEST_ID = sr.REQUEST_ID
         ${whereSql}
       `;
 
@@ -267,6 +288,7 @@ export class StockDispatchRepository {
       const items: StockDispatchRecord[] = (dataResult.rows || []).map((row) => ({
         dispatchId: row.DISPATCH_ID,
         dispatchNumber: row.DISPATCH_NUMBER,
+        challanNumber: row.DISPATCH_NUMBER,
         documentType: row.DOCUMENT_TYPE as DispatchDocumentType,
         fromLocationId: row.FROM_LOCATION_ID,
         fromLocationName: row.FROM_LOCATION_NAME,
@@ -275,15 +297,23 @@ export class StockDispatchRepository {
         requestId: row.REQUEST_ID || undefined,
         jobNumber: row.JOB_NUMBER || undefined,
         courierName: row.COURIER_NAME,
+        transporterName: row.COURIER_NAME,
         docketNumber: row.DOCKET_NUMBER,
+        docketNo: row.DOCKET_NUMBER,
+        dispatchMode: row.DOCUMENT_TYPE === 'DELIVERY_CHALLAN' ? 'COURIER' : 'LOGISTICS_TRUCK',
         dispatchDate: new Date(row.DISPATCH_DATE),
+        dispatchedAt: new Date(row.DISPATCH_DATE).toISOString(),
         dispatchedBy: row.DISPATCHED_BY,
         dispatchedByName: row.DISPATCHED_BY_NAME,
         totalQuantity: Number(row.TOTAL_QUANTITY),
         subtotalAmount: Number(row.SUBTOTAL_AMOUNT),
+        subtotalTaxable: Number(row.SUBTOTAL_AMOUNT),
         cgstAmount: Number(row.CGST_AMOUNT),
+        totalCgst: Number(row.CGST_AMOUNT),
         sgstAmount: Number(row.SGST_AMOUNT),
+        totalSgst: Number(row.SGST_AMOUNT),
         igstAmount: Number(row.IGST_AMOUNT),
+        totalIgst: Number(row.IGST_AMOUNT),
         totalAmount: Number(row.TOTAL_AMOUNT),
         status: row.STATUS as DispatchStatus,
         acknowledgedBy: row.ACKNOWLEDGED_BY || undefined,
@@ -375,13 +405,15 @@ export class StockDispatchRepository {
       const itemsResult = await conn.execute<any>(itemsSql, { dispatchId }, { outFormat: oracledb.OUT_FORMAT_OBJECT });
       const items: DispatchItemRecord[] = (itemsResult.rows || []).map((i) => ({
         dispatchItemId: i.DISPATCH_ITEM_ID,
+        itemId: i.DISPATCH_ITEM_ID,
         dispatchId: i.DISPATCH_ID,
         partId: i.PART_ID,
         partCode: i.PART_CODE,
         partName: i.PART_NAME,
-        hsnCode: i.HSN_CODE || undefined,
+        hsnCode: i.HSN_CODE || '84159000',
         quantity: Number(i.QUANTITY),
         unitPrice: Number(i.UNIT_PRICE),
+        taxableValue: Number(i.QUANTITY) * Number(i.UNIT_PRICE),
         cgstRate: Number(i.CGST_RATE),
         sgstRate: Number(i.SGST_RATE),
         igstRate: Number(i.IGST_RATE),
@@ -394,6 +426,7 @@ export class StockDispatchRepository {
       return {
         dispatchId: row.DISPATCH_ID,
         dispatchNumber: row.DISPATCH_NUMBER,
+        challanNumber: row.DISPATCH_NUMBER,
         documentType: row.DOCUMENT_TYPE as DispatchDocumentType,
         fromLocationId: row.FROM_LOCATION_ID,
         fromLocationName: row.FROM_LOCATION_NAME,
@@ -402,15 +435,23 @@ export class StockDispatchRepository {
         requestId: row.REQUEST_ID || undefined,
         jobNumber: row.JOB_NUMBER || undefined,
         courierName: row.COURIER_NAME,
+        transporterName: row.COURIER_NAME,
         docketNumber: row.DOCKET_NUMBER,
+        docketNo: row.DOCKET_NUMBER,
+        dispatchMode: row.DOCUMENT_TYPE === 'DELIVERY_CHALLAN' ? 'COURIER' : 'LOGISTICS_TRUCK',
         dispatchDate: new Date(row.DISPATCH_DATE),
+        dispatchedAt: new Date(row.DISPATCH_DATE).toISOString(),
         dispatchedBy: row.DISPATCHED_BY,
         dispatchedByName: row.DISPATCHED_BY_NAME,
         totalQuantity: Number(row.TOTAL_QUANTITY),
         subtotalAmount: Number(row.SUBTOTAL_AMOUNT),
+        subtotalTaxable: Number(row.SUBTOTAL_AMOUNT),
         cgstAmount: Number(row.CGST_AMOUNT),
+        totalCgst: Number(row.CGST_AMOUNT),
         sgstAmount: Number(row.SGST_AMOUNT),
+        totalSgst: Number(row.SGST_AMOUNT),
         igstAmount: Number(row.IGST_AMOUNT),
+        totalIgst: Number(row.IGST_AMOUNT),
         totalAmount: Number(row.TOTAL_AMOUNT),
         status: row.STATUS as DispatchStatus,
         acknowledgedBy: row.ACKNOWLEDGED_BY || undefined,

@@ -83,4 +83,12 @@ router.post(
   reportingController.retryNotifications.bind(reportingController)
 );
 
+// 7. Admin Operations Dashboard Analytics
+// Authorized: ADMIN only
+router.get(
+  '/admin/dashboard',
+  requireRole('ADMIN'),
+  reportingController.getAdminDashboardSummary.bind(reportingController)
+);
+
 export default router;

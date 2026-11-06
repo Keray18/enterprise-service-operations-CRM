@@ -21,7 +21,6 @@ import TablePagination from '@mui/material/TablePagination';
 import TableRow from '@mui/material/TableRow';
 import Tabs from '@mui/material/Tabs';
 import TextField from '@mui/material/TextField';
-import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
 
 // Icons
@@ -29,6 +28,7 @@ import AssessmentIcon from '@mui/icons-material/Assessment';
 import DownloadIcon from '@mui/icons-material/Download';
 import FactCheckIcon from '@mui/icons-material/FactCheck';
 import Inventory2Icon from '@mui/icons-material/Inventory2';
+import LocalShippingIcon from '@mui/icons-material/LocalShipping';
 import NotificationsActiveIcon from '@mui/icons-material/NotificationsActive';
 import PhoneInTalkIcon from '@mui/icons-material/PhoneInTalk';
 import RefreshIcon from '@mui/icons-material/Refresh';
@@ -38,6 +38,7 @@ import WarningAmberIcon from '@mui/icons-material/WarningAmber';
 import { PageHeader } from '../../../components/data-display/PageHeader';
 import { ProtectedRoute } from '../../../components/layout/ProtectedRoute';
 import { useAuth } from '../../../providers/AuthProvider';
+import { formatCurrency } from '../../../lib/formatters';
 import {
   downloadReportCsv,
   useCallRegisterReport,
@@ -48,10 +49,25 @@ import {
   useStockValuationReport,
   useWarrantyClaimsReport,
 } from '../../../lib/reportingApi';
+import {
+  useDispatches,
+  usePendingJobParts,
+  useStockReturns,
+  useWarehouseDashboard,
+} from '../../../lib/warehouseApi';
+
+export type ReportTabKey =
+  | 'queues'
+  | 'calls'
+  | 'parts'
+  | 'claims'
+  | 'stock'
+  | 'warehouse_telemetry'
+  | 'notifications';
 
 export default function ReportsPage() {
   const { user } = useAuth();
-  const [activeTab, setActiveTab] = useState<number>(0);
+  const [activeTab, setActiveTab] = useState<ReportTabKey>('queues');
 
   // Role determinations
   const roles = user?.roles || [];
@@ -62,11 +78,12 @@ export default function ReportsPage() {
   const isAsf = roles.includes('ASF');
   const isBrand = roles.includes('BRAND');
 
-  // Capability flags based on the strict Phase 5 Authorization Matrix
+  // Capability flags based on strict Phase 5 Authorization Matrix
   const canViewCalls = isAdmin || isCallCenter || isFinance || isAsf || isBrand;
   const canViewParts = (isAdmin || isWarehouse || isFinance || isAsf || isBrand) && !isCallCenter;
   const canViewClaims = (isAdmin || isFinance || isBrand || isAsf) && !isCallCenter && !isWarehouse;
   const canViewStock = (isAdmin || isFinance || isWarehouse) && !isCallCenter && !isAsf && !isBrand;
+  const canViewWarehouseTelemetry = isAdmin || isWarehouse;
   const canViewNotifications = isAdmin;
 
   // Filter States
@@ -94,93 +111,133 @@ export default function ReportsPage() {
   const [callPage, setCallPage] = useState(0);
   const [callRowsPerPage, setCallRowsPerPage] = useState(25);
 
-  // Queries
+  // Queries (conditioned on tab visibility to avoid unauthorized 403s)
   const {
     data: queues,
     isLoading: loadingQueues,
     refetch: refetchQueues,
-  } = useOperationalQueues();
+  } = useOperationalQueues({ enabled: activeTab === 'queues' });
 
   const {
     data: callRecords,
     isLoading: loadingCalls,
     error: callError,
     refetch: refetchCalls,
-  } = useCallRegisterReport({
-    status: callFilter.status || undefined,
-    callType: callFilter.callType || undefined,
-    fromDate: callFilter.fromDate || undefined,
-    toDate: callFilter.toDate || undefined,
-    limit: 500,
-  });
+  } = useCallRegisterReport(
+    {
+      status: callFilter.status || undefined,
+      callType: callFilter.callType || undefined,
+      fromDate: callFilter.fromDate || undefined,
+      toDate: callFilter.toDate || undefined,
+      limit: 500,
+    },
+    { enabled: activeTab === 'calls' && canViewCalls }
+  );
 
   const {
     data: partRecords,
     isLoading: loadingParts,
     error: partsError,
     refetch: refetchParts,
-  } = usePartConsumptionReport({
-    fromDate: partsFilter.fromDate || undefined,
-    toDate: partsFilter.toDate || undefined,
-    limit: 500,
-  });
+  } = usePartConsumptionReport(
+    {
+      fromDate: partsFilter.fromDate || undefined,
+      toDate: partsFilter.toDate || undefined,
+      limit: 500,
+    },
+    { enabled: activeTab === 'parts' && canViewParts }
+  );
 
   const {
     data: claimRecords,
     isLoading: loadingClaims,
     error: claimsError,
     refetch: refetchClaims,
-  } = useWarrantyClaimsReport({
-    claimYear: claimsFilter.claimYear ? Number(claimsFilter.claimYear) : undefined,
-    claimMonth: claimsFilter.claimMonth ? Number(claimsFilter.claimMonth) : undefined,
-    status: claimsFilter.status || undefined,
-    limit: 500,
-  });
+  } = useWarrantyClaimsReport(
+    {
+      claimYear: claimsFilter.claimYear ? Number(claimsFilter.claimYear) : undefined,
+      claimMonth: claimsFilter.claimMonth ? Number(claimsFilter.claimMonth) : undefined,
+      status: claimsFilter.status || undefined,
+      limit: 500,
+    },
+    { enabled: activeTab === 'claims' && canViewClaims }
+  );
 
   const {
     data: stockRecords,
     isLoading: loadingStock,
     error: stockError,
     refetch: refetchStock,
-  } = useStockValuationReport({
-    category: stockCategory || undefined,
-    limit: 500,
-  });
+  } = useStockValuationReport(
+    {
+      category: stockCategory || undefined,
+      limit: 500,
+    },
+    { enabled: activeTab === 'stock' && canViewStock }
+  );
 
   const {
     data: notifMetrics,
     isLoading: loadingNotifs,
     refetch: refetchNotifs,
-  } = useNotificationMetrics();
+  } = useNotificationMetrics({ enabled: activeTab === 'notifications' && canViewNotifications });
+
+  // Warehouse Telemetry Queries
+  const { data: warehouseDash, refetch: refetchWarehouseDash } = useWarehouseDashboard();
+  const { data: inTransitDispatches, refetch: refetchInTransit } = useDispatches({
+    status: 'IN_TRANSIT',
+    limit: 100,
+  });
+  const { data: pendingPartsPna, refetch: refetchPendingParts } = usePendingJobParts({ limit: 100 });
+  const { data: stockReturnsData, refetch: refetchReturns } = useStockReturns({ limit: 100 });
 
   const retryNotifMutation = useRetryNotifications();
+
+  // Tab definitions with deterministic string keys
+  const visibleTabs: Array<{ key: ReportTabKey; label: string; icon: React.ReactElement }> = [
+    { key: 'queues', label: 'Operational Queues', icon: <AssessmentIcon /> },
+    ...(canViewCalls ? [{ key: 'calls' as const, label: 'Call Register', icon: <PhoneInTalkIcon /> }] : []),
+    ...(canViewParts ? [{ key: 'parts' as const, label: 'Part Consumption', icon: <Inventory2Icon /> }] : []),
+    ...(canViewClaims ? [{ key: 'claims' as const, label: 'Warranty Claims & Audit', icon: <FactCheckIcon /> }] : []),
+    ...(canViewStock ? [{ key: 'stock' as const, label: 'Stock Valuation', icon: <Inventory2Icon /> }] : []),
+    ...(canViewWarehouseTelemetry
+      ? [{ key: 'warehouse_telemetry' as const, label: 'Warehouse Telemetry', icon: <LocalShippingIcon /> }]
+      : []),
+    ...(canViewNotifications
+      ? [{ key: 'notifications' as const, label: 'Notification Telemetry', icon: <NotificationsActiveIcon /> }]
+      : []),
+  ];
+
+  const handleRefresh = () => {
+    if (activeTab === 'queues') refetchQueues();
+    if (activeTab === 'calls') refetchCalls();
+    if (activeTab === 'parts') refetchParts();
+    if (activeTab === 'claims') refetchClaims();
+    if (activeTab === 'stock') refetchStock();
+    if (activeTab === 'warehouse_telemetry') {
+      refetchWarehouseDash();
+      refetchInTransit();
+      refetchPendingParts();
+      refetchReturns();
+    }
+    if (activeTab === 'notifications') refetchNotifs();
+  };
 
   return (
     <ProtectedRoute requiredPermission="reports:view">
       <Box sx={{ p: 3 }}>
         <PageHeader
           title="Enterprise Reporting & Telemetry"
-          subtitle="Real-time operational registers, financial claims audit, inventory valuation & daemon status"
+          subtitle="Real-time operational registers, financial claims audit, inventory valuation & logistics telemetry"
           badge={<AssessmentIcon color="primary" />}
           actions={
-            <Button
-              variant="outlined"
-              startIcon={<RefreshIcon />}
-              onClick={() => {
-                refetchQueues();
-                if (activeTab === 1) refetchCalls();
-                if (activeTab === 2) refetchParts();
-                if (activeTab === 3) refetchClaims();
-                if (activeTab === 4) refetchStock();
-                if (activeTab === 5) refetchNotifs();
-              }}
-            >
+            <Button variant="outlined" startIcon={<RefreshIcon />} onClick={handleRefresh}>
               Refresh
             </Button>
           }
         />
 
-        {/* Navigation Tabs */}
+        {/* Deterministic String-Keyed Tabs */}
         <Box sx={{ borderBottom: 1, borderColor: 'divider', mb: 3 }}>
           <Tabs
             value={activeTab}
@@ -188,19 +245,23 @@ export default function ReportsPage() {
             variant="scrollable"
             scrollButtons="auto"
           >
-            <Tab label="Operational Queues" icon={<AssessmentIcon />} iconPosition="start" />
-            {canViewCalls && <Tab label="Call Register" icon={<PhoneInTalkIcon />} iconPosition="start" />}
-            {canViewParts && <Tab label="Part Consumption" icon={<Inventory2Icon />} iconPosition="start" />}
-            {canViewClaims && <Tab label="Warranty Claims & Audit" icon={<FactCheckIcon />} iconPosition="start" />}
-            {canViewStock && <Tab label="Stock Valuation" icon={<Inventory2Icon />} iconPosition="start" />}
-            {canViewNotifications && (
-              <Tab label="Notification Telemetry" icon={<NotificationsActiveIcon />} iconPosition="start" />
-            )}
+            {visibleTabs.map((t) => (
+              <Tab
+                key={t.key}
+                value={t.key}
+                label={t.label}
+                icon={t.icon}
+                iconPosition="start"
+                sx={{ textTransform: 'none', fontWeight: 600 }}
+              />
+            ))}
           </Tabs>
         </Box>
 
-        {/* Tab 0: Operational Queues Summary */}
-        {activeTab === 0 && (
+        {/* ========================================================================= */}
+        {/* Tab: Operational Queues Summary */}
+        {/* ========================================================================= */}
+        {activeTab === 'queues' && (
           <Box>
             <Typography variant="h6" fontWeight={600} gutterBottom>
               Operational Queues & Live SLA Timers
@@ -217,7 +278,11 @@ export default function ReportsPage() {
                       <Typography color="textSecondary" variant="body2" gutterBottom>
                         Unacknowledged Calls (48h SLA)
                       </Typography>
-                      <Typography variant="h4" fontWeight={700} color={queues.unacknowledgedCalls > 0 ? 'warning.main' : 'text.primary'}>
+                      <Typography
+                        variant="h4"
+                        fontWeight={700}
+                        color={queues.unacknowledgedCalls > 0 ? 'warning.main' : 'text.primary'}
+                      >
                         {queues.unacknowledgedCalls}
                       </Typography>
                       <Typography variant="caption" color="textSecondary">
@@ -247,7 +312,7 @@ export default function ReportsPage() {
                       <Typography color="textSecondary" variant="body2" gutterBottom>
                         Pending Spare Parts (PNA)
                       </Typography>
-                      <Typography variant="h4" fontWeight={700}>
+                      <Typography variant="h4" fontWeight={700} color="secondary.main">
                         {queues.pendingSpareParts}
                       </Typography>
                       <Typography variant="caption" color="textSecondary">
@@ -279,7 +344,11 @@ export default function ReportsPage() {
                           <Typography color="textSecondary" variant="body2" gutterBottom>
                             SLA Penalties in Review
                           </Typography>
-                          <Typography variant="h4" fontWeight={700} color={queues.pendingSlaPenalties > 0 ? 'error.main' : 'text.primary'}>
+                          <Typography
+                            variant="h4"
+                            fontWeight={700}
+                            color={queues.pendingSlaPenalties > 0 ? 'error.main' : 'text.primary'}
+                          >
                             {queues.pendingSlaPenalties}
                           </Typography>
                           <Typography variant="caption" color="textSecondary">
@@ -310,8 +379,10 @@ export default function ReportsPage() {
           </Box>
         )}
 
-        {/* Tab 1: Universal Call Register */}
-        {activeTab === 1 && canViewCalls && (
+        {/* ========================================================================= */}
+        {/* Tab: Universal Call Register */}
+        {/* ========================================================================= */}
+        {activeTab === 'calls' && canViewCalls && (
           <Box>
             <Paper sx={{ p: 2, mb: 3 }}>
               <Grid container spacing={2} alignItems="center">
@@ -388,8 +459,17 @@ export default function ReportsPage() {
                 <CircularProgress />
               </Box>
             ) : callError ? (
-              <Alert severity="error">Failed to load Call Register: {(callError as Error).message}</Alert>
-            ) : callRecords && callRecords.length > 0 ? (
+              <Alert
+                severity="error"
+                action={
+                  <Button color="inherit" size="small" onClick={() => refetchCalls()}>
+                    Retry
+                  </Button>
+                }
+              >
+                Failed to load Call Register: {(callError as Error).message}
+              </Alert>
+            ) : Array.isArray(callRecords) && callRecords.length > 0 ? (
               <TableContainer component={Paper}>
                 <Table size="small">
                   <TableHead>
@@ -484,8 +564,10 @@ export default function ReportsPage() {
           </Box>
         )}
 
-        {/* Tab 2: Part Consumption & Defect Trends */}
-        {activeTab === 2 && canViewParts && (
+        {/* ========================================================================= */}
+        {/* Tab: Part Consumption & Defect Trends */}
+        {/* ========================================================================= */}
+        {activeTab === 'parts' && canViewParts && (
           <Box>
             <Paper sx={{ p: 2, mb: 3 }}>
               <Grid container spacing={2} alignItems="center">
@@ -528,8 +610,17 @@ export default function ReportsPage() {
                 <CircularProgress />
               </Box>
             ) : partsError ? (
-              <Alert severity="error">Failed to load Part Consumption: {(partsError as Error).message}</Alert>
-            ) : partRecords && partRecords.length > 0 ? (
+              <Alert
+                severity="error"
+                action={
+                  <Button color="inherit" size="small" onClick={() => refetchParts()}>
+                    Retry
+                  </Button>
+                }
+              >
+                Failed to load Part Consumption: {(partsError as Error).message}
+              </Alert>
+            ) : Array.isArray(partRecords) && partRecords.length > 0 ? (
               <TableContainer component={Paper}>
                 <Table size="small">
                   <TableHead>
@@ -555,7 +646,7 @@ export default function ReportsPage() {
                           <Typography variant="caption" color="textSecondary">{r.defectDescription || '-'}</Typography>
                         </TableCell>
                         <TableCell>{r.consumedAtLocation}</TableCell>
-                        <TableCell align="right">₹{r.totalCost.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</TableCell>
+                        <TableCell align="right">{formatCurrency(r.totalCost)}</TableCell>
                       </TableRow>
                     ))}
                   </TableBody>
@@ -567,8 +658,10 @@ export default function ReportsPage() {
           </Box>
         )}
 
-        {/* Tab 3: Warranty Claims & Settlement Audit */}
-        {activeTab === 3 && canViewClaims && (
+        {/* ========================================================================= */}
+        {/* Tab: Warranty Claims & Settlement Audit */}
+        {/* ========================================================================= */}
+        {activeTab === 'claims' && canViewClaims && (
           <Box>
             <Paper sx={{ p: 2, mb: 3 }}>
               <Grid container spacing={2} alignItems="center">
@@ -633,8 +726,17 @@ export default function ReportsPage() {
                 <CircularProgress />
               </Box>
             ) : claimsError ? (
-              <Alert severity="error">Failed to load Claims: {(claimsError as Error).message}</Alert>
-            ) : claimRecords && claimRecords.length > 0 ? (
+              <Alert
+                severity="error"
+                action={
+                  <Button color="inherit" size="small" onClick={() => refetchClaims()}>
+                    Retry
+                  </Button>
+                }
+              >
+                Failed to load Claims: {(claimsError as Error).message}
+              </Alert>
+            ) : Array.isArray(claimRecords) && claimRecords.length > 0 ? (
               <TableContainer component={Paper}>
                 <Table size="small">
                   <TableHead>
@@ -656,13 +758,13 @@ export default function ReportsPage() {
                       <TableRow key={i} hover>
                         <TableCell><strong>{c.claimNumber}</strong></TableCell>
                         <TableCell>{c.claimPeriod}</TableCell>
-                        <TableCell>{c.asfName}</TableCell>
+                        <TableCell>{c.asfName || c.asfLocationName}</TableCell>
                         <TableCell>{c.brandName || 'Global'}</TableCell>
                         <TableCell align="right">{c.totalJobsCount}</TableCell>
-                        <TableCell align="right">₹{c.grossLaborAmount.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</TableCell>
-                        <TableCell align="right">₹{c.grossTravelAmount.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</TableCell>
-                        <TableCell align="right">₹{c.penaltyDeductionAmount.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</TableCell>
-                        <TableCell align="right"><strong>₹{c.netClaimAmount.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</strong></TableCell>
+                        <TableCell align="right">{formatCurrency(c.grossLaborAmount)}</TableCell>
+                        <TableCell align="right">{formatCurrency(c.grossTravelAmount)}</TableCell>
+                        <TableCell align="right">{formatCurrency(c.penaltyDeductionAmount)}</TableCell>
+                        <TableCell align="right"><strong>{formatCurrency(c.netClaimAmount)}</strong></TableCell>
                         <TableCell>
                           <Chip
                             size="small"
@@ -681,8 +783,10 @@ export default function ReportsPage() {
           </Box>
         )}
 
-        {/* Tab 4: Inventory Stock Valuation */}
-        {activeTab === 4 && canViewStock && (
+        {/* ========================================================================= */}
+        {/* Tab: Inventory Stock Valuation */}
+        {/* ========================================================================= */}
+        {activeTab === 'stock' && canViewStock && (
           <Box>
             <Paper sx={{ p: 2, mb: 3 }}>
               <Grid container spacing={2} alignItems="center">
@@ -719,8 +823,17 @@ export default function ReportsPage() {
                 <CircularProgress />
               </Box>
             ) : stockError ? (
-              <Alert severity="error">Failed to load Stock Valuation: {(stockError as Error).message}</Alert>
-            ) : stockRecords && stockRecords.length > 0 ? (
+              <Alert
+                severity="error"
+                action={
+                  <Button color="inherit" size="small" onClick={() => refetchStock()}>
+                    Retry
+                  </Button>
+                }
+              >
+                Failed to load Stock Valuation: {(stockError as Error).message}
+              </Alert>
+            ) : Array.isArray(stockRecords) && stockRecords.length > 0 ? (
               <TableContainer component={Paper}>
                 <Table size="small">
                   <TableHead>
@@ -732,8 +845,8 @@ export default function ReportsPage() {
                       <TableCell align="right"><strong>On Hand</strong></TableCell>
                       <TableCell align="right"><strong>Reserved</strong></TableCell>
                       <TableCell align="right"><strong>Available</strong></TableCell>
-                      <TableCell align="right"><strong>Unit Price (₹)</strong></TableCell>
-                      <TableCell align="right"><strong>Total Valuation (₹)</strong></TableCell>
+                      <TableCell align="right"><strong>Unit Price</strong></TableCell>
+                      <TableCell align="right"><strong>Total Valuation</strong></TableCell>
                     </TableRow>
                   </TableHead>
                   <TableBody>
@@ -746,8 +859,8 @@ export default function ReportsPage() {
                         <TableCell align="right">{s.onHandQuantity}</TableCell>
                         <TableCell align="right">{s.reservedQuantity}</TableCell>
                         <TableCell align="right"><strong>{s.availableQuantity}</strong></TableCell>
-                        <TableCell align="right">₹{s.unitCostPrice.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</TableCell>
-                        <TableCell align="right"><strong>₹{s.totalValuation.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</strong></TableCell>
+                        <TableCell align="right">{formatCurrency(s.unitCostPrice)}</TableCell>
+                        <TableCell align="right"><strong>{formatCurrency(s.totalValuation)}</strong></TableCell>
                       </TableRow>
                     ))}
                   </TableBody>
@@ -759,8 +872,183 @@ export default function ReportsPage() {
           </Box>
         )}
 
-        {/* Tab 5: Notification Outbox Telemetry & Dead-Letter Escalation */}
-        {activeTab === 5 && canViewNotifications && (
+        {/* ========================================================================= */}
+        {/* Tab: Warehouse Operational Telemetry (Part 4) */}
+        {/* ========================================================================= */}
+        {activeTab === 'warehouse_telemetry' && canViewWarehouseTelemetry && (
+          <Box>
+            <Typography variant="h6" fontWeight={600} gutterBottom>
+              Logistics & Fulfillment Operational Telemetry
+            </Typography>
+            <Typography variant="body2" color="textSecondary" sx={{ mb: 3 }}>
+              Real-time monitoring of in-transit delivery challans, PNA job fulfillment backlog, and defective quarantine returns.
+            </Typography>
+
+            {/* Warehouse Telemetry KPI Cards */}
+            <Grid container spacing={3} sx={{ mb: 4 }}>
+              <Grid item xs={12} sm={6} md={3}>
+                <Card sx={{ borderLeft: 4, borderColor: 'warning.main' }}>
+                  <CardContent>
+                    <Typography color="textSecondary" variant="body2">
+                      In-Transit Dispatches
+                    </Typography>
+                    <Typography variant="h4" fontWeight={700} color="warning.dark">
+                      {inTransitDispatches?.total ?? 0}
+                    </Typography>
+                    <Typography variant="caption" color="textSecondary">
+                      Awaiting delivery acknowledgement at ASF
+                    </Typography>
+                  </CardContent>
+                </Card>
+              </Grid>
+              <Grid item xs={12} sm={6} md={3}>
+                <Card sx={{ borderLeft: 4, borderColor: 'secondary.main' }}>
+                  <CardContent>
+                    <Typography color="textSecondary" variant="body2">
+                      PNA Fulfillments Pending
+                    </Typography>
+                    <Typography variant="h4" fontWeight={700} color="secondary.main">
+                      {pendingPartsPna?.total ?? 0}
+                    </Typography>
+                    <Typography variant="caption" color="textSecondary">
+                      Jobs waiting for spare-part dispatch
+                    </Typography>
+                  </CardContent>
+                </Card>
+              </Grid>
+              <Grid item xs={12} sm={6} md={3}>
+                <Card sx={{ borderLeft: 4, borderColor: 'error.main' }}>
+                  <CardContent>
+                    <Typography color="textSecondary" variant="body2">
+                      Quarantine Returns
+                    </Typography>
+                    <Typography variant="h4" fontWeight={700} color="error.main">
+                      {stockReturnsData?.total ?? 0}
+                    </Typography>
+                    <Typography variant="caption" color="textSecondary">
+                      Defective parts returned for scrap/vendor
+                    </Typography>
+                  </CardContent>
+                </Card>
+              </Grid>
+              <Grid item xs={12} sm={6} md={3}>
+                <Card sx={{ borderLeft: 4, borderColor: 'primary.main' }}>
+                  <CardContent>
+                    <Typography color="textSecondary" variant="body2">
+                      Reserved Stock Units
+                    </Typography>
+                    <Typography variant="h4" fontWeight={700} color="primary.main">
+                      {warehouseDash?.kpis?.totalStockReserved ?? 0}
+                    </Typography>
+                    <Typography variant="caption" color="textSecondary">
+                      Committed against active service requests
+                    </Typography>
+                  </CardContent>
+                </Card>
+              </Grid>
+            </Grid>
+
+            {/* In-Transit Dispatches Telemetry */}
+            <Typography variant="subtitle1" fontWeight={700} gutterBottom sx={{ mt: 2 }}>
+              Active In-Transit Dispatches Awaiting Destination Receipt
+            </Typography>
+            <TableContainer component={Paper} sx={{ mb: 4 }}>
+              <Table size="small">
+                <TableHead sx={{ bgcolor: 'action.hover' }}>
+                  <TableRow>
+                    <TableCell><strong>Challan #</strong></TableCell>
+                    <TableCell><strong>Linked Job</strong></TableCell>
+                    <TableCell><strong>Destination Franchise</strong></TableCell>
+                    <TableCell><strong>Dispatched On</strong></TableCell>
+                    <TableCell><strong>Carrier & Tracking</strong></TableCell>
+                    <TableCell align="right"><strong>Taxable Value (₹)</strong></TableCell>
+                    <TableCell align="right"><strong>Total Amount (₹)</strong></TableCell>
+                    <TableCell><strong>Status</strong></TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {(inTransitDispatches?.items || []).length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={8} align="center" sx={{ py: 3 }}>
+                        <Typography variant="body2" color="textSecondary">
+                          No dispatches currently in-transit. All shipments acknowledged at destination.
+                        </Typography>
+                      </TableCell>
+                    </TableRow>
+                  ) : (
+                    (inTransitDispatches?.items || []).map((d) => (
+                      <TableRow key={d.dispatchId} hover>
+                        <TableCell><strong>{d.challanNumber || d.dispatchNumber}</strong></TableCell>
+                        <TableCell>{d.jobNumber ? `#${d.jobNumber}` : 'Stock Transfer'}</TableCell>
+                        <TableCell>{d.toLocationName || d.toLocationId}</TableCell>
+                        <TableCell>{d.dispatchedAt ? new Date(d.dispatchedAt).toLocaleDateString() : 'N/A'}</TableCell>
+                        <TableCell>
+                          {d.transporterName || d.dispatchMode}
+                          {d.docketNo && <Typography variant="caption" display="block">AWB: {d.docketNo}</Typography>}
+                        </TableCell>
+                        <TableCell align="right">₹{(d.subtotalTaxable ?? d.subtotalAmount ?? 0).toFixed(2)}</TableCell>
+                        <TableCell align="right"><strong>₹{(d.totalAmount ?? 0).toFixed(2)}</strong></TableCell>
+                        <TableCell>
+                          <Chip size="small" label={d.status} color="warning" />
+                        </TableCell>
+                      </TableRow>
+                    ))
+                  )}
+                </TableBody>
+              </Table>
+            </TableContainer>
+
+            {/* PNA Fulfillment Queue Telemetry */}
+            <Typography variant="subtitle1" fontWeight={700} gutterBottom>
+              PNA Spare Parts Fulfillment Backlog
+            </Typography>
+            <TableContainer component={Paper}>
+              <Table size="small">
+                <TableHead sx={{ bgcolor: 'action.hover' }}>
+                  <TableRow>
+                    <TableCell><strong>Job Number</strong></TableCell>
+                    <TableCell><strong>Part Code</strong></TableCell>
+                    <TableCell><strong>Part Description</strong></TableCell>
+                    <TableCell align="right"><strong>Requested Qty</strong></TableCell>
+                    <TableCell><strong>Destination Location</strong></TableCell>
+                    <TableCell><strong>Requested Date</strong></TableCell>
+                    <TableCell><strong>Fulfillment Status</strong></TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {(pendingPartsPna?.items || []).length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={7} align="center" sx={{ py: 3 }}>
+                        <Typography variant="body2" color="textSecondary">
+                          Zero pending PNA part requests. Warehouse fulfillment queue is fully cleared.
+                        </Typography>
+                      </TableCell>
+                    </TableRow>
+                  ) : (
+                    (pendingPartsPna?.items || []).map((p) => (
+                      <TableRow key={p.partEntryId} hover>
+                        <TableCell><strong>#{p.jobNumber}</strong></TableCell>
+                        <TableCell><code>{p.partCode}</code></TableCell>
+                        <TableCell>{p.partName}</TableCell>
+                        <TableCell align="right"><strong>{p.quantity}</strong></TableCell>
+                        <TableCell>{p.assignedLocationName || p.assignedLocationId || 'Regional ASF'}</TableCell>
+                        <TableCell>{p.requestedAt ? new Date(p.requestedAt).toLocaleDateString() : 'N/A'}</TableCell>
+                        <TableCell>
+                          <Chip size="small" label={p.status} color="secondary" variant="outlined" />
+                        </TableCell>
+                      </TableRow>
+                    ))
+                  )}
+                </TableBody>
+              </Table>
+            </TableContainer>
+          </Box>
+        )}
+
+        {/* ========================================================================= */}
+        {/* Tab: Notification Outbox Telemetry & Dead-Letter Escalation */}
+        {/* ========================================================================= */}
+        {activeTab === 'notifications' && canViewNotifications && (
           <Box>
             <Typography variant="h6" fontWeight={600} gutterBottom>
               Encrypted Notification Outbox Telemetry

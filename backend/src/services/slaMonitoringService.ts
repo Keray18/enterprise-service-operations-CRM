@@ -28,10 +28,15 @@ export class SlaMonitoringService {
 
       for (const req of overdueRequests) {
         try {
-          // 1. Mark SLA breached in database
-          await serviceRequestRepository.markSlaBreach(req.requestId, conn);
+          // 1. Mark SLA breached in database (atomic update: WHERE SLA_BREACHED_48H = 'N')
+          const marked = await serviceRequestRepository.markSlaBreach(req.requestId, conn);
+          if (!marked) {
+            // Already claimed and marked by a concurrent worker
+            await conn.rollback();
+            continue;
+          }
 
-          // 2. Record SLA penalty in PENDING_REVIEW (NEVER auto debited!)
+          // 2. Record SLA penalty in PENDING_REVIEW (NEVER auto debited, awaits policy review)
           const asfLocId = req.assignedLocationId || '00000000-0000-0000-0004-000000000001';
           const regDate = req.registeredAt && !isNaN(new Date(req.registeredAt).getTime())
             ? new Date(req.registeredAt)
@@ -122,10 +127,15 @@ export class SlaMonitoringService {
 
       for (const req of overdueRequests) {
         try {
-          // 1. Mark 168h SLA breached in database
-          await serviceRequestRepository.mark168hSlaBreach(req.requestId, conn);
+          // 1. Mark 168h SLA breached in database (atomic update: WHERE SLA_BREACHED_168H = 'N')
+          const marked = await serviceRequestRepository.mark168hSlaBreach(req.requestId, conn);
+          if (!marked) {
+            // Already claimed and marked by a concurrent worker
+            await conn.rollback();
+            continue;
+          }
 
-          // 2. Record SLA penalty in PENDING_REVIEW (NEVER auto debited!)
+          // 2. Record SLA penalty in PENDING_REVIEW (NEVER auto debited, awaits policy review)
           const asfLocId = req.assignedLocationId || '00000000-0000-0000-0004-000000000001';
           const createdTime = req.createdAt ? new Date(req.createdAt).getTime() : Date.now();
           const elapsedHours168 = Math.round(((Date.now() - createdTime) / (1000 * 3600)) * 100) / 100;

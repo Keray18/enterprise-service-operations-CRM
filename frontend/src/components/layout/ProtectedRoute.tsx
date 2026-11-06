@@ -10,12 +10,14 @@ import { resolveDefaultWorkspace } from '../../lib/workspaceResolver';
 interface ProtectedRouteProps {
   children: React.ReactNode;
   requiredPermission?: string;
+  requiredAnyPermission?: string[];
   requiredRole?: string;
 }
 
 export function ProtectedRoute({
   children,
   requiredPermission,
+  requiredAnyPermission,
   requiredRole,
 }: ProtectedRouteProps) {
   const { user, isLoading, isAuthenticated, hasPermission, hasRole } = useAuth();
@@ -113,6 +115,53 @@ export function ProtectedRoute({
         </CardContent>
       </Card>
     );
+  }
+
+  if (requiredAnyPermission && requiredAnyPermission.length > 0) {
+    const hasAny = requiredAnyPermission.some((perm) => hasPermission(perm));
+    if (!hasAny) {
+      return (
+        <Card variant="outlined" sx={{ maxWidth: 540, mx: 'auto', my: 6, p: 3 }}>
+          <CardContent sx={{ textAlign: 'center' }}>
+            <Box
+              sx={{
+                display: 'inline-flex',
+                p: 1.5,
+                borderRadius: '50%',
+                bgcolor: 'error.main',
+                color: 'error.contrastText',
+                mb: 2,
+              }}
+            >
+              <WarningAmberOutlined sx={{ fontSize: 36 }} />
+            </Box>
+            <Typography variant="h5" fontWeight={700} color="error.main" gutterBottom>
+              403 — Access Denied
+            </Typography>
+            <Typography variant="body1" sx={{ mb: 1.5, fontWeight: 500 }}>
+              Unauthorized Workspace Capability
+            </Typography>
+            <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
+              Your account (<strong>{user?.username}</strong> with roles{' '}
+              <strong>{user?.roles.join(', ')}</strong>) lacks required permissions:
+              <code style={{ marginLeft: 6, padding: '2px 6px', background: '#f1f5f9', borderRadius: 4 }}>
+                {requiredAnyPermission.join(', ')}
+              </code>
+            </Typography>
+            <Button
+              variant="outlined"
+              color="primary"
+              onClick={() => {
+                const target = resolveDefaultWorkspace(user) || '/login';
+                router.push(target);
+              }}
+            >
+              Return to Authorized Workspace
+            </Button>
+          </CardContent>
+        </Card>
+      );
+    }
   }
 
   if (requiredRole && !hasRole(requiredRole)) {

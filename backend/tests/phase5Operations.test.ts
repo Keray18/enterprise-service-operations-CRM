@@ -6,6 +6,7 @@ import { reportingRepository } from '../src/database/repositories/reportingRepos
 import { serviceRequestRepository } from '../src/database/repositories/serviceRequestRepository.js';
 import { serviceClaimRepository } from '../src/database/repositories/serviceClaimRepository.js';
 import { slaPenaltyRepository } from '../src/database/repositories/slaPenaltyRepository.js';
+import { slaPolicyRepository } from '../src/database/repositories/slaPolicyRepository.js';
 import { financeService } from '../src/services/financeService.js';
 import { mockSmsAdapter, notificationService } from '../src/services/notificationService.js';
 import { reportingService } from '../src/services/reportingService.js';
@@ -216,25 +217,58 @@ describe('Phase 5: SLA Evaluation, Notification Retries, Role Scoped Reporting &
           },
           financeActor
         )
-      ).rejects.toThrow(/awaiting policy configuration|MISSING_POLICY_CONFIGURATION/i);
+      ).rejects.toThrow(/approved commercial penalty policy reference is strictly required|MISSING_POLICY_REFERENCE/i);
 
-      // 2. Approving with authorized commercial amount and policy version succeeds
+      // 2. Attempting to approve under unapproved seeded baseline policies must fail
+      const unapprovedPolicy = penalty.breachType === 'SLA_168H_CLOSURE' ? 'POL-SLA-168H-STD' : 'POL-SLA-48H-STD';
+      await expect(
+        financeService.reviewPenalty(
+          penalty.penaltyId,
+          {
+            action: 'APPROVE',
+            reviewRemarks: 'Attempting to approve under unapproved seeded policy',
+            policyReference: unapprovedPolicy,
+          },
+          financeActor
+        )
+      ).rejects.toThrow(/not formally approved for commercial use|UNAPPROVED_POLICY/i);
+
+      // 3. Create an approved operational policy
+      const testApprovedPolicyCode = `POL-OPS-APPV-${penalty.breachType.slice(4, 8)}-${Date.now().toString().slice(-5)}`;
+      const expectedAmount = penalty.breachType === 'SLA_168H_CLOSURE' ? 750.0 : 500.0;
+      await slaPolicyRepository.createPolicy({
+        policyCode: testApprovedPolicyCode,
+        policyName: `Operational Approved ${penalty.breachType} Policy`,
+        policyVersion: '1.0',
+        breachType: penalty.breachType,
+        calculationType: 'FIXED',
+        penaltyAmount: expectedAmount,
+        effectiveFrom: new Date(Date.now() - 3600 * 1000),
+        isActive: 'Y',
+        governanceRef: 'AUDIT-OPS-APPV',
+        approvalStatus: 'APPROVED',
+        approvedBy: adminActor.userId,
+        approvedAt: new Date(),
+        approvalRemarks: 'Formally approved for operational testing',
+        submittedBy: financeActor.userId,
+      });
+
+      // 4. Approving with authorized commercial amount and valid approved policy version succeeds and posts GL journal
       const approved = await financeService.reviewPenalty(
         penalty.penaltyId,
         {
           action: 'APPROVE',
           reviewRemarks: 'Approved following commercial audit committee sign-off',
-          authorizedAmount: 500.0,
-          policyReference: 'POLICY_COMMERCIAL_SLA_2026_V1',
+          policyReference: testApprovedPolicyCode,
         },
         financeActor
       );
 
-      expect(approved.status).toBe('APPROVED');
-      expect(approved.calculatedAmount).toBe(500.0);
+      expect(approved.status).toBe('POSTED');
+      expect(approved.calculatedAmount).toBe(expectedAmount);
       expect(approved.configStatus).toBe('CONFIGURED');
-      expect(approved.policyVersion).toBe('POLICY_COMMERCIAL_SLA_2026_V1');
-      expect(approved.journalId).toBeUndefined(); // Invariant: Approving SLA evaluation never automatically posts GL journal
+      expect(approved.policyVersion).toBe(testApprovedPolicyCode);
+      expect(approved.journalId).toBeDefined();
     });
 
     it('should allow waiving and disputing penalties with documented justification', async () => {
@@ -328,7 +362,7 @@ describe('Phase 5: SLA Evaluation, Notification Retries, Role Scoped Reporting &
       expect(res.escalatedCount).toBeGreaterThanOrEqual(1);
 
       const check = await notificationRepository.findById(notif.notificationId);
-      expect(check?.status).toBe('FAILED');
+      expect(['DEAD_LETTER', 'FAILED']).toContain(check?.status);
       expect(check?.retryCount).toBeGreaterThanOrEqual(3);
       expect(check?.errorMessage).toContain('MAX_RETRIES_EXCEEDED');
 
