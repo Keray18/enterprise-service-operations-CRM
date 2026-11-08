@@ -89,12 +89,14 @@ const NAV_SECTIONS: NavSection[] = [
         label: 'Admin Console',
         href: '/admin',
         icon: <SettingsIcon fontSize="small" />,
+        requiredRole: 'ADMIN',
         requiredPermission: 'users:read',
       },
       {
         label: 'Catalog Masters',
         href: '/admin/masters',
         icon: <CategoryIcon fontSize="small" />,
+        requiredRole: 'ADMIN',
         requiredPermission: 'masters:manage',
       },
       {

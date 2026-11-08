@@ -54,7 +54,11 @@ export function ReconciliationModal({ open, onClose, balance }: ReconciliationMo
         (!result.onHand ||
           typeof result.onHand.isBalanced !== 'boolean' ||
           !result.reserved ||
-          typeof result.reserved.isBalanced !== 'boolean')
+          typeof result.reserved.isBalanced !== 'boolean' ||
+          !result.inTransit ||
+          typeof result.inTransit.isBalanced !== 'boolean' ||
+          !result.available ||
+          typeof result.available.isBalanced !== 'boolean')
     );
 
   const isScopeEmpty = Boolean(
@@ -63,6 +67,8 @@ export function ReconciliationModal({ open, onClose, balance }: ReconciliationMo
       result.onHand?.movementSum === 0 &&
       result.reserved?.cached === 0 &&
       result.reserved?.activeReservationSum === 0 &&
+      result.inTransit?.cached === 0 &&
+      result.inTransit?.activeInTransitSum === 0 &&
       result.status === 'BALANCED'
   );
 
@@ -71,7 +77,9 @@ export function ReconciliationModal({ open, onClose, balance }: ReconciliationMo
       (result.status === 'DISCREPANCY_DETECTED' ||
         !result.isReconciled ||
         result.onHand?.difference !== 0 ||
-        result.reserved?.difference !== 0)
+        result.reserved?.difference !== 0 ||
+        result.inTransit?.difference !== 0 ||
+        result.available?.difference !== 0)
   );
 
   const formattedTimestamp = result?.lastCheckedAt
@@ -82,7 +90,7 @@ export function ReconciliationModal({ open, onClose, balance }: ReconciliationMo
     : null;
 
   return (
-    <Dialog open={open} onClose={onClose} maxWidth="sm" fullWidth>
+    <Dialog open={open} onClose={onClose} maxWidth="md" fullWidth>
       <DialogTitle
         sx={{
           display: 'flex',
@@ -257,7 +265,7 @@ export function ReconciliationModal({ open, onClose, balance }: ReconciliationMo
 
             {/* Reconciliation Categories */}
             <Grid container spacing={2}>
-              {/* On-Hand Physical Stock Audit */}
+              {/* 1. On-Hand Physical Stock Audit */}
               <Grid item xs={12} sm={6}>
                 <Paper
                   variant="outlined"
@@ -267,6 +275,7 @@ export function ReconciliationModal({ open, onClose, balance }: ReconciliationMo
                     borderWidth: 1.5,
                     borderRadius: 1.5,
                     bgcolor: 'background.paper',
+                    height: '100%',
                   }}
                 >
                   <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1 }}>
@@ -306,7 +315,7 @@ export function ReconciliationModal({ open, onClose, balance }: ReconciliationMo
                 </Paper>
               </Grid>
 
-              {/* Reserved Stock Audit */}
+              {/* 2. Job Reserved Stock Audit */}
               <Grid item xs={12} sm={6}>
                 <Paper
                   variant="outlined"
@@ -316,6 +325,7 @@ export function ReconciliationModal({ open, onClose, balance }: ReconciliationMo
                     borderWidth: 1.5,
                     borderRadius: 1.5,
                     bgcolor: 'background.paper',
+                    height: '100%',
                   }}
                 >
                   <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1 }}>
@@ -349,6 +359,106 @@ export function ReconciliationModal({ open, onClose, balance }: ReconciliationMo
                         }
                         size="small"
                         color={result.reserved?.isBalanced ? 'success' : 'error'}
+                      />
+                    </Box>
+                  </Box>
+                </Paper>
+              </Grid>
+
+              {/* 3. In-Transit Shipped Stock Audit */}
+              <Grid item xs={12} sm={6}>
+                <Paper
+                  variant="outlined"
+                  sx={{
+                    p: 2,
+                    borderColor: result.inTransit?.isBalanced ? 'success.main' : 'error.main',
+                    borderWidth: 1.5,
+                    borderRadius: 1.5,
+                    bgcolor: 'background.paper',
+                    height: '100%',
+                  }}
+                >
+                  <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1 }}>
+                    <Typography variant="caption" sx={{ fontWeight: 700, textTransform: 'uppercase' }}>
+                      In-Transit Shipped Stock
+                    </Typography>
+                    <Chip
+                      label={result.inTransit?.isBalanced ? 'Balanced' : 'Discrepancy'}
+                      size="small"
+                      color={result.inTransit?.isBalanced ? 'success' : 'error'}
+                      sx={{ height: 20, fontSize: '0.68rem', fontWeight: 700 }}
+                    />
+                  </Box>
+                  <Box sx={{ mt: 1 }}>
+                    <Typography variant="body2" color="text.secondary">
+                      Cached In-Transit: <strong>{result.inTransit?.cached ?? 0}</strong>
+                    </Typography>
+                    <Typography variant="body2" color="text.secondary">
+                      Active Dispatches Sum: <strong>{result.inTransit?.activeInTransitSum ?? 0}</strong>
+                    </Typography>
+                    <Divider sx={{ my: 1 }} />
+                    <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <Typography variant="caption" sx={{ fontWeight: 600 }}>
+                        Variance:
+                      </Typography>
+                      <Chip
+                        label={
+                          (result.inTransit?.difference ?? 0) === 0
+                            ? '0 (Zero Variance)'
+                            : `${(result.inTransit?.difference ?? 0) > 0 ? '+' : ''}${result.inTransit?.difference ?? 0}`
+                        }
+                        size="small"
+                        color={result.inTransit?.isBalanced ? 'success' : 'error'}
+                      />
+                    </Box>
+                  </Box>
+                </Paper>
+              </Grid>
+
+              {/* 4. Net Available Stock Audit */}
+              <Grid item xs={12} sm={6}>
+                <Paper
+                  variant="outlined"
+                  sx={{
+                    p: 2,
+                    borderColor: result.available?.isBalanced ? 'success.main' : 'error.main',
+                    borderWidth: 1.5,
+                    borderRadius: 1.5,
+                    bgcolor: 'background.paper',
+                    height: '100%',
+                  }}
+                >
+                  <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1 }}>
+                    <Typography variant="caption" sx={{ fontWeight: 700, textTransform: 'uppercase' }}>
+                      Net Available Stock
+                    </Typography>
+                    <Chip
+                      label={result.available?.isBalanced ? 'Balanced' : 'Discrepancy'}
+                      size="small"
+                      color={result.available?.isBalanced ? 'success' : 'error'}
+                      sx={{ height: 20, fontSize: '0.68rem', fontWeight: 700 }}
+                    />
+                  </Box>
+                  <Box sx={{ mt: 1 }}>
+                    <Typography variant="body2" color="text.secondary">
+                      Cached Available: <strong>{result.available?.cached ?? 0}</strong>
+                    </Typography>
+                    <Typography variant="body2" color="text.secondary">
+                      Authoritative Ledger Net: <strong>{result.available?.ledgerAvailable ?? 0}</strong>
+                    </Typography>
+                    <Divider sx={{ my: 1 }} />
+                    <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <Typography variant="caption" sx={{ fontWeight: 600 }}>
+                        Variance:
+                      </Typography>
+                      <Chip
+                        label={
+                          (result.available?.difference ?? 0) === 0
+                            ? '0 (Zero Variance)'
+                            : `${(result.available?.difference ?? 0) > 0 ? '+' : ''}${result.available?.difference ?? 0}`
+                        }
+                        size="small"
+                        color={result.available?.isBalanced ? 'success' : 'error'}
                       />
                     </Box>
                   </Box>

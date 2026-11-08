@@ -260,6 +260,20 @@ export interface ReservedStockReconciliation {
   isBalanced: boolean;
 }
 
+export interface InTransitStockReconciliation {
+  cached: number;
+  activeInTransitSum: number;
+  difference: number;
+  isBalanced: boolean;
+}
+
+export interface AvailableStockReconciliation {
+  cached: number;
+  ledgerAvailable: number;
+  difference: number;
+  isBalanced: boolean;
+}
+
 export interface InventoryReconciliationRecord {
   locationId: string;
   locationName: string;
@@ -273,11 +287,19 @@ export interface InventoryReconciliationRecord {
   lastCheckedAt: Date;
   onHand: StockCategoryReconciliation;
   reserved: ReservedStockReconciliation;
+  inTransit: InTransitStockReconciliation;
+  available: AvailableStockReconciliation;
   cachedOnHand: number;
   ledgerOnHand: number;
   discrepancyOnHand: number;
   cachedReserved: number;
   activeReserved: number;
   discrepancyReserved: number;
+  cachedInTransit: number;
+  activeInTransit: number;
+  discrepancyInTransit: number;
+  cachedAvailable: number;
+  ledgerAvailable: number;
+  discrepancyAvailable: number;
 }
 

@@ -257,6 +257,20 @@ export interface ReservedStockAudit {
   difference: number;
 }
 
+export interface InTransitStockAudit {
+  cached: number;
+  activeInTransitSum: number;
+  isBalanced: boolean;
+  difference: number;
+}
+
+export interface AvailableStockAudit {
+  cached: number;
+  ledgerAvailable: number;
+  isBalanced: boolean;
+  difference: number;
+}
+
 export interface ReconcileResult {
   locationId: string;
   locationName: string;
@@ -266,6 +280,8 @@ export interface ReconcileResult {
   partName: string;
   onHand: StockCategoryAudit;
   reserved: ReservedStockAudit;
+  inTransit: InTransitStockAudit;
+  available: AvailableStockAudit;
   status: 'BALANCED' | 'DISCREPANCY_DETECTED';
   isReconciled: boolean;
   discrepanciesFound: boolean;
@@ -276,6 +292,12 @@ export interface ReconcileResult {
   cachedReserved: number;
   activeReserved: number;
   discrepancyReserved: number;
+  cachedInTransit: number;
+  activeInTransit: number;
+  discrepancyInTransit: number;
+  cachedAvailable: number;
+  ledgerAvailable: number;
+  discrepancyAvailable: number;
 }
 
 
@@ -296,8 +318,8 @@ export function useWarehouseDashboard() {
     queryKey: ['warehouse', 'dashboard'],
     queryFn: async () => {
       const data = await apiClient.get<any>('/api/v1/warehouse/dashboard');
-      if (!data) {
-        throw new Error('Warehouse dashboard response is empty');
+      if (!data || typeof data !== 'object') {
+        throw new Error('Data contract error: Warehouse dashboard response is empty or malformed');
       }
 
       // Handle both structured kpis object and flat legacy response
@@ -311,14 +333,32 @@ export function useWarehouseDashboard() {
         dispatchesPendingArrival: data.activeDispatchesCount,
       };
 
+      if (!rawKpis || typeof rawKpis !== 'object') {
+        throw new Error('Data contract error: Warehouse dashboard missing KPI statistics');
+      }
+
+      const parseMetric = (val: unknown, name: string): number => {
+        if (val === undefined || val === null || val === '') {
+          throw new Error(`Data contract error: Missing numeric metric '${name}' in warehouse dashboard`);
+        }
+        const num = Number(val);
+        if (isNaN(num)) {
+          throw new Error(`Data contract error: Non-numeric metric value '${val}' for '${name}' in warehouse dashboard`);
+        }
+        return num;
+      };
+
       const kpis = {
-        totalStockOnHand: Number(rawKpis.totalStockOnHand ?? 0),
-        totalStockReserved: Number(rawKpis.totalStockReserved ?? 0),
-        totalStockInTransit: Number(rawKpis.totalStockInTransit ?? 0),
-        totalStockDefective: Number(rawKpis.totalStockDefective ?? 0),
-        lowStockPartCount: Number(rawKpis.lowStockPartCount ?? 0),
-        pendingPartRequestCount: Number(rawKpis.pendingPartRequestCount ?? 0),
-        dispatchesPendingArrival: Number(rawKpis.dispatchesPendingArrival ?? 0),
+        totalStockOnHand: parseMetric(rawKpis.totalStockOnHand, 'totalStockOnHand'),
+        totalStockReserved: parseMetric(rawKpis.totalStockReserved, 'totalStockReserved'),
+        totalStockInTransit: parseMetric(rawKpis.totalStockInTransit, 'totalStockInTransit'),
+        totalStockDefective: parseMetric(rawKpis.totalStockDefective, 'totalStockDefective'),
+        lowStockPartCount: parseMetric(rawKpis.lowStockPartCount, 'lowStockPartCount'),
+        pendingPartRequestCount: parseMetric(rawKpis.pendingPartRequestCount, 'pendingPartRequestCount'),
+        dispatchesPendingArrival: parseMetric(
+          rawKpis.dispatchesPendingArrival ?? rawKpis.activeDispatchesCount ?? 0,
+          'dispatchesPendingArrival'
+        ),
       };
 
       return {
@@ -697,10 +737,36 @@ export function normalizeReconcileResult(raw: any): ReconcileResult {
     ? Boolean(rawReserved.isBalanced)
     : diffReserved === 0;
 
-  // 3. Overall audit status
+  // 3. In-transit shipped stock
+  const rawInTransit = raw.inTransit;
+  const cachedInTransit = Number(rawInTransit?.cached ?? raw.cachedInTransit ?? 0);
+  const activeInTransitSum = Number(rawInTransit?.activeInTransitSum ?? raw.activeInTransit ?? 0);
+  const diffInTransit = rawInTransit?.difference !== undefined
+    ? Number(rawInTransit.difference)
+    : (raw.discrepancyInTransit !== undefined ? Number(raw.discrepancyInTransit) : cachedInTransit - activeInTransitSum);
+  const isBalancedInTransit = rawInTransit?.isBalanced !== undefined
+    ? Boolean(rawInTransit.isBalanced)
+    : diffInTransit === 0;
+
+  // 4. Net available stock
+  const rawAvailable = raw.available;
+  const cachedAvailable = Number(
+    rawAvailable?.cached ?? raw.cachedAvailable ?? Math.max(0, cachedOnHand - cachedReserved)
+  );
+  const ledgerAvailable = Number(
+    rawAvailable?.ledgerAvailable ?? raw.ledgerAvailable ?? Math.max(0, movementSum - activeReservationSum)
+  );
+  const diffAvailable = rawAvailable?.difference !== undefined
+    ? Number(rawAvailable.difference)
+    : (raw.discrepancyAvailable !== undefined ? Number(raw.discrepancyAvailable) : cachedAvailable - ledgerAvailable);
+  const isBalancedAvailable = rawAvailable?.isBalanced !== undefined
+    ? Boolean(rawAvailable.isBalanced)
+    : diffAvailable === 0;
+
+  // 5. Overall audit status
   const isReconciled = raw.isReconciled !== undefined
     ? Boolean(raw.isReconciled)
-    : isBalancedOnHand && isBalancedReserved;
+    : isBalancedOnHand && isBalancedReserved && isBalancedInTransit && isBalancedAvailable;
 
   const discrepanciesFound = raw.discrepanciesFound !== undefined
     ? Boolean(raw.discrepanciesFound)
@@ -738,12 +804,30 @@ export function normalizeReconcileResult(raw: any): ReconcileResult {
       isBalanced: isBalancedReserved,
       difference: diffReserved,
     },
+    inTransit: {
+      cached: cachedInTransit,
+      activeInTransitSum,
+      isBalanced: isBalancedInTransit,
+      difference: diffInTransit,
+    },
+    available: {
+      cached: cachedAvailable,
+      ledgerAvailable,
+      isBalanced: isBalancedAvailable,
+      difference: diffAvailable,
+    },
     cachedOnHand,
     ledgerOnHand: movementSum,
     discrepancyOnHand: diffOnHand,
     cachedReserved,
     activeReserved: activeReservationSum,
     discrepancyReserved: diffReserved,
+    cachedInTransit,
+    activeInTransit: activeInTransitSum,
+    discrepancyInTransit: diffInTransit,
+    cachedAvailable,
+    ledgerAvailable,
+    discrepancyAvailable: diffAvailable,
   };
 }
 

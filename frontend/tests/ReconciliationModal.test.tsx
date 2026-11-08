@@ -1,6 +1,7 @@
+// @vitest-environment jsdom
 import React from 'react';
-import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
+import { render, screen, fireEvent, cleanup } from '@testing-library/react';
 import { ReconciliationModal } from '../src/app/(workspace)/warehouse/components/ReconciliationModal';
 import * as warehouseApi from '../src/lib/warehouseApi';
 
@@ -13,6 +14,9 @@ vi.mock('../src/lib/warehouseApi', async (importOriginal) => {
 });
 
 describe('ReconciliationModal Component Tests', () => {
+  afterEach(() => {
+    cleanup();
+  });
   const mockBalance: warehouseApi.InventoryBalance = {
     balanceId: 'bal-001',
     locationId: 'loc-wh-01',
@@ -83,12 +87,30 @@ describe('ReconciliationModal Component Tests', () => {
         difference: 0,
         isBalanced: true,
       },
+      inTransit: {
+        cached: 0,
+        activeInTransitSum: 0,
+        difference: 0,
+        isBalanced: true,
+      },
+      available: {
+        cached: 40,
+        ledgerAvailable: 40,
+        difference: 0,
+        isBalanced: true,
+      },
       cachedOnHand: 50,
       ledgerOnHand: 50,
       discrepancyOnHand: 0,
       cachedReserved: 10,
       activeReserved: 10,
       discrepancyReserved: 0,
+      cachedInTransit: 0,
+      activeInTransit: 0,
+      discrepancyInTransit: 0,
+      cachedAvailable: 40,
+      ledgerAvailable: 40,
+      discrepancyAvailable: 0,
     };
 
     vi.mocked(warehouseApi.useReconcileStock).mockReturnValue({
@@ -133,12 +155,30 @@ describe('ReconciliationModal Component Tests', () => {
         difference: 2,
         isBalanced: false,
       },
+      inTransit: {
+        cached: 0,
+        activeInTransitSum: 0,
+        difference: 0,
+        isBalanced: true,
+      },
+      available: {
+        cached: 40,
+        ledgerAvailable: 45,
+        difference: -5,
+        isBalanced: false,
+      },
       cachedOnHand: 50,
       ledgerOnHand: 53,
       discrepancyOnHand: -3,
       cachedReserved: 10,
       activeReserved: 8,
       discrepancyReserved: 2,
+      cachedInTransit: 0,
+      activeInTransit: 0,
+      discrepancyInTransit: 0,
+      cachedAvailable: 40,
+      ledgerAvailable: 45,
+      discrepancyAvailable: -5,
     };
 
     vi.mocked(warehouseApi.useReconcileStock).mockReturnValue({
@@ -187,12 +227,30 @@ describe('ReconciliationModal Component Tests', () => {
         difference: 0,
         isBalanced: true,
       },
+      inTransit: {
+        cached: 0,
+        activeInTransitSum: 0,
+        difference: 0,
+        isBalanced: true,
+      },
+      available: {
+        cached: 0,
+        ledgerAvailable: 0,
+        difference: 0,
+        isBalanced: true,
+      },
       cachedOnHand: 0,
       ledgerOnHand: 0,
       discrepancyOnHand: 0,
       cachedReserved: 0,
       activeReserved: 0,
       discrepancyReserved: 0,
+      cachedInTransit: 0,
+      activeInTransit: 0,
+      discrepancyInTransit: 0,
+      cachedAvailable: 0,
+      ledgerAvailable: 0,
+      discrepancyAvailable: 0,
     };
 
     vi.mocked(warehouseApi.useReconcileStock).mockReturnValue({

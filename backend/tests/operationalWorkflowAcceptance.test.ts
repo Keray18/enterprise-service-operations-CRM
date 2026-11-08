@@ -840,20 +840,27 @@ describe('Operational Workflow Acceptance — Engineer Isolation, Partial Dispat
       }
     });
 
-    it('generates cryptographically random non-deterministic temporary passwords', async () => {
+    it('generates cryptographically random non-deterministic temporary passwords for rotation-eligible accounts and preserves protected dev accounts', async () => {
       const accounts1 = await seedDevAccounts();
       const accounts2 = await seedDevAccounts();
 
       expect(accounts1.length).toBe(8);
       expect(accounts2.length).toBe(8);
 
-      // Verify that every generated password differs between executions (rotation safety)
-      const pw1 = accounts1.find((a) => a.username === 'admin')?.password;
-      const pw2 = accounts2.find((a) => a.username === 'admin')?.password;
+      // Verify that non-protected temporary dev accounts differ between executions (rotation safety)
+      const pw1 = accounts1.find((a) => a.username === 'infra_ops')?.password;
+      const pw2 = accounts2.find((a) => a.username === 'infra_ops')?.password;
 
       expect(pw1).toBeDefined();
       expect(pw2).toBeDefined();
       expect(pw1).not.toBe(pw2);
+
+      // Invariant: Protected dev credentials must NEVER be randomized or altered
+      expect(accounts1.find((a) => a.username === 'admin')?.password).toBe('Admin@123');
+      expect(accounts1.find((a) => a.username === 'callcenter')?.password).toBe('callCenter@123');
+      expect(accounts1.find((a) => a.username === 'warehouse')?.password).toBe('wareHouse@123');
+      expect(accounts1.find((a) => a.username === 'service_center')?.password).toBe('serviceCenter@123');
+      expect(accounts1.find((a) => a.username === 'mumbai_tech_1')?.password).toBe('fieldEng@123');
     });
 
     it('stores strictly Argon2id hashes in Oracle, never plaintext passwords', async () => {

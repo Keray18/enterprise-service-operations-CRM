@@ -1,4 +1,4 @@
-import { Algorithm, hash } from '@node-rs/argon2';
+import { hash } from '@node-rs/argon2';
 import { closeOraclePool, getOracleConnection } from '../database/oraclePool.js';
 import { ARGON2_OPTIONS, verifyPassword } from '../services/passwordService.js';
 

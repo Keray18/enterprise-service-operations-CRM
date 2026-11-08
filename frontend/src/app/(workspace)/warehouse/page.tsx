@@ -172,6 +172,32 @@ export default function WarehousePage() {
 
   const locations = dashboard?.locations || [];
 
+  const renderKpiValue = (metric: number | undefined, color?: string) => {
+    if (isDashboardLoading) {
+      return '—';
+    }
+    if (isDashboardError || metric === undefined || metric === null || isNaN(metric)) {
+      return (
+        <Typography
+          component="span"
+          variant="h6"
+          sx={{ fontWeight: 600, color: 'text.disabled', fontStyle: 'italic', display: 'block', mt: 0.5 }}
+        >
+          Unavailable
+        </Typography>
+      );
+    }
+    return (
+      <Typography
+        component="span"
+        variant="h5"
+        sx={{ fontWeight: 800, color: color || 'text.primary', display: 'block', mt: 0.5 }}
+      >
+        {metric.toLocaleString('en-IN')}
+      </Typography>
+    );
+  };
+
   const handleOpenAdjustmentForPart = (bal: InventoryBalance) => {
     setAdjustTargetLocationId(bal.locationId);
     setAdjustTargetPartId(bal.partId);
@@ -305,9 +331,7 @@ export default function WarehousePage() {
                 <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 600, textTransform: 'uppercase' }}>
                   On-Hand Stock
                 </Typography>
-                <Typography variant="h5" sx={{ fontWeight: 800, mt: 0.5 }}>
-                  {isDashboardLoading ? '—' : dashboard?.kpis?.totalStockOnHand ?? 0}
-                </Typography>
+                {renderKpiValue(dashboard?.kpis?.totalStockOnHand)}
                 <Typography variant="caption" color="text.secondary">
                   Physical warehouse units
                 </Typography>
@@ -321,9 +345,7 @@ export default function WarehousePage() {
                 <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 600, textTransform: 'uppercase' }}>
                   Reserved Stock
                 </Typography>
-                <Typography variant="h5" sx={{ fontWeight: 800, mt: 0.5, color: 'warning.main' }}>
-                  {isDashboardLoading ? '—' : dashboard?.kpis?.totalStockReserved ?? 0}
-                </Typography>
+                {renderKpiValue(dashboard?.kpis?.totalStockReserved, 'warning.main')}
                 <Typography variant="caption" color="text.secondary">
                   Locked for service jobs
                 </Typography>
@@ -337,9 +359,7 @@ export default function WarehousePage() {
                 <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 600, textTransform: 'uppercase' }}>
                   In-Transit Stock
                 </Typography>
-                <Typography variant="h5" sx={{ fontWeight: 800, mt: 0.5, color: 'info.main' }}>
-                  {isDashboardLoading ? '—' : dashboard?.kpis?.totalStockInTransit ?? 0}
-                </Typography>
+                {renderKpiValue(dashboard?.kpis?.totalStockInTransit, 'info.main')}
                 <Typography variant="caption" color="text.secondary">
                   Shipped via courier / truck
                 </Typography>
@@ -353,9 +373,7 @@ export default function WarehousePage() {
                 <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 600, textTransform: 'uppercase' }}>
                   Defective / Quarantine
                 </Typography>
-                <Typography variant="h5" sx={{ fontWeight: 800, mt: 0.5, color: 'error.main' }}>
-                  {isDashboardLoading ? '—' : dashboard?.kpis?.totalStockDefective ?? 0}
-                </Typography>
+                {renderKpiValue(dashboard?.kpis?.totalStockDefective, 'error.main')}
                 <Typography variant="caption" color="text.secondary">
                   Awaiting scrap or restock
                 </Typography>
@@ -369,9 +387,7 @@ export default function WarehousePage() {
                 <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 600, textTransform: 'uppercase' }}>
                   Low Stock Alerts
                 </Typography>
-                <Typography variant="h5" sx={{ fontWeight: 800, mt: 0.5, color: 'warning.dark' }}>
-                  {isDashboardLoading ? '—' : dashboard?.kpis?.lowStockPartCount ?? 0}
-                </Typography>
+                {renderKpiValue(dashboard?.kpis?.lowStockPartCount, 'warning.dark')}
                 <Typography variant="caption" color="text.secondary">
                   Below reorder threshold
                 </Typography>
@@ -385,9 +401,7 @@ export default function WarehousePage() {
                 <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 600, textTransform: 'uppercase' }}>
                   Pending PNA Requests
                 </Typography>
-                <Typography variant="h5" sx={{ fontWeight: 800, mt: 0.5, color: 'secondary.main' }}>
-                  {isDashboardLoading ? '—' : dashboard?.kpis?.pendingPartRequestCount ?? 0}
-                </Typography>
+                {renderKpiValue(dashboard?.kpis?.pendingPartRequestCount, 'secondary.main')}
                 <Typography variant="caption" color="text.secondary">
                   Jobs waiting for parts
                 </Typography>
@@ -543,7 +557,7 @@ export default function WarehousePage() {
                       </TableRow>
                     </TableHead>
                     <TableBody>
-                      {stockData?.items.map((bal) => {
+                      {(stockData?.items || []).map((bal) => {
                         const isLow = bal.qtyAvailable <= bal.reorderLevel;
                         const isStockout = bal.qtyAvailable <= 0;
 
@@ -683,7 +697,7 @@ export default function WarehousePage() {
                       </TableRow>
                     </TableHead>
                     <TableBody>
-                      {pnaData?.items.map((item) => (
+                      {(pnaData?.items || []).map((item) => (
                         <TableRow key={item.partEntryId} hover>
                           <TableCell sx={{ fontWeight: 700, color: 'primary.main' }}>
                             {item.jobNumber}
@@ -810,7 +824,7 @@ export default function WarehousePage() {
                       </TableRow>
                     </TableHead>
                     <TableBody>
-                      {grnData?.items.map((grn) => (
+                      {(grnData?.items || []).map((grn) => (
                         <TableRow key={grn.grnId} hover>
                           <TableCell sx={{ fontWeight: 700 }}>{grn.grnNumber}</TableCell>
                           <TableCell>{grn.locationName || 'Central Warehouse'}</TableCell>
@@ -1043,7 +1057,7 @@ export default function WarehousePage() {
                       </TableRow>
                     </TableHead>
                     <TableBody>
-                      {dispatchData?.items.map((d) => {
+                      {(dispatchData?.items || []).map((d) => {
                         const isAcknowledged = d.status === 'ACKNOWLEDGED' || d.status === 'DELIVERED';
                         const isInTransit = d.status === 'IN_TRANSIT' || d.status === 'DISPATCHED';
                         const taxableVal = d.subtotalTaxable ?? d.subtotalAmount ?? 0;
@@ -1211,7 +1225,7 @@ export default function WarehousePage() {
                       </TableRow>
                     </TableHead>
                     <TableBody>
-                      {returnData?.items.map((ret) => (
+                      {(returnData?.items || []).map((ret) => (
                         <TableRow key={ret.returnId} hover>
                           <TableCell sx={{ fontWeight: 700 }}>{ret.returnNumber}</TableCell>
                           <TableCell>{ret.sourceLocationName || 'ASF Service Center'}</TableCell>
@@ -1300,7 +1314,7 @@ export default function WarehousePage() {
                       </TableRow>
                     </TableHead>
                     <TableBody>
-                      {movementData?.items.map((m) => (
+                      {(movementData?.items || []).map((m) => (
                         <TableRow key={m.movementId} hover>
                           <TableCell sx={{ whiteSpace: 'nowrap' }}>
                             {new Date(m.createdAt).toLocaleString()}

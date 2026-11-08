@@ -1,8 +1,9 @@
 import crypto from 'crypto';
+import { hash } from '@node-rs/argon2';
 import { closeOraclePool, getOracleConnection } from '../database/oraclePool.js';
 import { rbacRepository } from '../database/repositories/rbacRepository.js';
 import { userRepository } from '../database/repositories/userRepository.js';
-import { hashPassword, validatePasswordComplexity } from '../services/passwordService.js';
+import { ARGON2_OPTIONS, hashPassword, validatePasswordComplexity, verifyPassword } from '../services/passwordService.js';
 
 interface DevAccountSpec {
   dashboard: string;
@@ -85,6 +86,18 @@ const DEV_ACCOUNTS: DevAccountSpec[] = [
   },
 ];
 
+/**
+ * Pinned development credentials for core operational personas.
+ * Invariant: These credentials MUST NEVER be rotated, reset, or randomized in the development environment.
+ */
+export const PROTECTED_DEV_CREDENTIALS: Record<string, string> = {
+  admin: 'Admin@123',
+  callcenter: 'callCenter@123',
+  warehouse: 'wareHouse@123',
+  service_center: 'serviceCenter@123',
+  mumbai_tech_1: 'fieldEng@123',
+};
+
 export async function seedDevAccounts(options?: { defaultPassword?: string }): Promise<Array<{
   dashboard: string;
   role: string;
@@ -147,14 +160,17 @@ export async function seedDevAccounts(options?: { defaultPassword?: string }): P
         targetLocationName = `${hqLocation.locationName} (${hqLocation.locationCode})`;
       }
 
-      // Generate or retrieve password
-      const plainPassword =
-        options?.defaultPassword ||
-        process.env['DEV_ACCOUNT_PASSWORD'] ||
-        `CrmPass#${crypto.randomBytes(6).toString('base64url')}!9`;
+      // Determine plain password
+      const isProtected = Object.prototype.hasOwnProperty.call(PROTECTED_DEV_CREDENTIALS, spec.username);
+      const plainPassword = isProtected
+        ? PROTECTED_DEV_CREDENTIALS[spec.username]!
+        : options?.defaultPassword ||
+          process.env['DEV_ACCOUNT_PASSWORD'] ||
+          `CrmPass#${crypto.randomBytes(6).toString('base64url')}!9`;
 
-      validatePasswordComplexity(plainPassword);
-      const passwordHash = await hashPassword(plainPassword);
+      if (!isProtected) {
+        validatePasswordComplexity(plainPassword);
+      }
 
       // Check if user already exists
       const existingUser = await userRepository.findByUsernameOrEmail(spec.username);
@@ -162,24 +178,53 @@ export async function seedDevAccounts(options?: { defaultPassword?: string }): P
       let userId: string;
       if (existingUser) {
         userId = existingUser.userId;
-        // Update password and active status
-        await conn.execute(
-          `UPDATE APP_USERS 
-           SET PASSWORD_HASH = :pwdHash, 
-               IS_ACTIVE = 'Y', 
-               FAILED_LOGIN_ATTEMPTS = 0, 
-               LOCKED_UNTIL = NULL,
-               LOCATION_ID = NVL(:locationId, LOCATION_ID),
-               UPDATED_AT = SYSTIMESTAMP 
-           WHERE USER_ID = :userId`,
-          {
-            pwdHash: passwordHash,
-            locationId: targetLocationId || null,
-            userId,
-          },
-          { autoCommit: true }
-        );
+        // If protected, verify if current password already matches; only update hash if not matching
+        const isCurrentMatch = isProtected && (await verifyPassword(plainPassword, existingUser.passwordHash)).valid;
+        const shouldUpdateHash = !isProtected || !isCurrentMatch;
+
+        if (shouldUpdateHash) {
+          const passwordHash = isProtected
+            ? await hash(plainPassword, ARGON2_OPTIONS)
+            : await hashPassword(plainPassword);
+
+          await conn.execute(
+            `UPDATE APP_USERS 
+             SET PASSWORD_HASH = :pwdHash, 
+                 IS_ACTIVE = 'Y', 
+                 FAILED_LOGIN_ATTEMPTS = 0, 
+                 LOCKED_UNTIL = NULL,
+                 LOCATION_ID = NVL(:locationId, LOCATION_ID),
+                 UPDATED_AT = SYSTIMESTAMP 
+             WHERE USER_ID = :userId`,
+            {
+              pwdHash: passwordHash,
+              locationId: targetLocationId || null,
+              userId,
+            },
+            { autoCommit: true }
+          );
+        } else {
+          // Preserve existing verified password hash without modification
+          await conn.execute(
+            `UPDATE APP_USERS 
+             SET IS_ACTIVE = 'Y', 
+                 FAILED_LOGIN_ATTEMPTS = 0, 
+                 LOCKED_UNTIL = NULL,
+                 LOCATION_ID = NVL(:locationId, LOCATION_ID),
+                 UPDATED_AT = SYSTIMESTAMP 
+             WHERE USER_ID = :userId`,
+            {
+              locationId: targetLocationId || null,
+              userId,
+            },
+            { autoCommit: true }
+          );
+        }
       } else {
+        const passwordHash = isProtected
+          ? await hash(plainPassword, ARGON2_OPTIONS)
+          : await hashPassword(plainPassword);
+
         userId = crypto.randomUUID();
         await userRepository.createUser({
           userId,

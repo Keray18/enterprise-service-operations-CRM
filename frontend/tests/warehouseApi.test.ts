@@ -464,6 +464,12 @@ describe('Phase 3 Warehouse & Inventory Logistics Frontend API Tests', () => {
       expect(normalized.reserved.activeReservationSum).toBe(10);
       expect(normalized.reserved.difference).toBe(0);
       expect(normalized.reserved.isBalanced).toBe(true);
+      expect(normalized.inTransit.cached).toBe(0);
+      expect(normalized.inTransit.activeInTransitSum).toBe(0);
+      expect(normalized.inTransit.isBalanced).toBe(true);
+      expect(normalized.available.cached).toBe(40);
+      expect(normalized.available.ledgerAvailable).toBe(40);
+      expect(normalized.available.isBalanced).toBe(true);
     });
 
     it('normalizes structured discrepancy payload with accurate variance', () => {
@@ -540,6 +546,12 @@ describe('Phase 3 Warehouse & Inventory Logistics Frontend API Tests', () => {
       expect(normalized.reserved.activeReservationSum).toBe(5);
       expect(normalized.reserved.difference).toBe(0);
       expect(normalized.reserved.isBalanced).toBe(true);
+      expect(normalized.inTransit.cached).toBe(0);
+      expect(normalized.inTransit.activeInTransitSum).toBe(0);
+      expect(normalized.inTransit.isBalanced).toBe(true);
+      expect(normalized.available.cached).toBe(35);
+      expect(normalized.available.ledgerAvailable).toBe(35);
+      expect(normalized.available.isBalanced).toBe(true);
     });
 
     it('normalizes valid empty inventory (0 stock) correctly', () => {
@@ -570,6 +582,12 @@ describe('Phase 3 Warehouse & Inventory Logistics Frontend API Tests', () => {
       expect(normalized.reserved.activeReservationSum).toBe(0);
       expect(normalized.reserved.difference).toBe(0);
       expect(normalized.reserved.isBalanced).toBe(true);
+      expect(normalized.inTransit.cached).toBe(0);
+      expect(normalized.inTransit.activeInTransitSum).toBe(0);
+      expect(normalized.inTransit.isBalanced).toBe(true);
+      expect(normalized.available.cached).toBe(0);
+      expect(normalized.available.ledgerAvailable).toBe(0);
+      expect(normalized.available.isBalanced).toBe(true);
     });
 
     it('rejects malformed payload missing balance data by throwing data-contract error', () => {

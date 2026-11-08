@@ -404,11 +404,33 @@ export class InventoryRepository {
       });
       const activeReserved = Number(resResult.rows?.[0]?.ACTIVE_RESERVED || 0);
 
+      // 4. Calculate active in-transit dispatches originating from this location
+      const inTransitSql = `
+        SELECT NVL(SUM(sdi.QUANTITY), 0) AS ACTIVE_IN_TRANSIT
+        FROM DISPATCH_ITEMS sdi
+        JOIN STOCK_DISPATCHES sd ON sdi.DISPATCH_ID = sd.DISPATCH_ID
+        WHERE sd.FROM_LOCATION_ID = :locationId AND sdi.PART_ID = :partId AND sd.STATUS = 'IN_TRANSIT'
+      `;
+      const inTransitResult = await connection.execute<any>(inTransitSql, { locationId, partId }, {
+        outFormat: oracledb.OUT_FORMAT_OBJECT,
+      });
+      const activeInTransit = Number(inTransitResult.rows?.[0]?.ACTIVE_IN_TRANSIT || 0);
+
+      const cachedInTransit = balance ? balance.qtyInTransit : 0;
+      const discrepancyInTransit = cachedInTransit - activeInTransit;
+      const isBalancedInTransit = discrepancyInTransit === 0;
+
+      // 5. Net Available Stock reconciliation (Authoritative calculation: OnHand - Reserved)
+      const cachedAvailable = Math.max(0, cachedOnHand - cachedReserved);
+      const ledgerAvailable = Math.max(0, ledgerOnHand - activeReserved);
+      const discrepancyAvailable = cachedAvailable - ledgerAvailable;
+      const isBalancedAvailable = discrepancyAvailable === 0;
+
       const discrepancyOnHand = cachedOnHand - ledgerOnHand;
       const discrepancyReserved = cachedReserved - activeReserved;
       const isBalancedOnHand = discrepancyOnHand === 0;
       const isBalancedReserved = discrepancyReserved === 0;
-      const isReconciled = isBalancedOnHand && isBalancedReserved;
+      const isReconciled = isBalancedOnHand && isBalancedReserved && isBalancedInTransit && isBalancedAvailable;
       const status: 'BALANCED' | 'DISCREPANCY_DETECTED' = isReconciled ? 'BALANCED' : 'DISCREPANCY_DETECTED';
 
       return {
@@ -434,12 +456,30 @@ export class InventoryRepository {
           difference: discrepancyReserved,
           isBalanced: isBalancedReserved,
         },
+        inTransit: {
+          cached: cachedInTransit,
+          activeInTransitSum: activeInTransit,
+          difference: discrepancyInTransit,
+          isBalanced: isBalancedInTransit,
+        },
+        available: {
+          cached: cachedAvailable,
+          ledgerAvailable,
+          difference: discrepancyAvailable,
+          isBalanced: isBalancedAvailable,
+        },
         cachedOnHand,
         ledgerOnHand,
         discrepancyOnHand,
         cachedReserved,
         activeReserved,
         discrepancyReserved,
+        cachedInTransit,
+        activeInTransit,
+        discrepancyInTransit,
+        cachedAvailable,
+        ledgerAvailable,
+        discrepancyAvailable,
       };
     } finally {
       if (!isExternalConn) {

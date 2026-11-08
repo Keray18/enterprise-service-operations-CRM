@@ -54,11 +54,13 @@ const NAV_SECTIONS: NavSection[] = [
       {
         label: 'Admin Console',
         href: '/admin',
+        requiredRole: 'ADMIN',
         requiredPermission: 'users:read',
       },
       {
         label: 'Catalog Masters',
         href: '/admin/masters',
+        requiredRole: 'ADMIN',
         requiredPermission: 'masters:manage',
       },
       {
@@ -149,6 +151,24 @@ describe('AppSidebar Navigation Visibility & RBAC Protection', () => {
     expect(visibleLabels).not.toContain('Finance & Settlements');
     expect(visibleLabels).not.toContain('Warehouse & PNA Hub');
     expect(visibleLabels).not.toContain('Franchise Queue & Jobs');
+  });
+
+  it('Even if Call Center gains masters:manage, lack of ADMIN role strictly prevents Catalog Masters visibility', () => {
+    const callCenterWithPerm = {
+      roles: ['CALL_CENTER'],
+      permissions: [
+        'calls:read',
+        'calls:create',
+        'masters:read',
+        'masters:manage',
+      ],
+    };
+
+    const visibleSections = getVisibleNavItems(callCenterWithPerm);
+    const visibleLabels = visibleSections.flatMap((s) => s.items.map((i) => i.label));
+
+    expect(visibleLabels).not.toContain('Catalog Masters');
+    expect(visibleLabels).not.toContain('Admin Console');
   });
 
   it('Warehouse does NOT see Catalog Masters or Admin Console', () => {
