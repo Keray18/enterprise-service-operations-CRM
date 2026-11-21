@@ -45,11 +45,12 @@ export class RbacRepository {
     }
   }
 
-  async assignRoleToUser(userId: string, roleCode: string, assignedBy: string): Promise<void> {
-    const conn = await getOracleConnection();
+  async assignRoleToUser(userId: string, roleCode: string, assignedBy: string, conn?: oracledb.Connection): Promise<void> {
+    const shouldClose = !conn;
+    const connection = conn || (await getOracleConnection());
     try {
       const findRoleSql = `SELECT ROLE_ID FROM ROLES WHERE CODE = :roleCode`;
-      const roleResult = await conn.execute<any>(
+      const roleResult = await connection.execute<any>(
         findRoleSql,
         { roleCode },
         { outFormat: oracledb.OUT_FORMAT_OBJECT }
@@ -65,13 +66,15 @@ export class RbacRepository {
         INSERT INTO USER_ROLES (USER_ID, ROLE_ID, ASSIGNED_AT, ASSIGNED_BY)
         VALUES (:userId, :roleId, SYSTIMESTAMP, :assignedBy)
       `;
-      await conn.execute(
+      await connection.execute(
         assignSql,
         { userId, roleId, assignedBy },
-        { autoCommit: true }
+        { autoCommit: shouldClose }
       );
     } finally {
-      await conn.close();
+      if (shouldClose) {
+        await connection.close();
+      }
     }
   }
 }

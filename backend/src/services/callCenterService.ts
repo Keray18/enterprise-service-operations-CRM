@@ -1,5 +1,6 @@
 import { getOracleConnection } from '../database/oraclePool.js';
 import { customerRepository } from '../database/repositories/customerRepository.js';
+import { locationRepository } from '../database/repositories/locationRepository.js';
 import { modelRepository } from '../database/repositories/modelRepository.js';
 import { notificationRepository } from '../database/repositories/notificationRepository.js';
 import { pincodeRepository } from '../database/repositories/pincodeRepository.js';
@@ -13,6 +14,7 @@ import {
   CustomerWithGeographyRecord,
   PincodeServiceabilityResolution,
   RegisterComplaintInput,
+  ServiceRequestStatus,
   ServiceRequestWithRelationsRecord,
   VOCRecord,
   WarrantyStatus,
@@ -192,19 +194,22 @@ export class CallCenterService {
 
     // 4. Geography and Serviceability Validation
     const serviceability = await this.resolvePincode(input.pincode);
-    if (serviceability.status === 'UNKNOWN') {
-      throw new AppError(`Pincode ${input.pincode} is not recognized in geography master`, 400, 'PINCODE_NOT_FOUND');
+    if (serviceability.status !== 'UNKNOWN') {
+      if (serviceability.stateId && input.stateId && input.stateId !== serviceability.stateId) {
+        throw new AppError(
+          `Geographic mismatch: Pincode ${input.pincode} belongs to ${serviceability.stateName}, not the selected State.`,
+          400,
+          'GEOGRAPHY_MISMATCH'
+        );
+      }
+      if (serviceability.cityId && input.cityId && input.cityId !== serviceability.cityId) {
+        throw new AppError(
+          `Geographic mismatch: Pincode ${input.pincode} belongs to ${serviceability.cityName}, not the selected City.`,
+          400,
+          'GEOGRAPHY_MISMATCH'
+        );
+      }
     }
-    if (!serviceability.isServiceable) {
-      throw new AppError(
-        `Service is currently unavailable for pincode ${input.pincode} (${serviceability.cityName}, ${serviceability.stateName})`,
-        400,
-        'NON_SERVICEABLE_PINCODE'
-      );
-    }
-
-    // Determine assigned location (Default ASF) or retain unassigned state
-    const assignedLocationId = serviceability.defaultAsfId || undefined;
 
     // 5. Warranty Calculation
     const warrantyStatus = this.calculateWarranty(model.customerWarrantyDays, input.purchaseDate);
@@ -228,6 +233,19 @@ export class CallCenterService {
         if (!isValidIndianMobile(input.newCustomer.primaryMobile)) {
           throw new AppError('A valid 10-digit Indian mobile number is required', 400, 'INVALID_MOBILE');
         }
+        if (input.newCustomer.alternateMobile && input.newCustomer.alternateMobile.trim() && !isValidIndianMobile(input.newCustomer.alternateMobile)) {
+          throw new AppError(
+            'Alternate mobile number must be a valid 10-digit Indian mobile number',
+            400,
+            'INVALID_ALTERNATE_MOBILE'
+          );
+        }
+        if (input.newCustomer.email && input.newCustomer.email.trim()) {
+          const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+          if (!emailRegex.test(input.newCustomer.email.trim())) {
+            throw new AppError('Invalid customer email address format', 400, 'INVALID_EMAIL');
+          }
+        }
         if (!input.newCustomer.fullName.trim()) {
           throw new AppError('Customer full name is required', 400, 'CUSTOMER_NAME_REQUIRED');
         }
@@ -250,17 +268,82 @@ export class CallCenterService {
         );
       }
 
-      // Step B: Generate Concurrency-Safe Job Number
+      // Step B: Resolve Service Center assignment (Pincode priority -> Default fallback if permitted)
+      let assignedLocationId: string | undefined = undefined;
+      let assignedLocationName: string | undefined = undefined;
+      let initialStatus: ServiceRequestStatus = 'REGISTERED';
+      let assignmentSource: 'GEOGRAPHIC_PINCODE' | 'AUTOMATIC_DEFAULT_ASF' | 'UNASSIGNED_PENDING' = 'UNASSIGNED_PENDING';
+      let assignmentFailedReason: string | undefined = undefined;
+
+      const targetPincode = (input.pincode?.trim() || customer.pincode?.trim() || '');
+
+      // Priority 1: Geographic Pincode Lookup
+      if (targetPincode) {
+        const pincodeMapping = await pincodeRepository.lookupPincode(targetPincode, conn);
+        if (pincodeMapping) {
+          if (pincodeMapping.isServiceable !== 'Y') {
+            assignmentFailedReason = `Customer service pincode ${targetPincode} is marked as unserviceable`;
+            logger.warn(`Pincode ${targetPincode} is unserviceable. Complaint will remain unassigned in REGISTERED.`);
+          } else if (pincodeMapping.defaultAsfId) {
+            const mappedAsf = await locationRepository.findById(pincodeMapping.defaultAsfId, conn);
+            if (mappedAsf && mappedAsf.isActive === 'Y' && mappedAsf.partyType === 'ASF') {
+              assignedLocationId = mappedAsf.locationId;
+              assignedLocationName = mappedAsf.locationName;
+              initialStatus = 'ASSIGNED_TO_ASF';
+              assignmentSource = 'GEOGRAPHIC_PINCODE';
+            } else {
+              assignmentFailedReason = `Mapped Service Center (${pincodeMapping.defaultAsfName || pincodeMapping.defaultAsfId}) for pincode ${targetPincode} is inactive or invalid`;
+              logger.warn(`Mapped ASF for pincode ${targetPincode} is inactive or invalid. Complaint will remain unassigned.`);
+            }
+          } else {
+            assignmentFailedReason = `No primary Service Center mapped to pincode ${targetPincode}`;
+            logger.warn(`No primary Service Center mapped to pincode ${targetPincode}. Complaint will remain unassigned.`);
+          }
+        } else {
+          assignmentFailedReason = `Customer service pincode ${targetPincode} not found in pincode master`;
+          logger.warn(`Pincode ${targetPincode} not found in pincode directory. Complaint will remain unassigned.`);
+        }
+      } else {
+        assignmentFailedReason = 'No customer service pincode provided';
+      }
+
+      // Priority 2: Fallback to Global Default ASF ONLY WHEN EXPLICITLY PERMITTED
+      if (!assignedLocationId && process.env['ALLOW_GLOBAL_DEFAULT_FALLBACK'] === 'true') {
+        const configuredDefaults = await locationRepository.findDefaultAsfs(conn);
+        if (configuredDefaults.length > 1) {
+          assignmentFailedReason = 'Multiple default ASFs configured (ambiguous default ASF configuration)';
+          logger.warn(`Ambiguous default ASF configuration: found ${configuredDefaults.length} default ASFs. Complaint will remain unassigned in REGISTERED.`);
+        } else if (configuredDefaults.length === 1 && configuredDefaults[0]) {
+          assignedLocationId = configuredDefaults[0].locationId;
+          assignedLocationName = configuredDefaults[0].locationName;
+          initialStatus = 'ASSIGNED_TO_ASF';
+          assignmentSource = 'AUTOMATIC_DEFAULT_ASF';
+        } else {
+          const fallbackCode = process.env['DEFAULT_ASF_CODE'] || 'ASF_8441';
+          const fallbackAsf = await locationRepository.findByCode(fallbackCode, conn);
+          if (fallbackAsf && fallbackAsf.isActive === 'Y' && fallbackAsf.partyType === 'ASF') {
+            assignedLocationId = fallbackAsf.locationId;
+            assignedLocationName = fallbackAsf.locationName;
+            initialStatus = 'ASSIGNED_TO_ASF';
+            assignmentSource = 'AUTOMATIC_DEFAULT_ASF';
+          } else {
+            assignmentFailedReason = `Default fallback ASF (${fallbackCode}) not configured or inactive`;
+            logger.warn(`Default ASF (${fallbackCode}) not found or inactive. Complaint will remain unassigned in REGISTERED.`);
+          }
+        }
+      }
+
+      // Step C: Generate Concurrency-Safe Job Number
       const jobNumber = await serviceRequestRepository.generateJobNumber(
         model.brandCode,
         model.productCode,
         conn
       );
 
-      // Step C: Calculate SLA Timers (48h acknowledgment timer)
+      // Step D: Calculate SLA Timers (48h acknowledgment timer)
       const sla48hExpiresAt = new Date(Date.now() + 48 * 60 * 60 * 1000);
 
-      // Step D: Insert Service Request (Initial State: REGISTERED)
+      // Step E: Insert Service Request (Initial State: ASSIGNED_TO_ASF or REGISTERED)
       const serviceRequest = await serviceRequestRepository.createServiceRequest(
         {
           jobNumber,
@@ -274,9 +357,11 @@ export class CallCenterService {
           dealerName: input.dealerName?.trim() || undefined,
           callType: input.callType,
           serviceType: input.serviceType,
-          status: 'REGISTERED',
+          status: initialStatus,
           warrantyStatus,
           assignedLocationId,
+          assignmentSource,
+          assignmentFailedReason,
           vocId: input.vocId || undefined,
           vocDescription: input.vocDescription?.trim() || undefined,
           problemDescription: input.problemDescription?.trim() || undefined,
@@ -293,7 +378,7 @@ export class CallCenterService {
         conn
       );
 
-      // Step E: Create Immutable Initial Event in History
+      // Step F: Create Immutable Initial Event in History (CALL_REGISTERED)
       await serviceRequestEventRepository.createEvent(
         {
           requestId: serviceRequest.requestId,
@@ -312,10 +397,38 @@ export class CallCenterService {
             warrantyStatus,
             pincode: input.pincode,
             assignedLocationId: assignedLocationId || null,
+            assignmentSource,
+            assignmentFailedReason: assignmentFailedReason || null,
           },
         },
         conn
       );
+
+      // Step G: If assigned to ASF at registration, create CALL_ASSIGNED_TO_ASF event
+      if (initialStatus === 'ASSIGNED_TO_ASF' && assignedLocationId) {
+        await serviceRequestEventRepository.createEvent(
+          {
+            requestId: serviceRequest.requestId,
+            fromState: 'REGISTERED',
+            toState: 'ASSIGNED_TO_ASF',
+            eventType: 'CALL_ASSIGNED_TO_ASF',
+            triggeredByUserId: user.userId,
+            triggeredByUsername: user.username,
+            triggeredByRole: user.roles[0] || 'CALL_CENTER',
+            remarks:
+              assignmentSource === 'GEOGRAPHIC_PINCODE'
+                ? `Automatically assigned to Service Center ${assignedLocationName || assignedLocationId} based on customer service pincode ${targetPincode}`
+                : `Automatically assigned to default Service Center (${assignedLocationName || assignedLocationId}) at registration`,
+            metadataJson: {
+              assignedLocationId,
+              assignedLocationName: assignedLocationName || null,
+              assignmentSource,
+              pincode: targetPincode || null,
+            },
+          },
+          conn
+        );
+      }
 
       // Step F: Enqueue SMS 1 in Notifications Outbox
       const smsBody = notificationService.buildSms1Message(jobNumber);
@@ -377,10 +490,30 @@ export class CallCenterService {
     serialNumber?: string;
     customerId?: string;
     status?: string;
+    tab?: string;
     page?: number;
     limit?: number;
   }): Promise<PaginatedResult<ServiceRequestWithRelationsRecord>> {
     return serviceRequestRepository.searchRequests(options);
+  }
+
+  /**
+   * Checks for duplicate open complaints by customer mobile, serial number, or customer ID.
+   */
+  async checkDuplicateComplaints(params: {
+    mobile?: string;
+    serialNumber?: string;
+    customerId?: string;
+    modelId?: string;
+  }): Promise<{
+    hasDuplicates: boolean;
+    duplicates: ServiceRequestWithRelationsRecord[];
+  }> {
+    const duplicates = await serviceRequestRepository.findDuplicateComplaints(params);
+    return {
+      hasDuplicates: duplicates.length > 0,
+      duplicates,
+    };
   }
 
   /**

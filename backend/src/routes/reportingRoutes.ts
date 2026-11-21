@@ -91,4 +91,12 @@ router.get(
   reportingController.getAdminDashboardSummary.bind(reportingController)
 );
 
+// 8. Admin Service Centers Workload & Capacity (Paginated)
+// Authorized: ADMIN only
+router.get(
+  '/admin/service-centers',
+  requireRole('ADMIN'),
+  reportingController.getServiceCenterWorkload.bind(reportingController)
+);
+
 export default router;

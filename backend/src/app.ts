@@ -18,6 +18,9 @@ import { warehouseRouter } from './routes/warehouseRoutes.js';
 import { financeRouter } from './routes/financeRoutes.js';
 import { workspaceRouter } from './routes/workspaceRoutes.js';
 import reportingRouter from './routes/reportingRoutes.js';
+import { engineerRoutes } from './routes/engineerRoutes.js';
+import { adminEngineerRoutes } from './routes/adminEngineerRoutes.js';
+import { feedbackRouter } from './routes/feedbackRoutes.js';
 import { requireAuth } from './middleware/authMiddleware.js';
 import { AuthenticatedUser } from './types/auth.js';
 
@@ -185,6 +188,9 @@ export function createApp(): Express {
   app.use('/api/v1/finance', financeRouter);
   app.use('/api/v1/workspace', workspaceRouter);
   app.use('/api/v1/reports', reportingRouter);
+  app.use('/api/v1/engineer', engineerRoutes);
+  app.use('/api/v1/admin/engineers', adminEngineerRoutes);
+  app.use('/api/v1/feedback', feedbackRouter);
 
   // 404 Route Not Found Handler
   app.use((req: Request, _res: Response, next) => {

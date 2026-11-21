@@ -109,6 +109,15 @@ export interface ServiceRequestRecord {
   registeredAt: Date;
   sla48hExpiresAt?: Date;
   acknowledgedAt?: Date;
+  acknowledgedBy?: string;
+  acknowledgedByUsername?: string;
+  reassignmentRequested?: 'Y' | 'N';
+  reassignmentReason?: string;
+  reassignmentRemarks?: string;
+  reassignmentRequestedBy?: string;
+  reassignmentRequestedAt?: Date;
+  assignmentSource?: 'AUTOMATIC_DEFAULT_ASF' | 'MANUAL_ROUTING' | 'REASSIGNMENT' | 'GEOGRAPHIC_PINCODE' | 'UNASSIGNED_PENDING';
+  assignmentFailedReason?: string;
   appointmentDate?: Date;
   appointmentSlot?: string;
   travelDistanceKm?: number;

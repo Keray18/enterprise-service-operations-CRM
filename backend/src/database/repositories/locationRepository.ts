@@ -4,12 +4,26 @@ import { LocationRecord, PaginatedResult } from '../../types/catalog.js';
 import { getOracleConnection } from '../oraclePool.js';
 
 function mapRowToLocation(row: any): LocationRecord {
+  const isFixture = row.IS_TEST_FIXTURE === 'Y';
   return {
     locationId: row.LOCATION_ID,
     locationCode: row.LOCATION_CODE,
     locationName: row.LOCATION_NAME,
     partyType: row.PARTY_TYPE,
     isActive: row.IS_ACTIVE,
+    isDefault: row.IS_DEFAULT || 'N',
+    isTestFixture: isFixture ? 'Y' : 'N',
+    dataOrigin: row.DATA_ORIGIN || (isFixture ? 'TEST_FIXTURE' : 'OPERATIONAL'),
+    stateId: row.STATE_ID || undefined,
+    stateName: row.STATE_NAME || undefined,
+    cityName: row.CITY_NAME || undefined,
+    pincode: row.PINCODE || undefined,
+    // Client convenience aliases
+    id: row.LOCATION_ID,
+    code: row.LOCATION_CODE,
+    name: row.LOCATION_NAME,
+    city: row.CITY_NAME || undefined,
+    state: row.STATE_NAME || undefined,
     versionNo: Number(row.VERSION_NO || 1),
     createdAt: new Date(row.CREATED_AT),
     updatedAt: new Date(row.UPDATED_AT),
@@ -21,34 +35,70 @@ function mapRowToLocation(row: any): LocationRecord {
 export class LocationRepository {
   async listLocations(options: {
     search?: string;
-    partyType?: string;
+    partyType?: string | string[];
     isActive?: 'Y' | 'N';
+    includeTestFixtures?: boolean;
     page: number;
     limit: number;
   }): Promise<PaginatedResult<LocationRecord>> {
     const conn = await getOracleConnection();
     try {
       const binds: Record<string, any> = {};
-      const whereClauses: string[] = [];
+      const whereClauses: string[] = ['1=1'];
 
-      if (options.search && options.search.trim()) {
-        binds.search = `%${options.search.trim().toLowerCase()}%`;
-        whereClauses.push('(LOWER(LOCATION_CODE) LIKE :search OR LOWER(LOCATION_NAME) LIKE :search)');
-      }
-
-      if (options.partyType) {
-        binds.partyType = options.partyType.toUpperCase();
-        whereClauses.push('PARTY_TYPE = :partyType');
+      // Operational hygiene: exclude confirmed test fixtures by default
+      if (!options.includeTestFixtures) {
+        whereClauses.push("l.IS_TEST_FIXTURE = 'N'");
       }
 
       if (options.isActive) {
         binds.isActive = options.isActive;
-        whereClauses.push('IS_ACTIVE = :isActive');
+        whereClauses.push('l.IS_ACTIVE = :isActive');
       }
 
-      const whereSql = whereClauses.length > 0 ? `WHERE ${whereClauses.join(' AND ')}` : '';
+      if (options.partyType) {
+        if (Array.isArray(options.partyType)) {
+          if (options.partyType.length > 0) {
+            const ptBinds = options.partyType.map((pt, i) => {
+              binds[`pt_${i}`] = pt.toUpperCase();
+              return `:pt_${i}`;
+            });
+            whereClauses.push(`l.PARTY_TYPE IN (${ptBinds.join(', ')})`);
+          }
+        } else {
+          binds.partyType = options.partyType.toUpperCase();
+          whereClauses.push('l.PARTY_TYPE = :partyType');
+        }
+      }
 
-      const countSql = `SELECT COUNT(*) AS CNT FROM LOCATIONS ${whereSql}`;
+      if (options.search && options.search.trim()) {
+        binds.search = `%${options.search.trim().toLowerCase()}%`;
+        whereClauses.push(`(
+          LOWER(l.LOCATION_CODE) LIKE :search OR
+          LOWER(l.LOCATION_NAME) LIKE :search OR
+          LOWER(c.CITY_NAME) LIKE :search OR
+          LOWER(s.STATE_NAME) LIKE :search OR
+          LOWER(pin_s.STATE_NAME) LIKE :search OR
+          p_first.PINCODE LIKE :search
+        )`);
+      }
+
+      const whereSql = whereClauses.join(' AND ');
+
+      const countSql = `
+        SELECT COUNT(*) AS CNT
+        FROM LOCATIONS l
+        LEFT JOIN STATES s ON l.STATE_ID = s.STATE_ID
+        LEFT JOIN (
+          SELECT DEFAULT_ASF_ID, CITY_ID, STATE_ID, PINCODE,
+                 ROW_NUMBER() OVER (PARTITION BY DEFAULT_ASF_ID ORDER BY PINCODE ASC) as RN
+          FROM PINCODES
+          WHERE DEFAULT_ASF_ID IS NOT NULL
+        ) p_first ON l.LOCATION_ID = p_first.DEFAULT_ASF_ID AND p_first.RN = 1
+        LEFT JOIN CITIES c ON p_first.CITY_ID = c.CITY_ID
+        LEFT JOIN STATES pin_s ON p_first.STATE_ID = pin_s.STATE_ID
+        WHERE ${whereSql}
+      `;
       const countResult = await conn.execute<any>(countSql, binds, {
         outFormat: oracledb.OUT_FORMAT_OBJECT,
       });
@@ -62,11 +112,25 @@ export class LocationRepository {
       binds.limit = limit;
 
       const dataSql = `
-        SELECT LOCATION_ID, LOCATION_CODE, LOCATION_NAME, PARTY_TYPE,
-               IS_ACTIVE, VERSION_NO, CREATED_AT, UPDATED_AT, CREATED_BY, UPDATED_BY
-        FROM LOCATIONS
-        ${whereSql}
-        ORDER BY LOCATION_NAME ASC, LOCATION_ID ASC
+        SELECT l.LOCATION_ID, l.LOCATION_CODE, l.LOCATION_NAME, l.PARTY_TYPE,
+               l.IS_ACTIVE, l.IS_DEFAULT, l.IS_TEST_FIXTURE, l.DATA_ORIGIN,
+               l.VERSION_NO, l.CREATED_AT, l.UPDATED_AT, l.CREATED_BY, l.UPDATED_BY,
+               l.STATE_ID,
+               NVL(s.STATE_NAME, pin_s.STATE_NAME) AS STATE_NAME,
+               c.CITY_NAME,
+               p_first.PINCODE
+        FROM LOCATIONS l
+        LEFT JOIN STATES s ON l.STATE_ID = s.STATE_ID
+        LEFT JOIN (
+          SELECT DEFAULT_ASF_ID, CITY_ID, STATE_ID, PINCODE,
+                 ROW_NUMBER() OVER (PARTITION BY DEFAULT_ASF_ID ORDER BY PINCODE ASC) as RN
+          FROM PINCODES
+          WHERE DEFAULT_ASF_ID IS NOT NULL
+        ) p_first ON l.LOCATION_ID = p_first.DEFAULT_ASF_ID AND p_first.RN = 1
+        LEFT JOIN CITIES c ON p_first.CITY_ID = c.CITY_ID
+        LEFT JOIN STATES pin_s ON p_first.STATE_ID = pin_s.STATE_ID
+        WHERE ${whereSql}
+        ORDER BY l.IS_DEFAULT DESC, l.LOCATION_NAME ASC, l.LOCATION_CODE ASC
         OFFSET :offset ROWS FETCH NEXT :limit ROWS ONLY
       `;
 
@@ -75,50 +139,145 @@ export class LocationRepository {
       });
 
       const items = (dataResult.rows || []).map(mapRowToLocation);
+      const totalPages = Math.ceil(total / limit) || 1;
 
       return {
+        locations: items,
         items,
+        data: items,
         total,
         page,
+        pageSize: limit,
         limit,
-        totalPages: Math.ceil(total / limit) || 1,
+        totalPages,
+        hasMore: page < totalPages,
       };
     } finally {
       await conn.close();
     }
   }
 
-  async findById(locationId: string): Promise<LocationRecord | null> {
-    const conn = await getOracleConnection();
+  async findById(locationId: string, externalConn?: oracledb.Connection): Promise<LocationRecord | null> {
+    const conn = externalConn || (await getOracleConnection());
     try {
       const sql = `
-        SELECT LOCATION_ID, LOCATION_CODE, LOCATION_NAME, PARTY_TYPE,
-               IS_ACTIVE, VERSION_NO, CREATED_AT, UPDATED_AT, CREATED_BY, UPDATED_BY
-        FROM LOCATIONS
-        WHERE LOCATION_ID = :locationId
+        SELECT l.LOCATION_ID, l.LOCATION_CODE, l.LOCATION_NAME, l.PARTY_TYPE,
+               l.IS_ACTIVE, l.IS_DEFAULT, l.IS_TEST_FIXTURE, l.DATA_ORIGIN,
+               l.VERSION_NO, l.CREATED_AT, l.UPDATED_AT, l.CREATED_BY, l.UPDATED_BY,
+               l.STATE_ID,
+               NVL(s.STATE_NAME, pin_s.STATE_NAME) AS STATE_NAME,
+               c.CITY_NAME,
+               p_first.PINCODE
+        FROM LOCATIONS l
+        LEFT JOIN STATES s ON l.STATE_ID = s.STATE_ID
+        LEFT JOIN (
+          SELECT DEFAULT_ASF_ID, CITY_ID, STATE_ID, PINCODE,
+                 ROW_NUMBER() OVER (PARTITION BY DEFAULT_ASF_ID ORDER BY PINCODE ASC) as RN
+          FROM PINCODES
+          WHERE DEFAULT_ASF_ID IS NOT NULL
+        ) p_first ON l.LOCATION_ID = p_first.DEFAULT_ASF_ID AND p_first.RN = 1
+        LEFT JOIN CITIES c ON p_first.CITY_ID = c.CITY_ID
+        LEFT JOIN STATES pin_s ON p_first.STATE_ID = pin_s.STATE_ID
+        WHERE l.LOCATION_ID = :locationId
       `;
       const result = await conn.execute<any>(sql, { locationId }, { outFormat: oracledb.OUT_FORMAT_OBJECT });
       if (!result.rows || result.rows.length === 0) return null;
       return mapRowToLocation(result.rows[0]);
     } finally {
-      await conn.close();
+      if (!externalConn) {
+        await conn.close();
+      }
     }
   }
 
-  async findByCode(locationCode: string): Promise<LocationRecord | null> {
-    const conn = await getOracleConnection();
+  async findByCode(locationCode: string, externalConn?: oracledb.Connection): Promise<LocationRecord | null> {
+    const conn = externalConn || (await getOracleConnection());
     try {
       const sql = `
-        SELECT LOCATION_ID, LOCATION_CODE, LOCATION_NAME, PARTY_TYPE,
-               IS_ACTIVE, VERSION_NO, CREATED_AT, UPDATED_AT, CREATED_BY, UPDATED_BY
-        FROM LOCATIONS
-        WHERE LOWER(LOCATION_CODE) = LOWER(:locationCode)
+        SELECT l.LOCATION_ID, l.LOCATION_CODE, l.LOCATION_NAME, l.PARTY_TYPE,
+               l.IS_ACTIVE, l.IS_DEFAULT, l.IS_TEST_FIXTURE, l.DATA_ORIGIN,
+               l.VERSION_NO, l.CREATED_AT, l.UPDATED_AT, l.CREATED_BY, l.UPDATED_BY,
+               l.STATE_ID,
+               NVL(s.STATE_NAME, pin_s.STATE_NAME) AS STATE_NAME,
+               c.CITY_NAME,
+               p_first.PINCODE
+        FROM LOCATIONS l
+        LEFT JOIN STATES s ON l.STATE_ID = s.STATE_ID
+        LEFT JOIN (
+          SELECT DEFAULT_ASF_ID, CITY_ID, STATE_ID, PINCODE,
+                 ROW_NUMBER() OVER (PARTITION BY DEFAULT_ASF_ID ORDER BY PINCODE ASC) as RN
+          FROM PINCODES
+          WHERE DEFAULT_ASF_ID IS NOT NULL
+        ) p_first ON l.LOCATION_ID = p_first.DEFAULT_ASF_ID AND p_first.RN = 1
+        LEFT JOIN CITIES c ON p_first.CITY_ID = c.CITY_ID
+        LEFT JOIN STATES pin_s ON p_first.STATE_ID = pin_s.STATE_ID
+        WHERE LOWER(l.LOCATION_CODE) = LOWER(:locationCode)
       `;
       const result = await conn.execute<any>(sql, { locationCode: locationCode.trim() }, { outFormat: oracledb.OUT_FORMAT_OBJECT });
       if (!result.rows || result.rows.length === 0) return null;
       return mapRowToLocation(result.rows[0]);
     } finally {
-      await conn.close();
+      if (!externalConn) {
+        await conn.close();
+      }
+    }
+  }
+
+  async findDefaultAsfs(externalConn?: oracledb.Connection): Promise<LocationRecord[]> {
+    const conn = externalConn || (await getOracleConnection());
+    try {
+      const sql = `
+        SELECT l.LOCATION_ID, l.LOCATION_CODE, l.LOCATION_NAME, l.PARTY_TYPE,
+               l.IS_ACTIVE, l.IS_DEFAULT, l.IS_TEST_FIXTURE, l.DATA_ORIGIN,
+               l.VERSION_NO, l.CREATED_AT, l.UPDATED_AT, l.CREATED_BY, l.UPDATED_BY,
+               l.STATE_ID,
+               s.STATE_NAME,
+               NULL AS CITY_NAME,
+               NULL AS PINCODE
+        FROM LOCATIONS l
+        LEFT JOIN STATES s ON l.STATE_ID = s.STATE_ID
+        WHERE l.PARTY_TYPE = 'ASF' AND l.IS_ACTIVE = 'Y' AND l.IS_DEFAULT = 'Y'
+        ORDER BY l.LOCATION_CODE ASC
+      `;
+      const result = await conn.execute<any>(sql, {}, { outFormat: oracledb.OUT_FORMAT_OBJECT });
+      return (result.rows || []).map(mapRowToLocation);
+    } finally {
+      if (!externalConn) {
+        await conn.close();
+      }
+    }
+  }
+
+  async findActiveAsfs(externalConn?: oracledb.Connection): Promise<LocationRecord[]> {
+    const conn = externalConn || (await getOracleConnection());
+    try {
+      const sql = `
+        SELECT l.LOCATION_ID, l.LOCATION_CODE, l.LOCATION_NAME, l.PARTY_TYPE,
+               l.IS_ACTIVE, l.IS_DEFAULT, l.IS_TEST_FIXTURE, l.DATA_ORIGIN,
+               l.VERSION_NO, l.CREATED_AT, l.UPDATED_AT, l.CREATED_BY, l.UPDATED_BY,
+               l.STATE_ID,
+               NVL(s.STATE_NAME, pin_s.STATE_NAME) AS STATE_NAME,
+               c.CITY_NAME,
+               p_first.PINCODE
+        FROM LOCATIONS l
+        LEFT JOIN STATES s ON l.STATE_ID = s.STATE_ID
+        LEFT JOIN (
+          SELECT DEFAULT_ASF_ID, CITY_ID, STATE_ID, PINCODE,
+                 ROW_NUMBER() OVER (PARTITION BY DEFAULT_ASF_ID ORDER BY PINCODE ASC) as RN
+          FROM PINCODES
+          WHERE DEFAULT_ASF_ID IS NOT NULL
+        ) p_first ON l.LOCATION_ID = p_first.DEFAULT_ASF_ID AND p_first.RN = 1
+        LEFT JOIN CITIES c ON p_first.CITY_ID = c.CITY_ID
+        LEFT JOIN STATES pin_s ON p_first.STATE_ID = pin_s.STATE_ID
+        WHERE l.PARTY_TYPE = 'ASF' AND l.IS_ACTIVE = 'Y' AND l.IS_TEST_FIXTURE = 'N'
+        ORDER BY l.IS_DEFAULT DESC, l.LOCATION_NAME ASC
+      `;
+      const result = await conn.execute<any>(sql, {}, { outFormat: oracledb.OUT_FORMAT_OBJECT });
+      return (result.rows || []).map(mapRowToLocation);
+    } finally {
+      if (!externalConn) {
+        await conn.close();
+      }
     }
   }
 
@@ -127,18 +286,37 @@ export class LocationRepository {
     locationName: string;
     partyType: 'ASF' | 'CENTRAL_WAREHOUSE' | 'REGIONAL_WAREHOUSE' | 'DISTRIBUTOR' | 'HEAD_OFFICE';
     isActive?: 'Y' | 'N';
+    isDefault?: 'Y' | 'N';
+    isTestFixture?: 'Y' | 'N';
+    dataOrigin?: string;
     createdBy?: string;
+    stateId?: string;
   }): Promise<LocationRecord> {
     const conn = await getOracleConnection();
     try {
       const locationId = crypto.randomUUID();
+      const codeUpper = data.locationCode.trim().toUpperCase();
+      const isFixture =
+        data.isTestFixture ||
+        (codeUpper.includes('TEST') ||
+        codeUpper.startsWith('SEC_') ||
+        codeUpper.startsWith('ASF_360_') ||
+        codeUpper.startsWith('ASF_OTH_') ||
+        codeUpper.startsWith('ASF_2C_') ||
+        data.createdBy === 'TEST_SETUP'
+          ? 'Y'
+          : 'N');
+      const origin = data.dataOrigin || (isFixture === 'Y' ? 'TEST_FIXTURE' : 'OPERATIONAL');
+
       const sql = `
         INSERT INTO LOCATIONS (
           LOCATION_ID, LOCATION_CODE, LOCATION_NAME, PARTY_TYPE,
-          IS_ACTIVE, VERSION_NO, CREATED_AT, UPDATED_AT, CREATED_BY, UPDATED_BY
+          IS_ACTIVE, IS_DEFAULT, IS_TEST_FIXTURE, DATA_ORIGIN,
+          VERSION_NO, CREATED_AT, UPDATED_AT, CREATED_BY, UPDATED_BY, STATE_ID
         ) VALUES (
           :locationId, :locationCode, :locationName, :partyType,
-          :isActive, 1, SYSTIMESTAMP, SYSTIMESTAMP, :createdBy, :createdBy
+          :isActive, :isDefault, :isTestFixture, :dataOrigin,
+          1, SYSTIMESTAMP, SYSTIMESTAMP, :createdBy, :createdBy, :stateId
         )
       `;
 
@@ -146,11 +324,15 @@ export class LocationRepository {
         sql,
         {
           locationId,
-          locationCode: data.locationCode.trim().toUpperCase(),
+          locationCode: codeUpper,
           locationName: data.locationName.trim(),
           partyType: data.partyType,
           isActive: data.isActive || 'Y',
+          isDefault: data.isDefault || 'N',
+          isTestFixture: isFixture,
+          dataOrigin: origin,
           createdBy: data.createdBy || null,
+          stateId: data.stateId || null,
         },
         { autoCommit: true }
       );

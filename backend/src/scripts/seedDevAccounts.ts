@@ -139,7 +139,10 @@ export async function seedDevAccounts(options?: { defaultPassword?: string }): P
       partyType: r.PARTY_TYPE,
     }));
 
-    const asfLocation = locations.find((l: any) => l.partyType === 'ASF') || locations[0];
+    const asfLocation =
+      locations.find((l: any) => l.partyType === 'ASF' && (l.locationCode === 'ASF_8441' || l.locationId === '025a2dc3-dca6-4736-a83e-75fe0615871a')) ||
+      locations.find((l: any) => l.partyType === 'ASF') ||
+      locations[0];
     const whLocation = locations.find((l: any) => l.partyType === 'CENTRAL_WAREHOUSE') || locations[0];
     const hqLocation = locations.find((l: any) => l.partyType === 'HEAD_OFFICE') || locations[0];
 

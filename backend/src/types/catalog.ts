@@ -150,6 +150,19 @@ export interface LocationRecord {
   locationName: string;
   partyType: 'ASF' | 'CENTRAL_WAREHOUSE' | 'REGIONAL_WAREHOUSE' | 'DISTRIBUTOR' | 'HEAD_OFFICE';
   isActive: 'Y' | 'N';
+  isDefault?: 'Y' | 'N';
+  isTestFixture?: 'Y' | 'N' | boolean;
+  dataOrigin?: string;
+  stateId?: string;
+  stateName?: string;
+  cityName?: string;
+  pincode?: string;
+  // Standardized client properties
+  id?: string;
+  code?: string;
+  name?: string;
+  city?: string;
+  state?: string;
   versionNo: number;
   createdAt: Date;
   updatedAt: Date;
@@ -211,4 +224,8 @@ export interface PaginatedResult<T> {
   page: number;
   limit: number;
   totalPages: number;
+  hasMore?: boolean;
+  locations?: T[];
+  data?: T[];
+  pageSize?: number;
 }

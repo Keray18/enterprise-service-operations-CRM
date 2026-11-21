@@ -341,34 +341,34 @@ describe('Next.js Route Protection Middleware & Server-Boundary Gating', () => {
       expect(res.headers.get('location')).toBe('http://localhost:3000/warehouse');
     });
 
-    it('prevents Field Engineer from opening /admin -> redirects to /asf', async () => {
+    it('prevents Field Engineer from opening /admin -> redirects to /engineer', async () => {
       mockBackendSession(200, mockEngineerUser);
 
       const req = createMockRequest('/admin', 'valid_eng_token_123456');
       const res = await middleware(req);
 
       expect(res.status).toBe(307);
-      expect(res.headers.get('location')).toBe('http://localhost:3000/asf');
+      expect(res.headers.get('location')).toBe('http://localhost:3000/engineer');
     });
 
-    it('prevents Field Engineer from opening /call-center -> redirects to /asf', async () => {
+    it('prevents Field Engineer from opening /call-center -> redirects to /engineer', async () => {
       mockBackendSession(200, mockEngineerUser);
 
       const req = createMockRequest('/call-center', 'valid_eng_token_123456');
       const res = await middleware(req);
 
       expect(res.status).toBe(307);
-      expect(res.headers.get('location')).toBe('http://localhost:3000/asf');
+      expect(res.headers.get('location')).toBe('http://localhost:3000/engineer');
     });
 
-    it('prevents Field Engineer from opening /warehouse -> redirects to /asf', async () => {
+    it('prevents Field Engineer from opening /warehouse -> redirects to /engineer', async () => {
       mockBackendSession(200, mockEngineerUser);
 
       const req = createMockRequest('/warehouse', 'valid_eng_token_123456');
       const res = await middleware(req);
 
       expect(res.status).toBe(307);
-      expect(res.headers.get('location')).toBe('http://localhost:3000/asf');
+      expect(res.headers.get('location')).toBe('http://localhost:3000/engineer');
     });
 
     it('allows Admin to open all operational workspaces (200 pass-through)', async () => {

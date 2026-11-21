@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { normalizeIndianMobile } from '../utils/phoneUtils.js';
 
 export const customerSearchSchema = z.object({
   mobile: z.string().optional(),
@@ -9,18 +10,64 @@ export const customerSearchSchema = z.object({
 });
 
 export const newCustomerSchema = z.object({
-  fullName: z.string().min(2, 'Customer full name must be at least 2 characters').max(150),
-  primaryMobile: z.string().min(10, 'Mobile number must be at least 10 digits').max(15),
-  alternateMobile: z.string().max(15).optional(),
-  residencePhone: z.string().max(20).optional(),
-  email: z.string().email('Invalid email address format').optional().or(z.literal('')),
+  fullName: z
+    .string({ required_error: 'Customer full name is required' })
+    .trim()
+    .min(2, 'Customer full name must be at least 2 characters')
+    .max(150),
+  primaryMobile: z
+    .string({ required_error: 'Primary mobile number is required' })
+    .trim()
+    .transform((val) => normalizeIndianMobile(val))
+    .refine(
+      (val) => /^[6-9]\d{9}$/.test(val),
+      (val) => ({
+        message: !val
+          ? 'Primary mobile number is required'
+          : val.length !== 10
+            ? `Mobile number must be exactly 10 digits (currently ${val.length})`
+            : `Indian mobile number must begin with 6, 7, 8, or 9 (entered number begins with ${val[0]})`,
+      })
+    ),
+  alternateMobile: z
+    .string()
+    .trim()
+    .optional()
+    .or(z.literal(''))
+    .transform((val) => (val ? normalizeIndianMobile(val) : ''))
+    .refine(
+      (val) => !val || /^[6-9]\d{9}$/.test(val),
+      (val) => ({
+        message:
+          val && val.length !== 10
+            ? `Alternate mobile must be exactly 10 digits (currently ${val.length})`
+            : `Alternate mobile must begin with 6, 7, 8, or 9 (entered number begins with ${val?.[0]})`,
+      })
+    ),
+  residencePhone: z.string().trim().max(20).optional().or(z.literal('')),
+  email: z
+    .string()
+    .trim()
+    .optional()
+    .or(z.literal(''))
+    .refine(
+      (val) => !val || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(val),
+      'Invalid email address format (e.g. name@example.com)'
+    ),
   customerCategory: z.enum(['INDIVIDUAL', 'COMMERCIAL', 'CORPORATE']).default('INDIVIDUAL'),
-  addressLine: z.string().min(5, 'Address line must be at least 5 characters').max(255),
-  landmark: z.string().max(150).optional(),
-  stateId: z.string().uuid('Valid State ID is required'),
-  cityId: z.string().uuid('Valid City ID is required'),
-  pincode: z.string().regex(/^\d{6}$/, 'Pincode must be exactly 6 digits'),
-  gstNumber: z.string().max(20).optional(),
+  addressLine: z
+    .string({ required_error: 'Address line is required' })
+    .trim()
+    .min(5, 'Address line must be at least 5 characters')
+    .max(255),
+  landmark: z.string().trim().max(150).optional().or(z.literal('')),
+  stateId: z.string({ required_error: 'State selection is required' }).uuid('Valid State ID is required'),
+  cityId: z.string({ required_error: 'City selection is required' }).uuid('Valid City ID is required'),
+  pincode: z
+    .string({ required_error: 'Pincode is required' })
+    .trim()
+    .regex(/^\d{6}$/, 'Pincode must be exactly 6 digits'),
+  gstNumber: z.string().trim().max(20).optional().or(z.literal('')),
 });
 
 export const registerComplaintSchema = z
@@ -61,6 +108,14 @@ export const searchRequestsSchema = z.object({
   serialNumber: z.string().optional(),
   customerId: z.string().uuid().optional(),
   status: z.string().optional(),
+  tab: z.enum(['all', 'new_registered', 'assigned_asf', 'in_progress', 'closed']).optional(),
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(50).default(10),
+});
+
+export const checkDuplicatesSchema = z.object({
+  mobile: z.string().optional(),
+  serialNumber: z.string().optional(),
+  customerId: z.string().uuid().optional(),
+  modelId: z.string().uuid().optional(),
 });

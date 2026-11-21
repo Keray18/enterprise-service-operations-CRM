@@ -49,6 +49,7 @@ export function TechnicianCheckInDialog({
   const [detectingLocation, setDetectingLocation] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [regenSuccessMsg, setRegenSuccessMsg] = useState<string | null>(null);
+  const [devOtpPreview, setDevOtpPreview] = useState<string | null>(null);
   const [checkedInSuccess, setCheckedInSuccess] = useState(false);
 
   useEffect(() => {
@@ -59,6 +60,7 @@ export function TechnicianCheckInDialog({
       setDetectingLocation(false);
       setErrorMessage(null);
       setRegenSuccessMsg(null);
+      setDevOtpPreview(null);
       setCheckedInSuccess(false);
     }
   }, [open, request]);
@@ -96,6 +98,9 @@ export function TechnicianCheckInDialog({
         requestId: request.requestId,
         reason: 'Customer requested OTP resend at location',
       });
+      if (res.devOtpPreview) {
+        setDevOtpPreview(res.devOtpPreview);
+      }
       setRegenSuccessMsg(`New check-in OTP generated & queued via SMS 6. Valid until ${new Date(res.otpExpiresAt).toLocaleTimeString()}.`);
     } catch (err: any) {
       setErrorMessage(err?.message || 'Failed to regenerate customer OTP.');
@@ -176,6 +181,48 @@ export function TechnicianCheckInDialog({
               <Alert severity="success" sx={{ mb: 2 }}>
                 {regenSuccessMsg}
               </Alert>
+            )}
+
+            {devOtpPreview && (
+              <Box
+                sx={{
+                  mb: 2,
+                  p: 1.5,
+                  backgroundColor: '#fffbe6',
+                  border: '1px dashed #faad14',
+                  borderRadius: 1.5,
+                }}
+              >
+                <Chip
+                  label="Development Only Test OTP"
+                  color="warning"
+                  size="small"
+                  sx={{ fontWeight: 700, mb: 0.5 }}
+                />
+                <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mt: 0.5 }}>
+                  <Typography variant="h5" sx={{ fontFamily: 'monospace', letterSpacing: 4, fontWeight: 800, color: '#d46b08' }}>
+                    {devOtpPreview}
+                  </Typography>
+                  <Box sx={{ display: 'flex', gap: 1 }}>
+                    <Button
+                      size="small"
+                      variant="outlined"
+                      color="warning"
+                      onClick={() => setOtp(devOtpPreview)}
+                    >
+                      Fill OTP
+                    </Button>
+                    <Button
+                      size="small"
+                      variant="contained"
+                      color="warning"
+                      onClick={() => navigator.clipboard.writeText(devOtpPreview)}
+                    >
+                      Copy Test OTP
+                    </Button>
+                  </Box>
+                </Box>
+              </Box>
             )}
 
             {/* Visit Context */}

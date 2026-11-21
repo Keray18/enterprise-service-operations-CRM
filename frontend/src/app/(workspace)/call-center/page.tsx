@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
 import TextField from '@mui/material/TextField';
@@ -37,14 +38,16 @@ import {
 import { tokens } from '../../../theme/tokens';
 
 const STATUS_TABS = [
-  { label: 'All Requests', value: '' },
-  { label: 'Registered (New)', value: 'REGISTERED' },
-  { label: 'Assigned to ASF', value: 'ASSIGNED_TO_ASF' },
-  { label: 'In Progress', value: 'IN_PROGRESS_REPAIR' },
-  { label: 'Closed', value: 'CLOSED' },
+  { label: 'All Requests', value: 'all' },
+  { label: 'Registered (New)', value: 'new_registered' },
+  { label: 'Assigned to ASF', value: 'assigned_asf' },
+  { label: 'In Progress', value: 'in_progress' },
+  { label: 'Closed', value: 'closed' },
 ];
 
 export default function CallCenterPage() {
+  const queryClient = useQueryClient();
+
   // Dialog visibility states
   const [isRegisterOpen, setIsRegisterOpen] = useState(false);
   const [selectedRequest, setSelectedRequest] = useState<ServiceRequest | null>(null);
@@ -59,38 +62,22 @@ export default function CallCenterPage() {
   // Success Snackbar
   const [successNotice, setSuccessNotice] = useState<string | null>(null);
 
-  const selectedStatus = STATUS_TABS[activeTab].value;
+  const selectedTab = STATUS_TABS[activeTab]?.value || 'all';
   const isSearchActive = Boolean(searchQuery.trim());
 
-  // Queries:
-  // If search query is active, use searchRequests; otherwise use recentRequests
   const {
     data: searchResults,
-    isLoading: isSearching,
-    refetch: refetchSearch,
+    isLoading,
+    refetch,
   } = useSearchServiceRequests({
     q: searchQuery.trim() || undefined,
-    status: selectedStatus || undefined,
+    tab: selectedTab,
     page: page + 1,
     limit: rowsPerPage,
   });
 
-  const {
-    data: recentRequests,
-    isLoading: isLoadingRecent,
-    refetch: refetchRecent,
-  } = useRecentRequests(25, selectedStatus || undefined);
-
-  const isLoading = isSearchActive ? isSearching : isLoadingRecent;
-
-  // Determine items to display
-  const tableData: ServiceRequest[] = isSearchActive
-    ? searchResults?.items || []
-    : recentRequests || [];
-
-  const totalRecords = isSearchActive
-    ? searchResults?.total || 0
-    : recentRequests?.length || 0;
+  const tableData: ServiceRequest[] = searchResults?.items || [];
+  const totalRecords = searchResults?.total || 0;
 
   const handleRegisterSuccess = (res: RegisterComplaintResponse) => {
     setIsRegisterOpen(false);
@@ -99,8 +86,7 @@ export default function CallCenterPage() {
     setSuccessNotice(
       `Service Request #${res.serviceRequest.jobNumber} registered successfully! Customer: ${res.customer.fullName} (${res.customer.primaryMobile}). SMS acknowledgement queued.`
     );
-    refetchRecent();
-    if (isSearchActive) refetchSearch();
+    queryClient.invalidateQueries({ queryKey: ['callCenter'] });
   };
 
   const handleOpenDetail = (req: ServiceRequest) => {
@@ -186,6 +172,35 @@ export default function CallCenterPage() {
           }
           sx={{ fontWeight: 600, fontSize: '0.72rem' }}
         />
+      ),
+    },
+    {
+      id: 'assignedLocation',
+      label: 'Service Center',
+      render: (row: ServiceRequest) => (
+        <Box>
+          <Typography
+            variant="body2"
+            fontWeight={600}
+            color={row.assignedLocationName ? 'text.primary' : 'warning.main'}
+          >
+            {row.assignedLocationName || 'Unassigned (Action Required)'}
+          </Typography>
+          {row.reassignmentRequested === 'Y' && (
+            <Chip
+              label="Reassignment Requested"
+              size="small"
+              color="error"
+              variant="outlined"
+              sx={{ fontSize: '0.65rem', height: 18, mt: 0.5 }}
+            />
+          )}
+          {row.assignmentFailedReason && (
+            <Typography variant="caption" color="error.main" display="block">
+              {row.assignmentFailedReason}
+            </Typography>
+          )}
+        </Box>
       ),
     },
     {
@@ -281,10 +296,7 @@ export default function CallCenterPage() {
             />
             <IconButton
               size="small"
-              onClick={() => {
-                if (isSearchActive) refetchSearch();
-                else refetchRecent();
-              }}
+              onClick={() => refetch()}
               title="Refresh"
             >
               <RefreshIcon fontSize="small" />

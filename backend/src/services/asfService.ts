@@ -1,4 +1,6 @@
+import { env } from '../config/env.js';
 import { getOracleConnection } from '../database/oraclePool.js';
+import { locationRepository } from '../database/repositories/locationRepository.js';
 import { notificationRepository } from '../database/repositories/notificationRepository.js';
 import { rbacRepository } from '../database/repositories/rbacRepository.js';
 import { serviceRequestEventRepository } from '../database/repositories/serviceRequestEventRepository.js';
@@ -8,16 +10,23 @@ import { verificationRepository } from '../database/repositories/verificationRep
 import { AppError } from '../middleware/errorHandler.js';
 import { AuthenticatedUser } from '../types/auth.js';
 import {
+  AcknowledgeComplaintInput,
+  AcknowledgeComplaintResponse,
   AsfQueueFilters,
   CheckInComplaintInput,
   CheckInComplaintResponse,
   DispatchComplaintInput,
   DispatchComplaintResponse,
+  EligibleEngineerRecord,
+  ReassignComplaintInput,
+  ReassignComplaintResponse,
   RegenerateOtpInput,
   RegenerateOtpResponse,
+  RejectAssignmentInput,
+  RejectAssignmentResponse,
 } from '../types/asf.js';
 import { PaginatedResult } from '../types/catalog.js';
-import { ServiceRequestWithRelationsRecord } from '../types/callCenter.js';
+import { ServiceRequestStatus, ServiceRequestWithRelationsRecord } from '../types/callCenter.js';
 import {
   encryptNotificationPayload,
   generateCheckInOtp,
@@ -51,7 +60,9 @@ export class AsfService {
     const result = await serviceRequestRepository.queryAsfQueue(
       effectiveFilters,
       actorLocationId,
-      isAdmin
+      isAdmin,
+      isAsfManager || isAdmin,
+      isEngineerOnly
     );
 
     // Augment with computed SLA status for UI badges
@@ -68,33 +79,281 @@ export class AsfService {
     });
 
     return {
-      ...result,
+      total: result.total,
+      page: result.page,
+      limit: result.limit,
+      totalPages: result.totalPages,
+      hasMore: result.hasMore,
       items: augmentedItems,
     };
   }
 
   /**
-   * Retrieves active field engineers eligible for assignment in an ASF location.
+   * Retrieves active field engineers eligible for assignment in an ASF location or network-wide.
+   * Admins and Service Center managers can query the centralized technician directory
+   * or pass an optional locationId to filter by franchise.
+   * Field engineers are strictly forbidden from viewing the technician roster.
    */
-  async getEligibleEngineers(locationId: string, actor: AuthenticatedUser) {
+  async getEligibleEngineers(locationId: string | undefined, actor: AuthenticatedUser): Promise<EligibleEngineerRecord[]> {
     const isAdmin = actor.roles.includes('ADMIN');
     const isAsf = actor.roles.includes('ASF') || actor.roles.includes('ASF_MANAGER');
     if (!isAdmin && !isAsf) {
       throw new AppError('Unauthorized: Field engineers cannot view the technician roster', 403, 'FORBIDDEN_ROLE');
     }
 
-    if (!isAdmin && actor.locationId && actor.locationId !== locationId) {
-      throw new AppError('Unauthorized access to technicians outside your franchise location', 403, 'FORBIDDEN');
+    return userRepository.findEligibleEngineers(locationId);
+  }
+
+  /**
+   * Step A: Acknowledges a complaint by an authorized Service Center manager or Admin.
+   * Records ACKNOWLEDGED_BY and timestamp, stops 48h SLA timer, logs event.
+   */
+  async acknowledgeComplaint(
+    input: AcknowledgeComplaintInput,
+    actor: AuthenticatedUser
+  ): Promise<AcknowledgeComplaintResponse> {
+    const isAdmin = actor.roles.includes('ADMIN');
+    const isAsf = actor.roles.includes('ASF') || actor.roles.includes('ASF_MANAGER');
+    if (!isAdmin && !isAsf) {
+      throw new AppError('Unauthorized: Only Service Center managers and Admins can acknowledge complaints.', 403, 'FORBIDDEN_ROLE');
     }
 
-    const engineers = await userRepository.findEngineersByLocation(locationId);
-    return engineers.map((eng) => ({
-      userId: eng.userId,
-      username: eng.username,
-      fullName: eng.fullName,
-      phoneNumber: eng.phoneNumber,
-      locationId: eng.locationId,
-    }));
+    const conn = await getOracleConnection();
+    try {
+      const existing = await serviceRequestRepository.findById(input.requestId, conn);
+      if (!existing) {
+        throw new AppError(`Service Request ${input.requestId} not found`, 404, 'NOT_FOUND');
+      }
+
+      // Check state eligibility
+      const allowedStates = ['REGISTERED', 'ASSIGNED_TO_ASF', 'ACKNOWLEDGED'];
+      if (!allowedStates.includes(existing.status)) {
+        throw new AppError(
+          `Cannot acknowledge service request in current state: ${existing.status}`,
+          400,
+          'INVALID_STATE_TRANSITION'
+        );
+      }
+
+      if (existing.status === 'ACKNOWLEDGED' && existing.acknowledgedAt) {
+        return {
+          serviceRequest: existing,
+          acknowledgedAt: existing.acknowledgedAt.toISOString(),
+          acknowledgedBy: existing.acknowledgedByUsername || actor.username,
+        };
+      }
+
+      const updated = await serviceRequestRepository.acknowledgeServiceRequest(
+        input.requestId,
+        actor.userId,
+        actor.username,
+        conn
+      );
+
+      // Record event
+      await serviceRequestEventRepository.createEvent(
+        {
+          requestId: input.requestId,
+          fromState: existing.status,
+          toState: 'ACKNOWLEDGED',
+          eventType: 'ASF_ACKNOWLEDGED',
+          triggeredByUserId: actor.userId,
+          triggeredByUsername: actor.username,
+          triggeredByRole: actor.roles[0] || 'ASF',
+          remarks: input.remarks || 'Complaint acknowledged by Service Center manager',
+          metadataJson: {
+            acknowledgedBy: actor.username,
+            previousStatus: existing.status,
+          },
+        },
+        conn
+      );
+
+      await conn.commit();
+
+      return {
+        serviceRequest: updated,
+        acknowledgedAt: (updated.acknowledgedAt || new Date()).toISOString(),
+        acknowledgedBy: actor.username,
+      };
+    } catch (err) {
+      await conn.rollback();
+      throw err;
+    } finally {
+      await conn.close();
+    }
+  }
+
+  /**
+   * Rejects an assignment with a mandatory reason, placing it into the Assignment Required queue.
+   */
+  async rejectAssignment(
+    input: RejectAssignmentInput,
+    actor: AuthenticatedUser
+  ): Promise<RejectAssignmentResponse> {
+    const isAdmin = actor.roles.includes('ADMIN');
+    const isAsf = actor.roles.includes('ASF') || actor.roles.includes('ASF_MANAGER');
+    if (!isAdmin && !isAsf) {
+      throw new AppError('Unauthorized: Field engineers cannot reject franchise assignments.', 403, 'FORBIDDEN_ROLE');
+    }
+
+    if (!input.reason) {
+      throw new AppError('A valid rejection reason code is mandatory', 400, 'REASON_REQUIRED');
+    }
+    if (!input.remarks || !input.remarks.trim()) {
+      throw new AppError('Rejection remarks are mandatory', 400, 'REMARKS_REQUIRED');
+    }
+
+    const conn = await getOracleConnection();
+    try {
+      const existing = await serviceRequestRepository.findById(input.requestId, conn);
+      if (!existing) {
+        throw new AppError(`Service Request ${input.requestId} not found`, 404, 'NOT_FOUND');
+      }
+
+      const allowedStates = ['REGISTERED', 'ASSIGNED_TO_ASF', 'ACKNOWLEDGED', 'APPOINTMENT_SCHEDULED'];
+      if (!allowedStates.includes(existing.status)) {
+        throw new AppError(
+          `Cannot reject service request in current operational state: ${existing.status}`,
+          400,
+          'INVALID_STATE_TRANSITION'
+        );
+      }
+
+      const updated = await serviceRequestRepository.requestReassignment(
+        input.requestId,
+        input.reason,
+        input.remarks.trim(),
+        actor.userId,
+        conn
+      );
+
+      await serviceRequestEventRepository.createEvent(
+        {
+          requestId: input.requestId,
+          fromState: existing.status,
+          toState: existing.status,
+          eventType: 'ASSIGNMENT_REJECTED',
+          triggeredByUserId: actor.userId,
+          triggeredByUsername: actor.username,
+          triggeredByRole: actor.roles[0] || 'ASF',
+          remarks: `Assignment rejected: ${input.reason} - ${input.remarks.trim()}`,
+          metadataJson: {
+            reason: input.reason,
+            remarks: input.remarks.trim(),
+            rejectedBy: actor.username,
+          },
+        },
+        conn
+      );
+
+      await conn.commit();
+
+      return {
+        serviceRequest: updated,
+        reassignmentRequested: true,
+        message: 'Assignment rejected; request moved to Assignment Required queue.',
+      };
+    } catch (err) {
+      await conn.rollback();
+      throw err;
+    } finally {
+      await conn.close();
+    }
+  }
+
+  /**
+   * Reassigns a service request to a different Service Center location (Admin only).
+   */
+  async reassignComplaint(
+    input: ReassignComplaintInput,
+    actor: AuthenticatedUser
+  ): Promise<ReassignComplaintResponse> {
+    if (!actor.roles.includes('ADMIN')) {
+      throw new AppError('Unauthorized: Only administrators can reassign complaints between Service Centers', 403, 'FORBIDDEN_ROLE');
+    }
+
+    if (!input.newLocationId) {
+      throw new AppError('Target Service Center location ID is required', 400, 'LOCATION_REQUIRED');
+    }
+
+    const targetLocation = await locationRepository.findById(input.newLocationId);
+    if (!targetLocation || targetLocation.isActive !== 'Y' || targetLocation.partyType !== 'ASF') {
+      throw new AppError('Target location must be an active Authorized Service Franchisee (ASF)', 400, 'INVALID_TARGET_LOCATION');
+    }
+
+    const conn = await getOracleConnection();
+    try {
+      const existing = await serviceRequestRepository.findById(input.requestId, conn);
+      if (!existing) {
+        throw new AppError(`Service Request ${input.requestId} not found`, 404, 'NOT_FOUND');
+      }
+
+      const terminalStates = ['CLOSED', 'CANCELLED', 'REPLACED'];
+      if (terminalStates.includes(existing.status)) {
+        throw new AppError(`Cannot reassign service request in terminal state: ${existing.status}`, 400, 'INVALID_STATE_TRANSITION');
+      }
+
+      // Check if assignment and appointment can/should be preserved
+      let preserve = false;
+      let targetStatus: ServiceRequestStatus = 'ASSIGNED_TO_ASF';
+
+      if (input.preserveAssignment !== false && existing.assignedEngineerId) {
+        const assignedEngineer = await userRepository.findById(existing.assignedEngineerId);
+        // If technician belongs to the new center or is compatible, preserve the dispatch
+        if (assignedEngineer && assignedEngineer.isActive === 'Y' && assignedEngineer.locationId === input.newLocationId) {
+          preserve = true;
+          if (['ACKNOWLEDGED', 'APPOINTMENT_SCHEDULED'].includes(existing.status)) {
+            targetStatus = existing.status;
+          }
+        }
+      }
+
+      const updated = await serviceRequestRepository.reassignAsf(
+        input.requestId,
+        input.newLocationId,
+        actor.userId,
+        actor.username,
+        input.remarks,
+        { preserveAssignment: preserve, targetStatus },
+        conn
+      );
+
+      await serviceRequestEventRepository.createEvent(
+        {
+          requestId: input.requestId,
+          fromState: existing.status,
+          toState: preserve ? targetStatus : 'ASSIGNED_TO_ASF',
+          eventType: 'COMPLAINT_REASSIGNED',
+          triggeredByUserId: actor.userId,
+          triggeredByUsername: actor.username,
+          triggeredByRole: actor.roles[0] || 'ADMIN',
+          remarks: input.remarks || `Reassigned to ${targetLocation.locationName} (${targetLocation.locationCode})${preserve ? ' (Technician assignment & appointment preserved)' : ''}`,
+          metadataJson: {
+            previousLocationId: existing.assignedLocationId || null,
+            newLocationId: input.newLocationId,
+            newLocationName: targetLocation.locationName,
+            reassignedBy: actor.username,
+            assignmentPreserved: preserve,
+            assignedEngineerId: preserve ? existing.assignedEngineerId : null,
+          },
+        },
+        conn
+      );
+
+      await conn.commit();
+
+      return {
+        serviceRequest: updated,
+        assignedLocationId: input.newLocationId,
+        message: `Service request successfully reassigned to ${targetLocation.locationName}`,
+      };
+    } catch (err) {
+      await conn.rollback();
+      throw err;
+    } finally {
+      await conn.close();
+    }
   }
 
   /**
@@ -133,14 +392,12 @@ export class AsfService {
 
       // Step C: Validate role and location authorization
       const isAdmin = actor.roles.includes('ADMIN');
-      const isAsf = actor.roles.includes('ASF') || actor.roles.includes('ASF_MANAGER');
-      if (!isAdmin && !isAsf) {
+      const isAsfManager = actor.roles.includes('ASF') || actor.roles.includes('ASF_MANAGER');
+      if (!isAdmin && !isAsfManager) {
         throw new AppError('Unauthorized: Field engineers cannot dispatch or assign service requests.', 403, 'FORBIDDEN_ROLE');
       }
 
-      const targetLocationId = existing.assignedLocationId || actor.locationId;
-
-      if (!isAdmin && actor.locationId && existing.assignedLocationId && existing.assignedLocationId !== actor.locationId) {
+      if (!isAdmin && actor.locationId && existing.assignedLocationId && actor.locationId !== existing.assignedLocationId) {
         throw new AppError('Cannot dispatch request assigned to another franchise center', 403, 'FORBIDDEN_LOCATION');
       }
 
@@ -155,8 +412,31 @@ export class AsfService {
         throw new AppError('Selected user does not have the FIELD ENGINEER role', 400, 'INVALID_ENGINEER_ROLE');
       }
 
-      if (targetLocationId && engineer.locationId && engineer.locationId !== targetLocationId) {
-        throw new AppError('Field engineer does not belong to this franchise location', 400, 'ENGINEER_LOCATION_MISMATCH');
+      // Determine target ticket franchise location and evaluate cross-location assignment
+      const targetLocationId = existing.assignedLocationId || actor.locationId || engineer.locationId;
+      const isCrossLocation = Boolean(engineer.locationId && targetLocationId && engineer.locationId !== targetLocationId);
+
+      // Check idempotency if idempotencyKey is supplied
+      if (input.idempotencyKey && existing.status === 'APPOINTMENT_SCHEDULED') {
+        const events = await serviceRequestEventRepository.listEventsByRequestId(input.requestId, conn);
+        const match = events.find((ev) => {
+          if (ev.eventType === 'APPOINTMENT_SCHEDULED' && ev.metadataJson) {
+            try {
+              const meta = typeof ev.metadataJson === 'string' ? JSON.parse(ev.metadataJson) : ev.metadataJson;
+              return meta?.idempotencyKey === input.idempotencyKey;
+            } catch {
+              return false;
+            }
+          }
+          return false;
+        });
+
+        if (match || existing.idempotencyKey === input.idempotencyKey) {
+          return {
+            serviceRequest: existing,
+            smsQueued: false,
+          };
+        }
       }
 
       // Step E: Parse and validate appointment date
@@ -201,6 +481,31 @@ export class AsfService {
         conn
       );
 
+      // Step H.1: If cross-location assignment, append auditable CROSS_LOCATION_ASSIGNMENT event
+      if (isCrossLocation) {
+        await serviceRequestEventRepository.createEvent(
+          {
+            requestId: input.requestId,
+            fromState: existing.status,
+            toState: existing.status,
+            eventType: 'CROSS_LOCATION_ASSIGNMENT',
+            triggeredByUserId: actor.userId,
+            triggeredByUsername: actor.username,
+            triggeredByRole: actor.roles[0] || 'ASF',
+            remarks: `Cross-location assignment: Technician ${engineer.fullName} (Home Center: ${engineer.locationId}) assigned to complaint at franchise ${targetLocationId}`,
+            metadataJson: {
+              fromLocationId: engineer.locationId,
+              toLocationId: targetLocationId,
+              engineerHomeLocationId: engineer.locationId,
+              ticketLocationId: targetLocationId,
+              engineerId: engineer.userId,
+              engineerName: engineer.fullName,
+            },
+          },
+          conn
+        );
+      }
+
       // Step I: Append Immutable Lifecycle Event
       await serviceRequestEventRepository.createEvent(
         {
@@ -221,6 +526,10 @@ export class AsfService {
             travelDistanceKm: input.travelDistanceKm,
             areaType: input.areaType,
             rescheduled: existing.status === 'APPOINTMENT_SCHEDULED',
+            crossLocation: isCrossLocation,
+            engineerHomeLocationId: engineer.locationId,
+            idempotencyKey: input.idempotencyKey,
+            reassignedFromEngineerId: existing.assignedEngineerId && existing.assignedEngineerId !== engineer.userId ? existing.assignedEngineerId : undefined,
           },
         },
         conn
@@ -270,9 +579,15 @@ export class AsfService {
       // Retrieve updated record
       const updated = await serviceRequestRepository.findById(input.requestId);
 
+      const allowDevOtp =
+        (process.env['NODE_ENV'] || env.NODE_ENV) !== 'production' &&
+        (process.env['ENABLE_DEV_OTP_PREVIEW'] || env.ENABLE_DEV_OTP_PREVIEW) === 'true' &&
+        (actor.roles.includes('ADMIN') || actor.roles.includes('ASF') || actor.roles.includes('ASF_MANAGER'));
+
       return {
         serviceRequest: updated!,
         smsQueued: Boolean(outboxItem),
+        devOtpPreview: allowDevOtp ? checkInOtp : undefined,
       };
     } catch (err) {
       await conn.rollback();
@@ -398,10 +713,16 @@ export class AsfService {
         notificationService.processNotification(outboxItem).catch(() => {});
       }
 
+      const allowDevOtp =
+        (process.env['NODE_ENV'] || env.NODE_ENV) !== 'production' &&
+        (process.env['ENABLE_DEV_OTP_PREVIEW'] || env.ENABLE_DEV_OTP_PREVIEW) === 'true' &&
+        (actor.roles.includes('ADMIN') || actor.roles.includes('ASF') || actor.roles.includes('ASF_MANAGER'));
+
       return {
         success: true,
         smsQueued: Boolean(outboxItem),
         message: 'New Check-In OTP generated and SMS acknowledgement sent to customer.',
+        devOtpPreview: allowDevOtp ? newOtp : undefined,
       };
     } catch (err) {
       await conn.rollback();

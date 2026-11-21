@@ -270,6 +270,39 @@ export class ReportingController {
       res.status(500).json({ success: false, message: err.message || 'Internal server error' });
     }
   }
+
+  async getServiceCenterWorkload(req: Request, res: Response): Promise<void> {
+    try {
+      const user = req.user as AuthenticatedUser;
+      const { page, limit, search, stateId, cityId, status, sortBy, sortDir } = req.query;
+
+      const result = await reportingService.getServiceCenterWorkload(
+        {
+          page: page ? Number(page) : undefined,
+          limit: limit ? Number(limit) : undefined,
+          search: search as string,
+          stateId: stateId as string,
+          cityId: cityId as string,
+          status: status as string,
+          sortBy: sortBy as string,
+          sortDir: sortDir as string,
+        },
+        user
+      );
+
+      res.json({
+        success: true,
+        data: {
+          items: result.items,
+          pagination: result.pagination,
+        },
+        pagination: result.pagination,
+      });
+    } catch (err: any) {
+      logger.error('Failed to generate service center workload', err);
+      res.status(500).json({ success: false, message: err.message || 'Internal server error' });
+    }
+  }
 }
 
 export const reportingController = new ReportingController();

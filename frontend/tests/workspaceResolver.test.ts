@@ -37,14 +37,14 @@ describe('Role-Based Landing Page Resolver (P0 Fix)', () => {
       expect(resolveDefaultWorkspace(user)).toBe('/call-center');
     });
 
-    it('should route ASF franchisee to /asf', () => {
+    it('should route ASF franchisee to /service-center', () => {
       const user = createMockUser(['ASF'], ['asf:read', 'calls:read']);
-      expect(resolveDefaultWorkspace(user)).toBe('/asf');
+      expect(resolveDefaultWorkspace(user)).toBe('/service-center');
     });
 
-    it('should route ENGINEER field technician to /asf', () => {
+    it('should route ENGINEER field technician to /engineer', () => {
       const user = createMockUser(['ENGINEER'], ['calls:read', 'calls:diagnose', 'calls:repair']);
-      expect(resolveDefaultWorkspace(user)).toBe('/asf');
+      expect(resolveDefaultWorkspace(user)).toBe('/engineer');
     });
 
     it('should route WAREHOUSE coordinator to /warehouse', () => {
@@ -141,10 +141,11 @@ describe('Role-Based Landing Page Resolver (P0 Fix)', () => {
       expect(isAuthorizedForPath(asf, '/warehouse')).toBe(false);
     });
 
-    it('should allow Field Engineer only on /asf', () => {
+    it('should allow Field Engineer on /engineer and assigned Job 360', () => {
       const eng = createMockUser(['ENGINEER'], ['calls:read', 'calls:diagnose', 'calls:repair']);
-      expect(isAuthorizedForPath(eng, '/asf')).toBe(true);
+      expect(isAuthorizedForPath(eng, '/engineer')).toBe(true);
       expect(isAuthorizedForPath(eng, '/asf/jobs/SR-2026-0001')).toBe(true);
+      expect(isAuthorizedForPath(eng, '/service-center/jobs/SR-2026-0001')).toBe(true);
       expect(isAuthorizedForPath(eng, '/admin')).toBe(false);
       expect(isAuthorizedForPath(eng, '/call-center')).toBe(false);
       expect(isAuthorizedForPath(eng, '/warehouse')).toBe(false);

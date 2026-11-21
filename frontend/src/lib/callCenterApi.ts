@@ -109,6 +109,16 @@ export interface ServiceRequest {
   registeredByUsername?: string;
   registeredAt: string;
   sla48hExpiresAt?: string;
+  acknowledgedAt?: string;
+  acknowledgedBy?: string;
+  acknowledgedByUsername?: string;
+  reassignmentRequested?: 'Y' | 'N';
+  reassignmentReason?: string;
+  reassignmentRemarks?: string;
+  reassignmentRequestedBy?: string;
+  reassignmentRequestedAt?: string;
+  assignmentSource?: string;
+  assignmentFailedReason?: string;
   versionNo: number;
   createdAt: string;
   updatedAt: string;
@@ -260,6 +270,7 @@ export const callCenterApi = {
     mobile?: string;
     serialNumber?: string;
     status?: string;
+    tab?: string;
     page?: number;
     limit?: number;
   }): Promise<PaginatedResult<ServiceRequest>> => {
@@ -269,10 +280,31 @@ export const callCenterApi = {
     if (params.mobile) query.set('mobile', params.mobile);
     if (params.serialNumber) query.set('serialNumber', params.serialNumber);
     if (params.status) query.set('status', params.status);
+    if (params.tab) query.set('tab', params.tab);
     if (params.page) query.set('page', String(params.page));
     if (params.limit) query.set('limit', String(params.limit));
 
     return apiClient.get<PaginatedResult<ServiceRequest>>(`/api/v1/call-center/requests?${query.toString()}`);
+  },
+
+  checkDuplicates: async (params: {
+    mobile?: string;
+    serialNumber?: string;
+    customerId?: string;
+    modelId?: string;
+  }): Promise<{
+    hasDuplicates: boolean;
+    duplicates: ServiceRequest[];
+  }> => {
+    const query = new URLSearchParams();
+    if (params.mobile) query.set('mobile', params.mobile);
+    if (params.serialNumber) query.set('serialNumber', params.serialNumber);
+    if (params.customerId) query.set('customerId', params.customerId);
+    if (params.modelId) query.set('modelId', params.modelId);
+
+    return apiClient.get<{ hasDuplicates: boolean; duplicates: ServiceRequest[] }>(
+      `/api/v1/call-center/complaints/check-duplicates?${query.toString()}`
+    );
   },
 
   getRecentRequests: async (limit = 10, status?: string): Promise<ServiceRequest[]> => {
@@ -363,6 +395,7 @@ export function useSearchServiceRequests(params: {
   mobile?: string;
   serialNumber?: string;
   status?: string;
+  tab?: string;
   page?: number;
   limit?: number;
 }) {
@@ -370,6 +403,23 @@ export function useSearchServiceRequests(params: {
     queryKey: ['callCenter', 'requests', params],
     queryFn: () => callCenterApi.searchRequests(params),
     staleTime: 15 * 1000,
+  });
+}
+
+export function useCheckDuplicates(params: {
+  mobile?: string;
+  serialNumber?: string;
+  customerId?: string;
+  modelId?: string;
+}) {
+  return useQuery({
+    queryKey: ['callCenter', 'checkDuplicates', params],
+    queryFn: () => callCenterApi.checkDuplicates(params),
+    enabled: Boolean(
+      (params.mobile && params.mobile.trim().length >= 10) ||
+        (params.serialNumber && params.serialNumber.trim().length >= 3)
+    ),
+    staleTime: 10 * 1000,
   });
 }
 

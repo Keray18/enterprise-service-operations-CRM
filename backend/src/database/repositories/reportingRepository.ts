@@ -1,5 +1,6 @@
 import oracledb from 'oracledb';
 import { getOracleConnection } from '../oraclePool.js';
+import { customerFeedbackRepository } from './customerFeedbackRepository.js';
 
 export interface CallRegisterFilter {
   fromDate?: string;
@@ -854,7 +855,7 @@ export class ReportingRepository {
       // 9. Operational Network Overview & Service Center Capacity Breakdown
       const networkSql = `
         SELECT 
-          (SELECT COUNT(*) FROM LOCATIONS WHERE PARTY_TYPE = 'ASF' AND IS_ACTIVE = 'Y') AS TOTAL_CENTERS,
+          (SELECT COUNT(*) FROM LOCATIONS WHERE PARTY_TYPE = 'ASF' AND IS_ACTIVE = 'Y' AND IS_TEST_FIXTURE = 'N') AS TOTAL_CENTERS,
           (SELECT COUNT(DISTINCT u.USER_ID) FROM APP_USERS u JOIN USER_ROLES ur ON u.USER_ID = ur.USER_ID JOIN ROLES r ON ur.ROLE_ID = r.ROLE_ID WHERE r.CODE = 'ENGINEER' AND u.IS_ACTIVE = 'Y') AS TOTAL_TECHNICIANS,
           (SELECT COUNT(*) FROM SERVICE_REQUESTS WHERE ASSIGNED_LOCATION_ID IS NOT NULL AND STATUS NOT IN ('CLOSED', 'CANCELLED', 'REPLACED')) AS ASSIGNED_REQUESTS,
           (SELECT COUNT(*) FROM SERVICE_REQUESTS WHERE STATUS NOT IN ('CLOSED', 'CANCELLED', 'REPLACED')) AS ACTIVE_JOBS,
@@ -893,7 +894,7 @@ export class ReportingRepository {
           (SELECT COUNT(DISTINCT u.USER_ID) FROM APP_USERS u JOIN USER_ROLES ur ON u.USER_ID = ur.USER_ID JOIN ROLES r ON ur.ROLE_ID = r.ROLE_ID WHERE r.CODE = 'ENGINEER' AND u.LOCATION_ID = l.LOCATION_ID AND u.IS_ACTIVE = 'Y') AS ACTIVE_TECHNICIANS
         FROM LOCATIONS l
         LEFT JOIN SERVICE_REQUESTS sr ON l.LOCATION_ID = sr.ASSIGNED_LOCATION_ID
-        WHERE l.PARTY_TYPE = 'ASF' AND l.IS_ACTIVE = 'Y'
+        WHERE l.PARTY_TYPE = 'ASF' AND l.IS_ACTIVE = 'Y' AND l.IS_TEST_FIXTURE = 'N'
         GROUP BY l.LOCATION_ID, l.LOCATION_CODE, l.LOCATION_NAME
         ORDER BY ASSIGNED_OPEN_JOBS DESC, l.LOCATION_NAME ASC
       `;
@@ -912,6 +913,8 @@ export class ReportingRepository {
         capacityConfigured: false,
         configuredCapacity: null,
       }));
+
+      const feedbackMetrics = await customerFeedbackRepository.getFeedbackMetrics(conn);
 
       return {
         period: {
@@ -957,6 +960,10 @@ export class ReportingRepository {
             happyCodeVerificationRate: happyRate,
             avgResolutionTatHours: avgTat,
             totalClosedWithTat: tot168,
+            feedbackPending: feedbackMetrics.pending,
+            feedbackReceived: feedbackMetrics.received,
+            averageCustomerRating: feedbackMetrics.averageRating,
+            lowRatingCases: feedbackMetrics.lowRatingCases,
           },
         },
         pendingActions: {
@@ -970,6 +977,195 @@ export class ReportingRepository {
           pendingSlaPenaltyCount: pendingPenaltiesCount,
         },
         recentActivity,
+      };
+    } finally {
+      await conn.close();
+    }
+  }
+
+  /**
+   * Paginated Service Center Network Workload for Admin Console.
+   * Supports search, state/city filter, active status, and sorting with server-side pagination.
+   */
+  async getServiceCenterWorkloadPaginated(options: {
+    page?: number;
+    limit?: number;
+    search?: string;
+    stateId?: string;
+    cityId?: string;
+    status?: string;
+    sortBy?: string;
+    sortDir?: string;
+  }): Promise<{
+    items: Array<{
+      locationId: string;
+      locationCode: string;
+      locationName: string;
+      stateId?: string;
+      stateName?: string;
+      cityId?: string;
+      cityName?: string;
+      isActive: boolean;
+      assignedOpenJobs: number;
+      awaitingAck: number;
+      inProgress: number;
+      pendingParts: number;
+      completedTotal: number;
+      overdueJobs: number;
+      activeTechnicians: number;
+      capacityConfigured: boolean;
+      configuredCapacity: number | null;
+    }>;
+    pagination: {
+      page: number;
+      limit: number;
+      total: number;
+      totalPages: number;
+    };
+  }> {
+    const conn = await getOracleConnection();
+    try {
+      const page = Math.max(1, Number(options.page) || 1);
+      const limit = Math.min(100, Math.max(1, Number(options.limit) || 10));
+      const offset = (page - 1) * limit;
+
+      const binds: Record<string, any> = { offset, limit };
+      const whereConditions: string[] = ["l.PARTY_TYPE = 'ASF'", "l.IS_TEST_FIXTURE = 'N'"];
+
+      if (options.status === 'INACTIVE') {
+        whereConditions.push("l.IS_ACTIVE = 'N'");
+      } else if (options.status !== 'ALL') {
+        whereConditions.push("l.IS_ACTIVE = 'Y'");
+      }
+
+      if (options.stateId) {
+        binds.stateId = options.stateId;
+        whereConditions.push("NVL(l.STATE_ID, p_first.STATE_ID) = :stateId");
+      }
+
+      if (options.cityId) {
+        binds.cityId = options.cityId;
+        whereConditions.push("p_first.CITY_ID = :cityId");
+      }
+
+      if (options.search && options.search.trim()) {
+        binds.search = `%${options.search.trim().toUpperCase()}%`;
+        whereConditions.push(
+          "(UPPER(l.LOCATION_NAME) LIKE :search OR UPPER(l.LOCATION_CODE) LIKE :search OR UPPER(c.CITY_NAME) LIKE :search OR UPPER(NVL(s.STATE_NAME, pin_s.STATE_NAME)) LIKE :search)"
+        );
+      }
+
+      const sortDir = (options.sortDir || '').toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
+      let sortColumn = 'ASSIGNED_OPEN_JOBS';
+      switch (options.sortBy) {
+        case 'locationName':
+          sortColumn = 'LOCATION_NAME';
+          break;
+        case 'locationCode':
+          sortColumn = 'LOCATION_CODE';
+          break;
+        case 'stateName':
+          sortColumn = 'STATE_NAME';
+          break;
+        case 'cityName':
+          sortColumn = 'CITY_NAME';
+          break;
+        case 'awaitingAck':
+          sortColumn = 'AWAITING_ACK';
+          break;
+        case 'inProgress':
+          sortColumn = 'IN_PROGRESS';
+          break;
+        case 'pendingParts':
+          sortColumn = 'PENDING_PARTS';
+          break;
+        case 'overdueJobs':
+          sortColumn = 'OVERDUE_JOBS';
+          break;
+        case 'activeTechnicians':
+          sortColumn = 'ACTIVE_TECHNICIANS';
+          break;
+        case 'assignedOpenJobs':
+        default:
+          sortColumn = 'ASSIGNED_OPEN_JOBS';
+          break;
+      }
+
+      const sortClause = `${sortColumn} ${sortDir}, LOCATION_NAME ASC`;
+
+      const sql = `
+        WITH Aggregated AS (
+          SELECT 
+            l.LOCATION_ID,
+            l.LOCATION_CODE,
+            l.LOCATION_NAME,
+            NVL(l.STATE_ID, p_first.STATE_ID) AS STATE_ID,
+            NVL(s.STATE_NAME, pin_s.STATE_NAME) AS STATE_NAME,
+            p_first.CITY_ID,
+            c.CITY_NAME,
+            l.IS_ACTIVE,
+            COUNT(CASE WHEN sr.STATUS NOT IN ('CLOSED', 'CANCELLED', 'REPLACED') THEN 1 END) AS ASSIGNED_OPEN_JOBS,
+            COUNT(CASE WHEN sr.STATUS IN ('REGISTERED', 'ASSIGNED_TO_ASF') AND sr.ACKNOWLEDGED_AT IS NULL THEN 1 END) AS AWAITING_ACK,
+            COUNT(CASE WHEN sr.STATUS IN ('APPOINTMENT_SCHEDULED', 'TECHNICIAN_CHECKED_IN', 'IN_PROGRESS_REPAIR') THEN 1 END) AS IN_PROGRESS,
+            COUNT(CASE WHEN sr.STATUS IN ('PENDING_SPARE_PART', 'PENDING_SPECIAL_PART_ESTIMATE', 'SPECIAL_PART_ESTIMATE_PROVIDED') THEN 1 END) AS PENDING_PARTS,
+            COUNT(CASE WHEN sr.STATUS = 'CLOSED' THEN 1 END) AS COMPLETED_TOTAL,
+            COUNT(CASE WHEN sr.STATUS NOT IN ('CLOSED', 'CANCELLED', 'REPLACED') AND (sr.SLA_BREACHED_48H = 'Y' OR (sr.ACKNOWLEDGED_AT IS NULL AND SYSTIMESTAMP > sr.SLA_48H_EXPIRES_AT) OR sr.SLA_BREACHED_168H = 'Y') THEN 1 END) AS OVERDUE_JOBS,
+            (SELECT COUNT(DISTINCT u.USER_ID) FROM APP_USERS u JOIN USER_ROLES ur ON u.USER_ID = ur.USER_ID JOIN ROLES r ON ur.ROLE_ID = r.ROLE_ID WHERE r.CODE = 'ENGINEER' AND u.LOCATION_ID = l.LOCATION_ID AND u.IS_ACTIVE = 'Y') AS ACTIVE_TECHNICIANS
+          FROM LOCATIONS l
+          LEFT JOIN STATES s ON l.STATE_ID = s.STATE_ID
+          LEFT JOIN (
+            SELECT DEFAULT_ASF_ID, CITY_ID, STATE_ID, PINCODE,
+                   ROW_NUMBER() OVER (PARTITION BY DEFAULT_ASF_ID ORDER BY PINCODE ASC) as RN
+            FROM PINCODES
+            WHERE DEFAULT_ASF_ID IS NOT NULL
+          ) p_first ON l.LOCATION_ID = p_first.DEFAULT_ASF_ID AND p_first.RN = 1
+          LEFT JOIN CITIES c ON p_first.CITY_ID = c.CITY_ID
+          LEFT JOIN STATES pin_s ON p_first.STATE_ID = pin_s.STATE_ID
+          LEFT JOIN SERVICE_REQUESTS sr ON l.LOCATION_ID = sr.ASSIGNED_LOCATION_ID
+          WHERE ${whereConditions.join(' AND ')}
+          GROUP BY l.LOCATION_ID, l.LOCATION_CODE, l.LOCATION_NAME, l.STATE_ID, p_first.STATE_ID, s.STATE_NAME, pin_s.STATE_NAME, p_first.CITY_ID, c.CITY_NAME, l.IS_ACTIVE
+        )
+        SELECT 
+          Aggregated.*,
+          COUNT(*) OVER() AS TOTAL_RECORDS
+        FROM Aggregated
+        ORDER BY ${sortClause}
+        OFFSET :offset ROWS FETCH NEXT :limit ROWS ONLY
+      `;
+
+      const result = await conn.execute<any>(sql, binds, { outFormat: oracledb.OUT_FORMAT_OBJECT });
+      const rows = result.rows || [];
+      const total = rows.length > 0 ? Number(rows[0].TOTAL_RECORDS || 0) : 0;
+      const totalPages = Math.ceil(total / limit) || 1;
+
+      const items = rows.map((r) => ({
+        locationId: r.LOCATION_ID,
+        locationCode: r.LOCATION_CODE,
+        locationName: r.LOCATION_NAME,
+        stateId: r.STATE_ID || undefined,
+        stateName: r.STATE_NAME || undefined,
+        cityId: r.CITY_ID || undefined,
+        cityName: r.CITY_NAME || undefined,
+        isActive: r.IS_ACTIVE === 'Y',
+        assignedOpenJobs: Number(r.ASSIGNED_OPEN_JOBS || 0),
+        awaitingAck: Number(r.AWAITING_ACK || 0),
+        inProgress: Number(r.IN_PROGRESS || 0),
+        pendingParts: Number(r.PENDING_PARTS || 0),
+        completedTotal: Number(r.COMPLETED_TOTAL || 0),
+        overdueJobs: Number(r.OVERDUE_JOBS || 0),
+        activeTechnicians: Number(r.ACTIVE_TECHNICIANS || 0),
+        capacityConfigured: false,
+        configuredCapacity: null,
+      }));
+
+      return {
+        items,
+        pagination: {
+          page,
+          limit,
+          total,
+          totalPages,
+        },
       };
     } finally {
       await conn.close();
@@ -1044,6 +1240,10 @@ export interface AdminDashboardData {
       happyCodeVerificationRate: number;
       avgResolutionTatHours: number;
       totalClosedWithTat: number;
+      feedbackPending?: number;
+      feedbackReceived?: number;
+      averageCustomerRating?: number | null;
+      lowRatingCases?: number;
     };
   };
   pendingActions: {

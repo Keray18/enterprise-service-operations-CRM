@@ -29,6 +29,10 @@ import TextField from '@mui/material/TextField';
 import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
 import Alert from '@mui/material/Alert';
+import Dialog from '@mui/material/Dialog';
+import DialogTitle from '@mui/material/DialogTitle';
+import DialogContent from '@mui/material/DialogContent';
+import DialogActions from '@mui/material/DialogActions';
 
 import AssignmentIcon from '@mui/icons-material/Assignment';
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
@@ -58,23 +62,26 @@ import {
   AsfQueueFilters,
   AsfQueueItem,
   ServiceCenterQueueView,
+  useAcknowledgeComplaint,
   useAsfQueue,
   useEligibleEngineers,
   useEngineerJobs,
   useEvaluateSla,
+  useReassignComplaint,
+  useRejectAssignment,
 } from '../../../lib/asfApi';
-import { useProducts } from '../../../lib/catalogApi';
+import { useLocations, useProducts } from '../../../lib/catalogApi';
 import { DispatchModal } from './components/DispatchModal';
 import { TechnicianCheckInDialog } from './components/TechnicianCheckInDialog';
 
 export default function AsfFranchisePage() {
   const { user, hasPermission } = useAuth();
   const isEngineerOnly = Boolean(
-    user?.roles.includes('ENGINEER') && !user?.roles.includes('ASF') && !user?.roles.includes('ADMIN')
+    user?.roles?.includes('ENGINEER') && !user?.roles?.includes('ASF') && !user?.roles?.includes('ADMIN')
   );
-  const canManageSla = Boolean(user?.roles.includes('ADMIN') || hasPermission('sla:manage'));
+  const canManageSla = Boolean(user?.roles?.includes('ADMIN') || hasPermission('sla:manage'));
   const canAssignTechnician = Boolean(
-    user?.roles.includes('ADMIN') || user?.roles.includes('ASF') || hasPermission('calls:assign') || hasPermission('asf:manage')
+    user?.roles?.includes('ADMIN') || user?.roles?.includes('ASF') || hasPermission('calls:assign') || hasPermission('asf:manage')
   );
   const [currentTab, setCurrentTab] = useState<ServiceCenterQueueView>('all');
   const [searchTerm, setSearchTerm] = useState('');
@@ -91,6 +98,29 @@ export default function AsfFranchisePage() {
   const [dispatchModalOpen, setDispatchModalOpen] = useState(false);
   const [checkInModalOpen, setCheckInModalOpen] = useState(false);
   const [slaAlertMessage, setSlaAlertMessage] = useState<string | null>(null);
+
+  // Operational mutations
+  const acknowledgeMutation = useAcknowledgeComplaint();
+  const rejectMutation = useRejectAssignment();
+  const reassignMutation = useReassignComplaint();
+
+  // Rejection Dialog state
+  const [rejectModalOpen, setRejectModalOpen] = useState(false);
+  const [rejectTicket, setRejectTicket] = useState<AsfQueueItem | null>(null);
+  const [rejectReason, setRejectReason] = useState<
+    'UNSUPPORTED_PRODUCT' | 'INCORRECT_ASSIGNMENT' | 'CAPACITY_EXCEEDED' | 'OUT_OF_TERRITORY' | 'OTHER'
+  >('INCORRECT_ASSIGNMENT');
+  const [rejectRemarks, setRejectRemarks] = useState('');
+  const [rejectError, setRejectError] = useState<string | null>(null);
+
+  // Reassign Dialog state (Admin only)
+  const [reassignModalOpen, setReassignModalOpen] = useState(false);
+  const [reassignTicket, setReassignTicket] = useState<AsfQueueItem | null>(null);
+  const [reassignLocationId, setReassignLocationId] = useState('');
+  const [reassignRemarks, setReassignRemarks] = useState('');
+  const [reassignError, setReassignError] = useState<string | null>(null);
+
+  const locationsQuery = useLocations({ partyType: 'ASF', limit: 100 });
 
   // Queries
   const queueFilters: AsfQueueFilters = {
@@ -117,7 +147,7 @@ export default function AsfFranchisePage() {
   const total = data?.total || 0;
 
   // Technicians & Products for filter dropdowns
-  const engineersQuery = useEligibleEngineers(user?.locationId);
+  const engineersQuery = useEligibleEngineers();
   const productsQuery = useProducts({ limit: 100 });
 
   const evaluateSlaMutation = useEvaluateSla();
@@ -157,11 +187,78 @@ export default function AsfFranchisePage() {
     }
   };
 
+  const handleAcknowledge = async (ticket: AsfQueueItem) => {
+    try {
+      await acknowledgeMutation.mutateAsync({
+        requestId: ticket.requestId,
+      });
+      setSlaAlertMessage(`Ticket #${ticket.jobNumber} acknowledged successfully. 48h SLA timer stopped.`);
+    } catch (err: any) {
+      setSlaAlertMessage(`Failed to acknowledge ticket: ${err?.message || 'Unknown error'}`);
+    }
+  };
+
+  const handleOpenReject = (ticket: AsfQueueItem) => {
+    setRejectTicket(ticket);
+    setRejectReason('INCORRECT_ASSIGNMENT');
+    setRejectRemarks('');
+    setRejectError(null);
+    setRejectModalOpen(true);
+  };
+
+  const handleSubmitReject = async () => {
+    if (!rejectTicket) return;
+    if (!rejectRemarks.trim()) {
+      setRejectError('Remarks are required for rejecting an assignment.');
+      return;
+    }
+    try {
+      await rejectMutation.mutateAsync({
+        requestId: rejectTicket.requestId,
+        reason: rejectReason,
+        remarks: rejectRemarks.trim(),
+      });
+      setRejectModalOpen(false);
+      setSlaAlertMessage(`Assignment rejected for ticket #${rejectTicket.jobNumber}. Ticket moved to Assignment Required queue.`);
+    } catch (err: any) {
+      setRejectError(err?.message || 'Failed to reject assignment');
+    }
+  };
+
+  const handleOpenReassign = (ticket: AsfQueueItem) => {
+    setReassignTicket(ticket);
+    setReassignLocationId('');
+    setReassignRemarks('');
+    setReassignError(null);
+    setReassignModalOpen(true);
+  };
+
+  const handleSubmitReassign = async () => {
+    if (!reassignTicket || !reassignLocationId) {
+      setReassignError('Target Service Center location is required.');
+      return;
+    }
+    try {
+      await reassignMutation.mutateAsync({
+        requestId: reassignTicket.requestId,
+        newLocationId: reassignLocationId,
+        remarks: reassignRemarks.trim() || undefined,
+      });
+      setReassignModalOpen(false);
+      setSlaAlertMessage(`Ticket #${reassignTicket.jobNumber} successfully reassigned.`);
+    } catch (err: any) {
+      setReassignError(err?.message || 'Failed to reassign service request');
+    }
+  };
+
   // Derive summary metrics from current items
   const countUnack = items.filter((i) => !i.acknowledgedAt).length;
   const countReadyAssign = items.filter((i) => ['REGISTERED', 'ASSIGNED_TO_ASF', 'ACKNOWLEDGED'].includes(i.status) && !i.assignedEngineerId).length;
   const countPartsPending = items.filter((i) => i.status === 'PENDING_SPARE_PART').length;
   const countOverdue = items.filter((i) => i.slaBreached48h === 'Y' || i.slaStatus?.isBreached).length;
+  const countAssignmentRequired = items.filter(
+    (i) => !i.assignedLocationId || i.reassignmentRequested === 'Y' || i.assignmentFailedReason
+  ).length;
 
   const hasActiveFilters = Boolean(
     searchTerm || selectedEngineerId || selectedProductId || selectedStatus || startDate || endDate
@@ -330,7 +427,7 @@ export default function AsfFranchisePage() {
             <Tab value="diagnosis_repair" label="6. In Diagnosis/Repair" />
             <Tab value="parts_pending" label="7. Parts Pending / PNA" />
             <Tab value="parts_dispatched" label="8. Parts Dispatched" />
-            <Tab value="awaiting_verification" label="9. Awaiting OTP / Closure" />
+            <Tab value="awaiting_verification" label="9. Awaiting Service Confirmation" />
             <Tab
               value="overdue"
               label={
@@ -338,6 +435,17 @@ export default function AsfFranchisePage() {
                   10. 48h Overdue
                   {countOverdue > 0 && (
                     <Chip label={countOverdue} size="small" color="error" sx={{ height: 18, fontSize: '0.65rem' }} />
+                  )}
+                </Box>
+              }
+            />
+            <Tab
+              value="assignment_required"
+              label={
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                  11. Assignment Required
+                  {countAssignmentRequired > 0 && (
+                    <Chip label={countAssignmentRequired} size="small" color="error" sx={{ height: 18, fontSize: '0.65rem' }} />
                   )}
                 </Box>
               }
@@ -510,6 +618,7 @@ export default function AsfFranchisePage() {
                 <TableCell sx={{ fontWeight: 700 }}>Job Number & Date</TableCell>
                 <TableCell sx={{ fontWeight: 700 }}>Customer & Location</TableCell>
                 <TableCell sx={{ fontWeight: 700 }}>Appliance & Issue</TableCell>
+                <TableCell sx={{ fontWeight: 700 }}>Service Center</TableCell>
                 <TableCell sx={{ fontWeight: 700 }}>48h SLA Status</TableCell>
                 <TableCell sx={{ fontWeight: 700 }}>Workflow State</TableCell>
                 <TableCell sx={{ fontWeight: 700 }}>Technician & Appointment</TableCell>
@@ -519,7 +628,7 @@ export default function AsfFranchisePage() {
             <TableBody>
               {activeQuery.isLoading ? (
                 <TableRow>
-                  <TableCell colSpan={7} align="center" sx={{ py: 6 }}>
+                  <TableCell colSpan={8} align="center" sx={{ py: 6 }}>
                     <CircularProgress size={32} />
                     <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
                       Loading authorized service center operations queue...
@@ -528,7 +637,7 @@ export default function AsfFranchisePage() {
                 </TableRow>
               ) : items.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={7} sx={{ py: 6 }}>
+                  <TableCell colSpan={8} sx={{ py: 6 }}>
                     <EmptyState
                       icon={<AssignmentIcon sx={{ fontSize: '3rem', color: 'primary.main', opacity: 0.5 }} />}
                       title="No service requests found"
@@ -598,6 +707,33 @@ export default function AsfFranchisePage() {
                         )}
                       </TableCell>
 
+                      {/* Service Center */}
+                      <TableCell>
+                        <Typography
+                          variant="body2"
+                          sx={{
+                            fontWeight: 600,
+                            color: ticket.assignedLocationName ? 'text.primary' : 'warning.main',
+                          }}
+                        >
+                          {ticket.assignedLocationName || 'Unassigned (Action Required)'}
+                        </Typography>
+                        {ticket.reassignmentRequested === 'Y' && (
+                          <Chip
+                            size="small"
+                            color="error"
+                            variant="outlined"
+                            label={`Reassign: ${ticket.reassignmentReason || 'Requested'}`}
+                            sx={{ fontSize: '0.65rem', height: 18, mt: 0.5 }}
+                          />
+                        )}
+                        {ticket.assignmentFailedReason && (
+                          <Typography variant="caption" color="error.main" display="block">
+                            {ticket.assignmentFailedReason}
+                          </Typography>
+                        )}
+                      </TableCell>
+
                       {/* 48h SLA Status */}
                       <TableCell>
                         {ticket.acknowledgedAt ? (
@@ -647,7 +783,7 @@ export default function AsfFranchisePage() {
 
                       {/* Actions */}
                       <TableCell align="right">
-                        <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: 1 }}>
+                        <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: 1, flexWrap: 'wrap' }}>
                           <Button
                             component={Link}
                             href={`/asf/jobs/${ticket.requestId}`}
@@ -660,6 +796,22 @@ export default function AsfFranchisePage() {
                             Job 360
                           </Button>
 
+                          {/* Step A: Acknowledge Complaint */}
+                          {!ticket.acknowledgedAt && ['REGISTERED', 'ASSIGNED_TO_ASF'].includes(ticket.status) && canAssignTechnician && (
+                            <Button
+                              size="small"
+                              variant="contained"
+                              color="warning"
+                              onClick={() => handleAcknowledge(ticket)}
+                              disabled={acknowledgeMutation.isPending}
+                              startIcon={<CheckCircleIcon sx={{ fontSize: 14 }} />}
+                              sx={{ textTransform: 'none', fontWeight: 600 }}
+                            >
+                              Acknowledge
+                            </Button>
+                          )}
+
+                          {/* Step B: Dispatch Engineer */}
                           {canDispatch && (
                             <Button
                               size="small"
@@ -673,6 +825,32 @@ export default function AsfFranchisePage() {
                             </Button>
                           )}
 
+                          {/* Reject Assignment */}
+                          {canAssignTechnician && ['REGISTERED', 'ASSIGNED_TO_ASF', 'ACKNOWLEDGED'].includes(ticket.status) && (
+                            <Button
+                              size="small"
+                              variant="outlined"
+                              color="error"
+                              onClick={() => handleOpenReject(ticket)}
+                              sx={{ textTransform: 'none', fontWeight: 600 }}
+                            >
+                              Reject
+                            </Button>
+                          )}
+
+                          {/* Reassign Service Center (Admin only) */}
+                          {Boolean(user?.roles?.includes('ADMIN')) && (
+                            <Button
+                              size="small"
+                              variant="outlined"
+                              color="secondary"
+                              onClick={() => handleOpenReassign(ticket)}
+                              sx={{ textTransform: 'none', fontWeight: 600 }}
+                            >
+                              Reassign
+                            </Button>
+                          )}
+
                           {isScheduled && (
                             <Button
                               size="small"
@@ -683,6 +861,20 @@ export default function AsfFranchisePage() {
                               sx={{ textTransform: 'none', fontWeight: 600 }}
                             >
                               Check-In (OTP)
+                            </Button>
+                          )}
+
+                          {ticket.status === 'CALL_CLOSURE_SUBMITTED' && (
+                            <Button
+                              component={Link}
+                              href={`/asf/jobs/${ticket.requestId}`}
+                              size="small"
+                              variant="contained"
+                              color="success"
+                              startIcon={<CheckCircleIcon sx={{ fontSize: 14 }} />}
+                              sx={{ textTransform: 'none', fontWeight: 600 }}
+                            >
+                              Confirm &amp; Close
                             </Button>
                           )}
 
@@ -739,6 +931,128 @@ export default function AsfFranchisePage() {
           activeQuery.refetch();
         }}
       />
+
+      {/* Reject Assignment Dialog */}
+      <Dialog
+        open={rejectModalOpen}
+        onClose={() => setRejectModalOpen(false)}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle sx={{ fontWeight: 700, color: 'error.main' }}>
+          Reject Complaint Assignment — #{rejectTicket?.jobNumber}
+        </DialogTitle>
+        <DialogContent dividers>
+          {rejectError && (
+            <Alert severity="error" sx={{ mb: 2 }}>
+              {rejectError}
+            </Alert>
+          )}
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+            Rejecting this assignment will return the complaint to the centralized <strong>Assignment Required</strong> queue for reassignment by an administrator. A mandatory reason and explanation must be provided.
+          </Typography>
+          <FormControl fullWidth size="small" sx={{ mb: 2 }}>
+            <InputLabel id="reject-reason-label">Rejection Reason *</InputLabel>
+            <Select
+              labelId="reject-reason-label"
+              value={rejectReason}
+              label="Rejection Reason *"
+              onChange={(e) => setRejectReason(e.target.value as any)}
+            >
+              <MenuItem value="INCORRECT_ASSIGNMENT">Incorrect Franchise / Pincode Mapping</MenuItem>
+              <MenuItem value="UNSUPPORTED_PRODUCT">Unsupported Product / Category</MenuItem>
+              <MenuItem value="CAPACITY_EXCEEDED">Franchise Operational Capacity Exceeded</MenuItem>
+              <MenuItem value="OUT_OF_TERRITORY">Out of Operational Territory / Distance</MenuItem>
+              <MenuItem value="OTHER">Other Operational Constraint</MenuItem>
+            </Select>
+          </FormControl>
+          <TextField
+            fullWidth
+            multiline
+            rows={3}
+            size="small"
+            label="Detailed Rejection Remarks *"
+            placeholder="Explain the specific reason why this complaint cannot be serviced..."
+            value={rejectRemarks}
+            onChange={(e) => setRejectRemarks(e.target.value)}
+          />
+        </DialogContent>
+        <DialogActions sx={{ p: 2, justifyContent: 'space-between' }}>
+          <Button variant="outlined" onClick={() => setRejectModalOpen(false)}>
+            Cancel
+          </Button>
+          <Button
+            variant="contained"
+            color="error"
+            onClick={handleSubmitReject}
+            disabled={rejectMutation.isPending || !rejectRemarks.trim()}
+          >
+            {rejectMutation.isPending ? 'Rejecting...' : 'Confirm Rejection'}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Admin Reassign Service Center Dialog */}
+      <Dialog
+        open={reassignModalOpen}
+        onClose={() => setReassignModalOpen(false)}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle sx={{ fontWeight: 700, color: 'primary.main' }}>
+          Reassign Service Center — #{reassignTicket?.jobNumber}
+        </DialogTitle>
+        <DialogContent dividers>
+          {reassignError && (
+            <Alert severity="error" sx={{ mb: 2 }}>
+              {reassignError}
+            </Alert>
+          )}
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+            Reassign complaint to a different active Service Center franchisee. The ticket will transition to <strong>ASSIGNED_TO_ASF</strong> and await acknowledgment by the destination center.
+          </Typography>
+          <FormControl fullWidth size="small" sx={{ mb: 2 }}>
+            <InputLabel id="reassign-asf-label">Target Service Center (ASF) *</InputLabel>
+            <Select
+              labelId="reassign-asf-label"
+              value={reassignLocationId}
+              label="Target Service Center (ASF) *"
+              onChange={(e) => setReassignLocationId(e.target.value)}
+            >
+              {(locationsQuery.data?.items || [])
+                .filter((loc) => loc.partyType === 'ASF' && loc.isActive === 'Y')
+                .map((loc) => (
+                  <MenuItem key={loc.locationId} value={loc.locationId}>
+                    {loc.locationName} ({loc.locationCode})
+                  </MenuItem>
+                ))}
+            </Select>
+          </FormControl>
+          <TextField
+            fullWidth
+            multiline
+            rows={2}
+            size="small"
+            label="Reassignment Notes (Optional)"
+            placeholder="Optional instructions for destination service center..."
+            value={reassignRemarks}
+            onChange={(e) => setReassignRemarks(e.target.value)}
+          />
+        </DialogContent>
+        <DialogActions sx={{ p: 2, justifyContent: 'space-between' }}>
+          <Button variant="outlined" onClick={() => setReassignModalOpen(false)}>
+            Cancel
+          </Button>
+          <Button
+            variant="contained"
+            color="primary"
+            onClick={handleSubmitReassign}
+            disabled={reassignMutation.isPending || !reassignLocationId}
+          >
+            {reassignMutation.isPending ? 'Reassigning...' : 'Confirm Reassignment'}
+          </Button>
+        </DialogActions>
+      </Dialog>
     </ProtectedRoute>
   );
 }

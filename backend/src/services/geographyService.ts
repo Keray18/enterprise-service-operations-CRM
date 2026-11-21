@@ -640,9 +640,20 @@ export class GeographyService {
     return updated;
   }
 
-  // Locations lookup for default ASF mapping
-  async listLocations(options: { search?: string; partyType?: string; isActive?: 'Y' | 'N'; page: number; limit: number }): Promise<PaginatedResult<LocationRecord>> {
+  // Locations lookup for default ASF mapping and global selectors
+  async listLocations(options: {
+    search?: string;
+    partyType?: string | string[];
+    isActive?: 'Y' | 'N';
+    includeTestFixtures?: boolean;
+    page: number;
+    limit: number;
+  }): Promise<PaginatedResult<LocationRecord>> {
     return this.locationRepo.listLocations(options);
+  }
+
+  async getLocationById(id: string): Promise<LocationRecord | null> {
+    return this.locationRepo.findById(id);
   }
 }
 

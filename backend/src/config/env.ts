@@ -22,6 +22,9 @@ const envSchema = z.object({
   ORACLE_POOL_INCREMENT: z.coerce.number().int().positive().default(1),
   ORACLE_POOL_TIMEOUT: z.coerce.number().int().positive().default(60),
   ORACLE_QUEUE_TIMEOUT: z.coerce.number().int().positive().default(60000),
+  DEFAULT_ASF_CODE: z.string().default('ASF_8441'),
+  ENABLE_DEV_OTP_PREVIEW: z.enum(['true', 'false']).default('false'),
+  ALLOW_GLOBAL_DEFAULT_FALLBACK: z.enum(['true', 'false']).default('false'),
   // Phase 2A.1 Cryptographic Secrets
   OTP_HASH_PEPPER: z.string().min(32, 'OTP_HASH_PEPPER must be at least 32 characters'),
   NOTIFICATION_ENCRYPTION_KEY: z.string().refine((k) => {

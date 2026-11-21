@@ -155,9 +155,32 @@ export interface Location {
   locationName: string;
   partyType: string;
   isActive: 'Y' | 'N';
+  isDefault?: 'Y' | 'N';
+  isTestFixture?: 'Y' | 'N' | boolean;
+  dataOrigin?: string;
+  stateId?: string;
+  stateName?: string;
+  cityName?: string;
+  pincode?: string;
+  // Standardized client properties
+  id?: string;
+  code?: string;
+  name?: string;
+  city?: string;
+  state?: string;
   versionNo: number;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface LocationParams {
+  search?: string;
+  q?: string;
+  partyType?: string;
+  isActive?: 'Y' | 'N';
+  includeTestFixtures?: boolean;
+  page?: number;
+  limit?: number;
 }
 
 export interface Pincode {
@@ -540,9 +563,12 @@ export const catalogApi = {
   toggleCityStatus: (id: string, payload: StatusTogglePayload) =>
     apiClient.patch<City>(`/api/v1/geography/cities/${id}/status`, payload),
 
-  // Geography: Locations (for Default ASF selector)
-  getLocations: (params: { search?: string; partyType?: string; isActive?: 'Y' | 'N'; page?: number; limit?: number } = {}) =>
+  // Geography: Locations (for Default ASF selector and global location selectors)
+  getLocations: (params: LocationParams = {}) =>
     apiClient.get<PaginatedResponse<Location>>(`/api/v1/geography/locations${toQueryString(params)}`),
+
+  getLocation: (id: string) =>
+    apiClient.get<Location>(`/api/v1/geography/locations/${encodeURIComponent(id)}`),
 
   // Geography: Pincodes & Serviceability
   getPincodes: (params: PincodeParams = {}) =>
@@ -600,6 +626,7 @@ export const CATALOG_QUERY_KEYS = {
   cities: (params?: CityParams) => ['geography', 'cities', params] as const,
   city: (id: string) => ['geography', 'city', id] as const,
   locations: (params?: Record<string, any>) => ['geography', 'locations', params] as const,
+  location: (id: string) => ['geography', 'location', id] as const,
   pincodes: (params?: PincodeParams) => ['geography', 'pincodes', params] as const,
   pincode: (id: string) => ['geography', 'pincode', id] as const,
   pincodeLookup: (code: string) => ['geography', 'pincodeLookup', code] as const,
@@ -947,11 +974,19 @@ export function useToggleCityStatus() {
   });
 }
 
-// Geography: Locations (ASF) Hook
-export function useLocations(params: { search?: string; partyType?: string; isActive?: 'Y' | 'N'; page?: number; limit?: number } = {}) {
+// Geography: Locations Hook
+export function useLocations(params: LocationParams = {}) {
   return useQuery({
     queryKey: CATALOG_QUERY_KEYS.locations(params),
     queryFn: () => catalogApi.getLocations(params),
+  });
+}
+
+export function useLocation(id?: string) {
+  return useQuery({
+    queryKey: CATALOG_QUERY_KEYS.location(id || ''),
+    queryFn: () => catalogApi.getLocation(id!),
+    enabled: Boolean(id),
   });
 }
 

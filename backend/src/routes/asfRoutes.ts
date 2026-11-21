@@ -46,6 +46,39 @@ asfRoutes.get(
 );
 
 /**
+ * POST /api/v1/asf/requests/:id/acknowledge
+ * Step A: Acknowledges complaint, records manager identity and timestamp, stops 48h SLA timer.
+ */
+asfRoutes.post(
+  '/requests/:id/acknowledge',
+  requireCsrf,
+  requireAnyPermission('asf:manage', 'calls:update', 'calls:assign'),
+  asfController.acknowledge.bind(asfController)
+);
+
+/**
+ * POST /api/v1/asf/requests/:id/reject-assignment
+ * Operational exception: rejects assignment with mandatory reason, placing complaint in Assignment Required queue.
+ */
+asfRoutes.post(
+  '/requests/:id/reject-assignment',
+  requireCsrf,
+  requireAnyPermission('asf:manage', 'calls:update', 'calls:assign'),
+  asfController.rejectAssignment.bind(asfController)
+);
+
+/**
+ * POST /api/v1/asf/requests/:id/reassign
+ * Administrative reassignment: transfers service request to another Service Center (Admin only).
+ */
+asfRoutes.post(
+  '/requests/:id/reassign',
+  requireCsrf,
+  requirePermission('asf:manage'),
+  asfController.reassign.bind(asfController)
+);
+
+/**
  * POST /api/v1/asf/requests/:id/dispatch
  * Single-commit dispatch workflow: sets appointment, assigns technician, generates Check-In OTP,
  * logs lifecycle event, and queues SMS 2.
@@ -247,6 +280,17 @@ asfRoutes.post(
   requireCsrf,
   requirePermission('calls:close'),
   job360Controller.regenerateHappyCode.bind(job360Controller)
+);
+
+/**
+ * POST /api/v1/asf/jobs/:id/closure/return
+ * Returns repair to field engineer for correction with mandatory justification.
+ */
+asfRoutes.post(
+  '/jobs/:id/closure/return',
+  requireCsrf,
+  requirePermission('calls:close'),
+  job360Controller.returnRepair.bind(job360Controller)
 );
 
 /**

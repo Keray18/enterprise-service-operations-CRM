@@ -1,5 +1,19 @@
 import { ServiceRequestWithRelationsRecord } from './callCenter.js';
 
+export interface EligibleEngineerRecord {
+  userId: string;
+  username: string;
+  fullName: string;
+  phoneNumber?: string;
+  email?: string;
+  isActive: 'Y' | 'N';
+  homeLocationId?: string;
+  homeLocationCode?: string;
+  homeLocationName?: string;
+  openJobCount: number;
+  availabilityStatus: 'AVAILABLE' | 'ACTIVE' | 'BUSY';
+}
+
 export interface DispatchComplaintInput {
   requestId: string;
   appointmentDate: string; // ISO 8601 string, e.g. "2026-10-21T10:00:00Z"
@@ -14,6 +28,7 @@ export interface DispatchComplaintInput {
 export interface DispatchComplaintResponse {
   serviceRequest: ServiceRequestWithRelationsRecord;
   smsQueued: boolean;
+  devOtpPreview?: string;
 }
 
 export interface CheckInComplaintInput {
@@ -41,6 +56,43 @@ export interface RegenerateOtpResponse {
   success: boolean;
   smsQueued: boolean;
   message: string;
+  devOtpPreview?: string;
+}
+
+export interface AcknowledgeComplaintInput {
+  requestId: string;
+  remarks?: string;
+}
+
+export interface AcknowledgeComplaintResponse {
+  serviceRequest: ServiceRequestWithRelationsRecord;
+  acknowledgedAt: string;
+  acknowledgedBy: string;
+}
+
+export interface RejectAssignmentInput {
+  requestId: string;
+  reason: 'UNSUPPORTED_PRODUCT' | 'INCORRECT_ASSIGNMENT' | 'CAPACITY_EXCEEDED' | 'OUT_OF_TERRITORY' | 'OTHER';
+  remarks: string;
+}
+
+export interface RejectAssignmentResponse {
+  serviceRequest: ServiceRequestWithRelationsRecord;
+  reassignmentRequested: boolean;
+  message: string;
+}
+
+export interface ReassignComplaintInput {
+  requestId: string;
+  newLocationId: string;
+  remarks?: string;
+  preserveAssignment?: boolean;
+}
+
+export interface ReassignComplaintResponse {
+  serviceRequest: ServiceRequestWithRelationsRecord;
+  assignedLocationId: string;
+  message: string;
 }
 
 export interface AsfQueueFilters {
@@ -57,7 +109,8 @@ export interface AsfQueueFilters {
     | 'parts_pending'
     | 'parts_dispatched'
     | 'awaiting_verification'
-    | 'overdue';
+    | 'overdue'
+    | 'assignment_required';
   locationId?: string;
   assignedEngineerId?: string;
   productId?: string;

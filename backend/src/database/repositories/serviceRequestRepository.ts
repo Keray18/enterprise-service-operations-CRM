@@ -8,6 +8,11 @@ import {
   WarrantyStatus,
 } from '../../types/callCenter.js';
 import { PaginatedResult } from '../../types/catalog.js';
+import {
+  EngineerJobsParams,
+  EngineerKpisRecord,
+  ReassignEngineerJobsResult,
+} from '../../types/engineer.js';
 import { normalizeIndianMobile } from '../../utils/phoneUtils.js';
 import { getOracleConnection } from '../oraclePool.js';
 
@@ -42,6 +47,15 @@ function mapRowToServiceRequest(row: any): ServiceRequestWithRelationsRecord {
     registeredAt: new Date(row.REGISTERED_AT),
     sla48hExpiresAt: row.SLA_48H_EXPIRES_AT ? new Date(row.SLA_48H_EXPIRES_AT) : undefined,
     acknowledgedAt: row.ACKNOWLEDGED_AT ? new Date(row.ACKNOWLEDGED_AT) : undefined,
+    acknowledgedBy: row.ACKNOWLEDGED_BY || undefined,
+    acknowledgedByUsername: row.ACKNOWLEDGED_BY_USERNAME || undefined,
+    reassignmentRequested: row.REASSIGNMENT_REQUESTED || 'N',
+    reassignmentReason: row.REASSIGNMENT_REASON || undefined,
+    reassignmentRemarks: row.REASSIGNMENT_REMARKS || undefined,
+    reassignmentRequestedBy: row.REASSIGNMENT_REQUESTED_BY || undefined,
+    reassignmentRequestedAt: row.REASSIGNMENT_REQUESTED_AT ? new Date(row.REASSIGNMENT_REQUESTED_AT) : undefined,
+    assignmentSource: row.ASSIGNMENT_SOURCE || 'AUTOMATIC_DEFAULT_ASF',
+    assignmentFailedReason: row.ASSIGNMENT_FAILED_REASON || undefined,
     appointmentDate: row.APPOINTMENT_DATE ? new Date(row.APPOINTMENT_DATE) : undefined,
     appointmentSlot: row.APPOINTMENT_SLOT || undefined,
     travelDistanceKm: row.TRAVEL_DISTANCE_KM != null ? Number(row.TRAVEL_DISTANCE_KM) : undefined,
@@ -142,6 +156,15 @@ const BASE_SELECT_SQL = `
     sr.REGISTERED_AT,
     sr.SLA_48H_EXPIRES_AT,
     sr.ACKNOWLEDGED_AT,
+    sr.ACKNOWLEDGED_BY,
+    sr.ACKNOWLEDGED_BY_USERNAME,
+    sr.REASSIGNMENT_REQUESTED,
+    sr.REASSIGNMENT_REASON,
+    sr.REASSIGNMENT_REMARKS,
+    sr.REASSIGNMENT_REQUESTED_BY,
+    sr.REASSIGNMENT_REQUESTED_AT,
+    sr.ASSIGNMENT_SOURCE,
+    sr.ASSIGNMENT_FAILED_REASON,
     sr.APPOINTMENT_DATE,
     sr.APPOINTMENT_SLOT,
     sr.TRAVEL_DISTANCE_KM,
@@ -267,6 +290,8 @@ export class ServiceRequestRepository {
       status: ServiceRequestStatus;
       warrantyStatus: WarrantyStatus;
       assignedLocationId?: string;
+      assignmentSource?: 'AUTOMATIC_DEFAULT_ASF' | 'MANUAL_ROUTING' | 'REASSIGNMENT' | 'GEOGRAPHIC_PINCODE' | 'UNASSIGNED_PENDING';
+      assignmentFailedReason?: string;
       vocId?: string;
       vocDescription?: string;
       problemDescription?: string;
@@ -301,6 +326,8 @@ export class ServiceRequestRepository {
         STATUS,
         WARRANTY_STATUS,
         ASSIGNED_LOCATION_ID,
+        ASSIGNMENT_SOURCE,
+        ASSIGNMENT_FAILED_REASON,
         VOC_ID,
         VOC_DESCRIPTION,
         PROBLEM_DESCRIPTION,
@@ -330,6 +357,8 @@ export class ServiceRequestRepository {
         :status,
         :warrantyStatus,
         :assignedLocationId,
+        :assignmentSource,
+        :assignmentFailedReason,
         :vocId,
         :vocDescription,
         :problemDescription,
@@ -362,6 +391,8 @@ export class ServiceRequestRepository {
       status: data.status,
       warrantyStatus: data.warrantyStatus,
       assignedLocationId: data.assignedLocationId || null,
+      assignmentSource: data.assignmentSource || (data.assignedLocationId ? 'AUTOMATIC_DEFAULT_ASF' : 'UNASSIGNED_PENDING'),
+      assignmentFailedReason: data.assignmentFailedReason || null,
       vocId: data.vocId || null,
       vocDescription: data.vocDescription || null,
       problemDescription: data.problemDescription || null,
@@ -452,6 +483,7 @@ export class ServiceRequestRepository {
     serialNumber?: string;
     customerId?: string;
     status?: string;
+    tab?: 'all' | 'new_registered' | 'assigned_asf' | 'in_progress' | 'closed' | string;
     page?: number;
     limit?: number;
   }): Promise<PaginatedResult<ServiceRequestWithRelationsRecord>> {
@@ -497,7 +529,19 @@ export class ServiceRequestRepository {
         whereClauses.push('sr.CUSTOMER_ID = :customerId');
       }
 
-      if (options.status) {
+      if (options.tab) {
+        if (options.tab === 'new_registered') {
+          whereClauses.push("sr.STATUS = 'REGISTERED' AND sr.ASSIGNED_LOCATION_ID IS NULL");
+        } else if (options.tab === 'assigned_asf') {
+          whereClauses.push("sr.ASSIGNED_LOCATION_ID IS NOT NULL AND sr.STATUS NOT IN ('CLOSED', 'CANCELLED', 'REPLACED')");
+        } else if (options.tab === 'in_progress') {
+          whereClauses.push("sr.STATUS IN ('ACKNOWLEDGED', 'APPOINTMENT_SCHEDULED', 'TECHNICIAN_CHECKED_IN', 'IN_PROGRESS_REPAIR', 'PENDING_SPARE_PART', 'PART_DISPATCHED_TO_ASF', 'PENDING_SPECIAL_PART_ESTIMATE', 'SPECIAL_PART_ESTIMATE_PROVIDED', 'CALL_CLOSURE_SUBMITTED')");
+        } else if (options.tab === 'closed') {
+          whereClauses.push("sr.STATUS IN ('CLOSED', 'REPLACED', 'CANCELLED')");
+        } else if (options.tab === 'all') {
+          // No status restriction
+        }
+      } else if (options.status) {
         binds.status = options.status;
         whereClauses.push('sr.STATUS = :status');
       }
@@ -579,6 +623,212 @@ export class ServiceRequestRepository {
       return (result.rows || []).map(mapRowToServiceRequest);
     } finally {
       await conn.close();
+    }
+  }
+
+  /**
+   * Checks for duplicate open complaints by customer mobile, serial number, or customer ID.
+   */
+  async findDuplicateComplaints(params: {
+    mobile?: string;
+    serialNumber?: string;
+    customerId?: string;
+    modelId?: string;
+  }): Promise<ServiceRequestWithRelationsRecord[]> {
+    const conn = await getOracleConnection();
+    try {
+      const orClauses: string[] = [];
+      const binds: Record<string, any> = {};
+
+      if (params.mobile && params.mobile.trim()) {
+        const norm = normalizeIndianMobile(params.mobile.trim());
+        binds.mobile = `%${norm || params.mobile.trim()}%`;
+        orClauses.push('(c.NORMALIZED_MOBILE LIKE :mobile OR sr.CUSTOMER_PHONE LIKE :mobile)');
+      }
+
+      if (params.serialNumber && params.serialNumber.trim()) {
+        binds.serialUpper = params.serialNumber.trim().toUpperCase();
+        orClauses.push('UPPER(sr.SERIAL_NUMBER) = :serialUpper');
+      }
+
+      if (params.customerId) {
+        binds.customerId = params.customerId;
+        orClauses.push('sr.CUSTOMER_ID = :customerId');
+      }
+
+      if (orClauses.length === 0) {
+        return [];
+      }
+
+      const sql = `
+        ${BASE_SELECT_SQL}
+        WHERE sr.STATUS NOT IN ('CLOSED', 'CANCELLED', 'REPLACED')
+          AND (${orClauses.join(' OR ')})
+        ORDER BY sr.REGISTERED_AT DESC
+        FETCH FIRST 10 ROWS ONLY
+      `;
+
+      const result = await conn.execute(sql, binds, { outFormat: oracledb.OUT_FORMAT_OBJECT });
+      return (result.rows || []).map(mapRowToServiceRequest);
+    } finally {
+      await conn.close();
+    }
+  }
+
+  /**
+   * Acknowledges a complaint by an ASF manager or Admin (Step A), setting ACKNOWLEDGED_AT and ACKNOWLEDGED_BY.
+   */
+  async acknowledgeServiceRequest(
+    requestId: string,
+    actorUserId: string,
+    actorUsername: string,
+    conn?: oracledb.Connection
+  ): Promise<ServiceRequestWithRelationsRecord> {
+    const shouldClose = !conn;
+    const connection = conn || (await getOracleConnection());
+
+    try {
+      const sql = `
+        UPDATE SERVICE_REQUESTS
+        SET STATUS = 'ACKNOWLEDGED',
+            ACKNOWLEDGED_AT = NVL(ACKNOWLEDGED_AT, SYSTIMESTAMP),
+            ACKNOWLEDGED_BY = :actorUserId,
+            ACKNOWLEDGED_BY_USERNAME = :actorUsername,
+            VERSION_NO = VERSION_NO + 1,
+            UPDATED_AT = SYSTIMESTAMP
+        WHERE REQUEST_ID = :requestId
+      `;
+
+      await connection.execute(
+        sql,
+        { requestId, actorUserId, actorUsername },
+        { autoCommit: shouldClose }
+      );
+
+      const updated = await this.findById(requestId, connection);
+      if (!updated) throw new Error(`Service request not found after acknowledge: ${requestId}`);
+      return updated;
+    } finally {
+      if (shouldClose) await connection.close();
+    }
+  }
+
+  /**
+   * Records a reassignment request / rejection by an ASF manager with reason and remarks.
+   */
+  async requestReassignment(
+    requestId: string,
+    reason: string,
+    remarks: string,
+    actorUserId: string,
+    conn?: oracledb.Connection
+  ): Promise<ServiceRequestWithRelationsRecord> {
+    const shouldClose = !conn;
+    const connection = conn || (await getOracleConnection());
+
+    try {
+      const sql = `
+        UPDATE SERVICE_REQUESTS
+        SET REASSIGNMENT_REQUESTED = 'Y',
+            REASSIGNMENT_REASON = :reason,
+            REASSIGNMENT_REMARKS = :remarks,
+            REASSIGNMENT_REQUESTED_BY = :actorUserId,
+            REASSIGNMENT_REQUESTED_AT = SYSTIMESTAMP,
+            VERSION_NO = VERSION_NO + 1,
+            UPDATED_AT = SYSTIMESTAMP
+        WHERE REQUEST_ID = :requestId
+      `;
+
+      await connection.execute(
+        sql,
+        { requestId, reason, remarks, actorUserId },
+        { autoCommit: shouldClose }
+      );
+
+      const updated = await this.findById(requestId, connection);
+      if (!updated) throw new Error(`Service request not found after requesting reassignment: ${requestId}`);
+      return updated;
+    } finally {
+      if (shouldClose) await connection.close();
+    }
+  }
+
+  /**
+   * Reassigns a service request to a new ASF location (Admin only).
+   */
+  async reassignAsf(
+    requestId: string,
+    newLocationId: string,
+    _actorUserId: string,
+    _actorUsername: string,
+    _remarks?: string,
+    options?: {
+      preserveAssignment?: boolean;
+      targetStatus?: ServiceRequestStatus;
+    },
+    conn?: oracledb.Connection
+  ): Promise<ServiceRequestWithRelationsRecord> {
+    const shouldClose = !conn;
+    const connection = conn || (await getOracleConnection());
+
+    try {
+      const preserve = options?.preserveAssignment === true;
+      const targetStatus = options?.targetStatus;
+
+      const sql = preserve
+        ? `
+        UPDATE SERVICE_REQUESTS
+        SET ASSIGNED_LOCATION_ID = :newLocationId,
+            ${targetStatus ? "STATUS = :targetStatus," : ''}
+            ASSIGNMENT_SOURCE = 'REASSIGNMENT',
+            REASSIGNMENT_REQUESTED = 'N',
+            REASSIGNMENT_REASON = NULL,
+            REASSIGNMENT_REMARKS = NULL,
+            REASSIGNMENT_REQUESTED_BY = NULL,
+            REASSIGNMENT_REQUESTED_AT = NULL,
+            ASSIGNMENT_FAILED_REASON = NULL,
+            VERSION_NO = VERSION_NO + 1,
+            UPDATED_AT = SYSTIMESTAMP
+        WHERE REQUEST_ID = :requestId
+      `
+        : `
+        UPDATE SERVICE_REQUESTS
+        SET ASSIGNED_LOCATION_ID = :newLocationId,
+            STATUS = 'ASSIGNED_TO_ASF',
+            ASSIGNMENT_SOURCE = 'REASSIGNMENT',
+            REASSIGNMENT_REQUESTED = 'N',
+            REASSIGNMENT_REASON = NULL,
+            REASSIGNMENT_REMARKS = NULL,
+            REASSIGNMENT_REQUESTED_BY = NULL,
+            REASSIGNMENT_REQUESTED_AT = NULL,
+            ACKNOWLEDGED_AT = NULL,
+            ACKNOWLEDGED_BY = NULL,
+            ACKNOWLEDGED_BY_USERNAME = NULL,
+            ASSIGNED_ENGINEER_ID = NULL,
+            APPOINTMENT_DATE = NULL,
+            APPOINTMENT_SLOT = NULL,
+            ASSIGNMENT_FAILED_REASON = NULL,
+            VERSION_NO = VERSION_NO + 1,
+            UPDATED_AT = SYSTIMESTAMP
+        WHERE REQUEST_ID = :requestId
+      `;
+
+      const binds: Record<string, any> = { requestId, newLocationId };
+      if (preserve && targetStatus) {
+        binds.targetStatus = targetStatus;
+      }
+
+      await connection.execute(
+        sql,
+        binds,
+        { autoCommit: shouldClose }
+      );
+
+      const updated = await this.findById(requestId, connection);
+      if (!updated) throw new Error(`Service request not found after reassigning ASF: ${requestId}`);
+      return updated;
+    } finally {
+      if (shouldClose) await connection.close();
     }
   }
 
@@ -1009,7 +1259,8 @@ export class ServiceRequestRepository {
         | 'parts_pending'
         | 'parts_dispatched'
         | 'awaiting_verification'
-        | 'overdue';
+        | 'overdue'
+        | 'assignment_required';
       locationId?: string;
       assignedEngineerId?: string;
       productId?: string;
@@ -1021,7 +1272,9 @@ export class ServiceRequestRepository {
       limit?: number;
     },
     actorLocationId?: string,
-    isAdmin = false
+    isAdmin = false,
+    isCentralized = true,
+    isEngineerOnly = false
   ): Promise<PaginatedResult<ServiceRequestWithRelationsRecord>> {
     const page = Math.max(1, filters.page || 1);
     const limit = Math.min(100, Math.max(1, filters.limit || 20));
@@ -1032,17 +1285,29 @@ export class ServiceRequestRepository {
       const binds: Record<string, any> = {};
       const whereClauses: string[] = ['1=1'];
 
-      // Location scoping
-      if (!isAdmin) {
+      // Location scoping & Role Isolation
+      if (isEngineerOnly) {
+        // Strict Engineer isolation: MUST only see jobs assigned to their engineer ID
+        if (filters.assignedEngineerId) {
+          binds.actorEngineerId = filters.assignedEngineerId;
+          whereClauses.push('sr.ASSIGNED_ENGINEER_ID = :actorEngineerId');
+        } else {
+          whereClauses.push('1=0');
+        }
+      } else if (isAdmin || isCentralized) {
+        // Centralized visibility for ASF managers and Admin across all ASFs
+        if (filters.locationId) {
+          binds.filterLocId = filters.locationId;
+          whereClauses.push('sr.ASSIGNED_LOCATION_ID = :filterLocId');
+        }
+      } else {
+        // Non-centralized, location-scoped
         if (actorLocationId) {
           binds.actorLocId = actorLocationId;
           whereClauses.push('sr.ASSIGNED_LOCATION_ID = :actorLocId');
         } else {
           whereClauses.push('1=0');
         }
-      } else if (filters.locationId) {
-        binds.filterLocId = filters.locationId;
-        whereClauses.push('sr.ASSIGNED_LOCATION_ID = :filterLocId');
       }
 
       // Filter views
@@ -1068,6 +1333,10 @@ export class ServiceRequestRepository {
         whereClauses.push("sr.STATUS = 'CALL_CLOSURE_SUBMITTED'");
       } else if (filters.view === 'overdue') {
         whereClauses.push("(sr.SLA_BREACHED_48H = 'Y' OR (sr.ACKNOWLEDGED_AT IS NULL AND SYSTIMESTAMP > sr.SLA_48H_EXPIRES_AT) OR sr.SLA_BREACHED_168H = 'Y')");
+      } else if (filters.view === 'assignment_required') {
+        whereClauses.push(
+          "(sr.ASSIGNED_LOCATION_ID IS NULL OR sr.REASSIGNMENT_REQUESTED = 'Y' OR sr.ASSIGNMENT_FAILED_REASON IS NOT NULL) AND sr.STATUS NOT IN ('CLOSED', 'CANCELLED', 'REPLACED')"
+        );
       } else {
         // 'all' active operational jobs
         whereClauses.push("sr.STATUS NOT IN ('CLOSED', 'CANCELLED', 'REPLACED')");
@@ -1162,15 +1431,158 @@ export class ServiceRequestRepository {
   }
 
   /**
+   * Authoritative real-time aggregation of operational metrics for the authenticated field technician.
+   */
+  async getEngineerKpis(engineerId: string): Promise<EngineerKpisRecord> {
+    const conn = await getOracleConnection();
+    try {
+      const sql = `
+        SELECT
+          COUNT(CASE WHEN sr.STATUS NOT IN ('CLOSED', 'CANCELLED', 'REPLACED') THEN 1 END) AS MY_ACTIVE_JOBS,
+          COUNT(CASE WHEN TRUNC(CAST(sr.APPOINTMENT_DATE AS DATE)) = TRUNC(SYSDATE) AND sr.STATUS NOT IN ('CLOSED', 'CANCELLED', 'REPLACED') THEN 1 END) AS TODAY_VISITS,
+          COUNT(CASE WHEN sr.STATUS = 'APPOINTMENT_SCHEDULED' THEN 1 END) AS AWAITING_CHECKIN,
+          COUNT(CASE WHEN sr.STATUS IN ('TECHNICIAN_CHECKED_IN', 'IN_PROGRESS_REPAIR') THEN 1 END) AS REPAIRS_IN_PROGRESS,
+          COUNT(CASE WHEN sr.STATUS IN ('PENDING_SPARE_PART', 'PENDING_SPECIAL_PART_ESTIMATE', 'SPECIAL_PART_ESTIMATE_PROVIDED', 'PART_DISPATCHED_TO_ASF') THEN 1 END) AS WAITING_PARTS,
+          COUNT(CASE WHEN sr.STATUS = 'CALL_CLOSURE_SUBMITTED' THEN 1 END) AS AWAITING_HAPPY_CODE
+        FROM SERVICE_REQUESTS sr
+        WHERE sr.ASSIGNED_ENGINEER_ID = :engineerId
+      `;
+      const result = await conn.execute<any>(sql, { engineerId }, { outFormat: oracledb.OUT_FORMAT_OBJECT });
+      const row = result.rows?.[0] || {};
+      return {
+        myActiveJobs: Number(row.MY_ACTIVE_JOBS || 0),
+        todayVisits: Number(row.TODAY_VISITS || 0),
+        awaitingCheckIn: Number(row.AWAITING_CHECKIN || 0),
+        repairsInProgress: Number(row.REPAIRS_IN_PROGRESS || 0),
+        waitingParts: Number(row.WAITING_PARTS || 0),
+        awaitingHappyCode: Number(row.AWAITING_HAPPY_CODE || 0),
+      };
+    } finally {
+      await conn.close();
+    }
+  }
+
+  /**
+   * Counts currently active (non-terminal) service requests assigned to a field engineer.
+   */
+  async countActiveEngineerJobs(engineerId: string, conn?: oracledb.Connection): Promise<number> {
+    const connection = conn || (await getOracleConnection());
+    const shouldClose = !conn;
+    try {
+      const sql = `
+        SELECT COUNT(*) AS TOTAL
+        FROM SERVICE_REQUESTS
+        WHERE ASSIGNED_ENGINEER_ID = :engineerId
+          AND STATUS NOT IN ('CLOSED', 'CANCELLED', 'REPLACED')
+      `;
+      const result = await connection.execute<any>(sql, { engineerId }, { outFormat: oracledb.OUT_FORMAT_OBJECT });
+      return Number(result.rows?.[0]?.TOTAL || 0);
+    } finally {
+      if (shouldClose) {
+        await connection.close();
+      }
+    }
+  }
+
+  /**
+   * Retrieves active assigned service requests for an engineer for reassignment review.
+   */
+  async findActiveJobsByEngineer(
+    engineerId: string,
+    conn?: oracledb.Connection
+  ): Promise<ServiceRequestWithRelationsRecord[]> {
+    const connection = conn || (await getOracleConnection());
+    const shouldClose = !conn;
+    try {
+      const sql = `
+        ${BASE_SELECT_SQL}
+        WHERE sr.ASSIGNED_ENGINEER_ID = :engineerId
+          AND sr.STATUS NOT IN ('CLOSED', 'CANCELLED', 'REPLACED')
+        ORDER BY sr.APPOINTMENT_DATE ASC NULLS LAST, sr.CREATED_AT DESC
+      `;
+      const result = await connection.execute<any>(sql, { engineerId }, { outFormat: oracledb.OUT_FORMAT_OBJECT });
+      return (result.rows || []).map(mapRowToServiceRequest);
+    } finally {
+      if (shouldClose) {
+        await connection.close();
+      }
+    }
+  }
+
+  /**
+   * Atomically reassigns all active non-terminal service requests from one engineer to another.
+   * Creates an immutable REASSIGNMENT event for each affected complaint.
+   */
+  async reassignEngineerJobs(
+    fromEngineerId: string,
+    toEngineerId: string,
+    actorUserId: string,
+    actorUsername: string,
+    conn: oracledb.Connection
+  ): Promise<ReassignEngineerJobsResult> {
+    // 1. Fetch affected active requests
+    const activeJobs = await this.findActiveJobsByEngineer(fromEngineerId, conn);
+    if (activeJobs.length === 0) {
+      return { reassignedCount: 0, affectedRequestIds: [] };
+    }
+
+    const affectedRequestIds = activeJobs.map((j) => j.requestId);
+
+    // 2. Bulk update SERVICE_REQUESTS
+    const updateSql = `
+      UPDATE SERVICE_REQUESTS
+      SET 
+        ASSIGNED_ENGINEER_ID = :toEngineerId,
+        VERSION_NO = VERSION_NO + 1,
+        UPDATED_AT = SYSTIMESTAMP
+      WHERE ASSIGNED_ENGINEER_ID = :fromEngineerId
+        AND STATUS NOT IN ('CLOSED', 'CANCELLED', 'REPLACED')
+    `;
+    await conn.execute(updateSql, { toEngineerId, fromEngineerId });
+
+    // 3. Log audit event for each reassigned request
+    for (const job of activeJobs) {
+      const eventId = crypto.randomUUID();
+      const eventSql = `
+        INSERT INTO SERVICE_REQUEST_EVENTS (
+          EVENT_ID, REQUEST_ID, FROM_STATE, TO_STATE, EVENT_TYPE,
+          TRIGGERED_BY_USER_ID, TRIGGERED_BY_USERNAME, TRIGGERED_BY_ROLE,
+          REMARKS, METADATA_JSON
+        ) VALUES (
+          :eventId, :requestId, :status, :status, 'TECHNICIAN_REASSIGNED',
+          :actorUserId, :actorUsername, 'ADMIN',
+          :remarks, :metadataJson
+        )
+      `;
+      await conn.execute(eventSql, {
+        eventId,
+        requestId: job.requestId,
+        status: job.status,
+        actorUserId,
+        actorUsername,
+        remarks: `Technician reassigned from previous engineer (${fromEngineerId}) during engineer account deactivation`,
+        metadataJson: JSON.stringify({
+          fromEngineerId,
+          toEngineerId,
+          reason: 'ADMIN_DEACTIVATION_REASSIGNMENT',
+        }),
+      });
+    }
+
+    return {
+      reassignedCount: activeJobs.length,
+      affectedRequestIds,
+    };
+  }
+
+  /**
    * Retrieves visits and jobs assigned to a specific field service engineer.
+   * Supports tab-based filtering across operational workflow states, text search, and pagination.
+   * Location-independent: field engineer sees all assigned jobs regardless of Service Center center.
    */
   async findEngineerJobs(
     engineerId: string,
-    params: {
-      status?: string;
-      page?: number;
-      limit?: number;
-    }
+    params: EngineerJobsParams
   ): Promise<PaginatedResult<ServiceRequestWithRelationsRecord>> {
     const page = Math.max(1, params.page || 1);
     const limit = Math.min(100, Math.max(1, params.limit || 20));
@@ -1181,9 +1593,47 @@ export class ServiceRequestRepository {
       const binds: Record<string, any> = { engineerId };
       const whereClauses: string[] = ['sr.ASSIGNED_ENGINEER_ID = :engineerId'];
 
-      if (params.status) {
+      // Tab filtering
+      if (params.tab === 'today') {
+        whereClauses.push(
+          "TRUNC(CAST(sr.APPOINTMENT_DATE AS DATE)) = TRUNC(SYSDATE) AND sr.STATUS NOT IN ('CLOSED', 'CANCELLED', 'REPLACED')"
+        );
+      } else if (params.tab === 'upcoming') {
+        whereClauses.push(
+          "TRUNC(CAST(sr.APPOINTMENT_DATE AS DATE)) > TRUNC(SYSDATE) AND sr.STATUS NOT IN ('CLOSED', 'CANCELLED', 'REPLACED')"
+        );
+      } else if (params.tab === 'in_progress') {
+        whereClauses.push("sr.STATUS IN ('TECHNICIAN_CHECKED_IN', 'IN_PROGRESS_REPAIR')");
+      } else if (params.tab === 'waiting_parts') {
+        whereClauses.push(
+          "sr.STATUS IN ('PENDING_SPARE_PART', 'PENDING_SPECIAL_PART_ESTIMATE', 'SPECIAL_PART_ESTIMATE_PROVIDED', 'PART_DISPATCHED_TO_ASF')"
+        );
+      } else if (params.tab === 'awaiting_closure') {
+        whereClauses.push("sr.STATUS = 'CALL_CLOSURE_SUBMITTED'");
+      } else if (params.tab === 'completed') {
+        whereClauses.push("sr.STATUS IN ('CLOSED', 'REPLACED')");
+      } else if (params.tab === 'all') {
+        whereClauses.push("sr.STATUS NOT IN ('CLOSED', 'CANCELLED', 'REPLACED')");
+      } else if (params.status) {
         binds.status = params.status;
         whereClauses.push('sr.STATUS = :status');
+      } else {
+        // Default: all active jobs
+        whereClauses.push("sr.STATUS NOT IN ('CLOSED', 'CANCELLED', 'REPLACED')");
+      }
+
+      // Search term
+      if (params.q && params.q.trim()) {
+        binds.searchPattern = `%${params.q.trim().toLowerCase()}%`;
+        whereClauses.push(`(
+          LOWER(sr.JOB_NUMBER) LIKE :searchPattern OR
+          LOWER(sr.SERIAL_NUMBER) LIKE :searchPattern OR
+          LOWER(c.FULL_NAME) LIKE :searchPattern OR
+          LOWER(c.PRIMARY_MOBILE) LIKE :searchPattern OR
+          LOWER(sr.CUSTOMER_ADDRESS) LIKE :searchPattern OR
+          LOWER(b.BRAND_NAME) LIKE :searchPattern OR
+          LOWER(m.MODEL_NAME) LIKE :searchPattern
+        )`);
       }
 
       const whereSql = whereClauses.join(' AND ');
@@ -1191,17 +1641,23 @@ export class ServiceRequestRepository {
       const countSql = `
         SELECT COUNT(*) AS TOTAL
         FROM SERVICE_REQUESTS sr
+        LEFT JOIN CUSTOMERS c ON sr.CUSTOMER_ID = c.CUSTOMER_ID
+        LEFT JOIN BRANDS b ON sr.BRAND_ID = b.BRAND_ID
+        LEFT JOIN MODELS m ON sr.MODEL_ID = m.MODEL_ID
         WHERE ${whereSql}
       `;
       const countRes = await conn.execute<any>(countSql, binds, { outFormat: oracledb.OUT_FORMAT_OBJECT });
       const total = Number(countRes.rows?.[0]?.TOTAL || 0);
 
+      const orderByClause =
+        params.tab === 'completed'
+          ? 'sr.CLOSED_AT DESC NULLS LAST, sr.UPDATED_AT DESC'
+          : 'sr.APPOINTMENT_DATE ASC NULLS LAST, sr.REGISTERED_AT DESC';
+
       const dataSql = `
         ${BASE_SELECT_SQL}
         WHERE ${whereSql}
-        ORDER BY 
-          sr.APPOINTMENT_DATE ASC NULLS LAST,
-          sr.REGISTERED_AT DESC
+        ORDER BY ${orderByClause}
         OFFSET :offset ROWS FETCH NEXT :limit ROWS ONLY
       `;
 

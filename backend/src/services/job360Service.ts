@@ -1,5 +1,6 @@
 import crypto from 'crypto';
 import oracledb from 'oracledb';
+import { env } from '../config/env.js';
 import { getOracleConnection } from '../database/oraclePool.js';
 import { attachmentRepository } from '../database/repositories/attachmentRepository.js';
 import { cancellationRequestRepository } from '../database/repositories/cancellationRequestRepository.js';
@@ -213,7 +214,8 @@ export class Job360Service {
     // Phase 2C Actions
     const canInitiateClosure =
       isCheckedIn &&
-      status === 'IN_PROGRESS_REPAIR' &&
+      ['IN_PROGRESS_REPAIR', 'CALL_CLOSURE_SUBMITTED'].includes(status) &&
+      !verification?.happyCodeVerifiedAt &&
       Boolean(request.repairAction || request.repairCodeId);
     const canRegenerateHappyCode = status === 'CALL_CLOSURE_SUBMITTED';
     const canVerifyHappyCode = status === 'CALL_CLOSURE_SUBMITTED';
@@ -1008,22 +1010,22 @@ export class Job360Service {
     requestId: string,
     actor: AuthenticatedUser,
     remarks?: string
-  ): Promise<{ success: boolean; message: string; status: ServiceRequestStatus }> {
+  ): Promise<{ success: boolean; message: string; status: ServiceRequestStatus; devHappyCodePreview?: string }> {
     const { request } = await this.assertTechnicianCheckIn(requestId, actor);
-
-    if (request.status !== 'IN_PROGRESS_REPAIR') {
-      throw new AppError(
-        `Cannot initiate closure: Service request is in '${request.status}' status. Must be 'IN_PROGRESS_REPAIR'.`,
-        400,
-        'INVALID_STATE'
-      );
-    }
 
     if (!request.repairAction && !request.repairCodeId) {
       throw new AppError(
         'Repair action or repair code must be recorded before submitting call closure.',
         400,
         'REPAIR_ACTION_REQUIRED'
+      );
+    }
+
+    if (request.status !== 'IN_PROGRESS_REPAIR' && request.status !== 'CALL_CLOSURE_SUBMITTED') {
+      throw new AppError(
+        `Cannot initiate closure: Service request is in '${request.status}' status. Must be 'IN_PROGRESS_REPAIR' or 'CALL_CLOSURE_SUBMITTED'.`,
+        400,
+        'INVALID_STATE'
       );
     }
 
@@ -1037,7 +1039,7 @@ export class Job360Service {
       }
 
       const currentStatus = lockRes.rows[0].STATUS;
-      if (currentStatus !== 'IN_PROGRESS_REPAIR') {
+      if (currentStatus !== 'IN_PROGRESS_REPAIR' && currentStatus !== 'CALL_CLOSURE_SUBMITTED') {
         throw new AppError(
           `Conflict: Service request status changed to '${currentStatus}' concurrently`,
           409,
@@ -1118,10 +1120,16 @@ export class Job360Service {
       // Asynchronously trigger notification delivery via SMS adapter
       notificationService.processNotification(outboxRecord).catch(() => {});
 
+      const allowDevPreview =
+        (process.env['NODE_ENV'] || env.NODE_ENV) !== 'production' &&
+        (process.env['ENABLE_DEV_OTP_PREVIEW'] || env.ENABLE_DEV_OTP_PREVIEW) === 'true' &&
+        (actor.roles.includes('ADMIN') || actor.roles.includes('ASF') || actor.roles.includes('ASF_MANAGER') || actor.roles.includes('ENGINEER'));
+
       return {
         success: true,
         message: 'Repair work marked complete. Happy Code generated and dispatched to customer via SMS 4.',
         status: 'CALL_CLOSURE_SUBMITTED',
+        devHappyCodePreview: allowDevPreview ? happyCode : undefined,
       };
     } catch (err) {
       await conn.rollback();
@@ -1137,7 +1145,7 @@ export class Job360Service {
   async regenerateHappyCode(
     requestId: string,
     actor: AuthenticatedUser
-  ): Promise<{ success: boolean; message: string }> {
+  ): Promise<{ success: boolean; message: string; devHappyCodePreview?: string }> {
     const { request } = await this.assertTechnicianCheckIn(requestId, actor);
 
     if (request.status !== 'CALL_CLOSURE_SUBMITTED') {
@@ -1245,9 +1253,15 @@ export class Job360Service {
       // Trigger async dispatch
       notificationService.processNotification(outboxRecord).catch(() => {});
 
+      const allowDevPreview =
+        (process.env['NODE_ENV'] || env.NODE_ENV) !== 'production' &&
+        (process.env['ENABLE_DEV_OTP_PREVIEW'] || env.ENABLE_DEV_OTP_PREVIEW) === 'true' &&
+        (actor.roles.includes('ADMIN') || actor.roles.includes('ASF') || actor.roles.includes('ASF_MANAGER') || actor.roles.includes('ENGINEER'));
+
       return {
         success: true,
         message: 'Happy Code regenerated and dispatched to customer via SMS 5.',
+        devHappyCodePreview: allowDevPreview ? happyCode : undefined,
       };
     } catch (err) {
       await conn.rollback();
@@ -1265,7 +1279,7 @@ export class Job360Service {
     requestId: string,
     input: VerifyHappyCodeInput,
     actor: AuthenticatedUser
-  ): Promise<{ success: boolean; message: string; status: ServiceRequestStatus }> {
+  ): Promise<{ success: boolean; message: string; status: ServiceRequestStatus; feedbackToken?: string; feedbackUrl?: string }> {
     const { request } = await this.assertTechnicianCheckIn(requestId, actor);
 
     if (request.status === 'CLOSED') {
@@ -1371,7 +1385,12 @@ export class Job360Service {
         conn
       );
 
-      // Record Customer Feedback if provided
+      // Record Customer Feedback if provided directly at closure, or issue feedback invitation
+      const feedbackToken = crypto.randomBytes(32).toString('hex');
+      const tokenHash = crypto.createHash('sha256').update(feedbackToken).digest('hex');
+      const expiresAt = new Date(Date.now() + 7 * 24 * 3600 * 1000);
+      let feedbackUrl: string | undefined;
+
       if (input.feedback) {
         await customerFeedbackRepository.createFeedback(
           {
@@ -1384,6 +1403,33 @@ export class Job360Service {
           },
           conn
         );
+      } else {
+        await customerFeedbackRepository.createFeedbackInvitation(
+          {
+            feedbackId: crypto.randomUUID(),
+            requestId,
+            tokenHash,
+            expiresAt,
+          },
+          conn
+        );
+
+        const frontendBaseUrl = process.env['FRONTEND_URL'] || 'http://localhost:3000';
+        feedbackUrl = `${frontendBaseUrl}/feedback/${feedbackToken}`;
+        const feedbackSms = `Dear Customer, thank you for choosing our service. Kindly rate your service experience for job #${request.jobNumber}: ${feedbackUrl}`;
+
+        const outboxRecord = await notificationRepository.enqueueNotification(
+          {
+            requestId,
+            recipient: request.customerPhone || '9999999999',
+            channel: 'SMS',
+            templateCode: 'SMS_6_CUSTOMER_FEEDBACK',
+            messageBody: feedbackSms,
+          },
+          conn
+        );
+
+        notificationService.processNotification(outboxRecord).catch(() => {});
       }
 
       // Append immutable lifecycle audit event
@@ -1411,12 +1457,93 @@ export class Job360Service {
 
       await conn.commit();
 
+      const allowDevPreview =
+        (process.env['NODE_ENV'] || env.NODE_ENV) !== 'production' &&
+        (process.env['ENABLE_DEV_OTP_PREVIEW'] || env.ENABLE_DEV_OTP_PREVIEW) === 'true' &&
+        (actor.roles.includes('ADMIN') || actor.roles.includes('ASF') || actor.roles.includes('ASF_MANAGER') || actor.roles.includes('ENGINEER'));
+
       return {
         success: true,
         message: input.isSupervisorOverride
           ? 'Service request closed via authorized supervisor override.'
           : 'Happy Code verified successfully. Service request closed.',
         status: 'CLOSED',
+        feedbackToken: allowDevPreview ? feedbackToken : undefined,
+        feedbackUrl: allowDevPreview ? feedbackUrl : undefined,
+      };
+    } catch (err) {
+      await conn.rollback();
+      throw err;
+    } finally {
+      await conn.close();
+    }
+  }
+
+  /**
+   * Returns a submitted repair to the field engineer for correction/rework.
+   * Reverts status from CALL_CLOSURE_SUBMITTED back to IN_PROGRESS_REPAIR.
+   */
+  async returnRepairForCorrection(
+    requestId: string,
+    reason: string,
+    actor: AuthenticatedUser
+  ): Promise<{ success: boolean; message: string; status: ServiceRequestStatus }> {
+    const isSupervisor =
+      actor.roles.includes('ADMIN') ||
+      actor.roles.includes('ASF') ||
+      actor.roles.includes('ASF_MANAGER') ||
+      actor.permissions.includes('calls:close');
+    if (!isSupervisor) {
+      throw new AppError('Forbidden: Only Service Center supervisors or Admins can return repairs for correction.', 403, 'FORBIDDEN_ROLE');
+    }
+
+    if (!reason || reason.trim().length < 10) {
+      throw new AppError('A clear written correction reason (minimum 10 characters) is required.', 400, 'REASON_REQUIRED');
+    }
+
+    const conn = await getOracleConnection();
+    try {
+      const checkSql = `SELECT STATUS FROM SERVICE_REQUESTS WHERE REQUEST_ID = :requestId FOR UPDATE`;
+      const lockRes = await conn.execute<any>(checkSql, { requestId }, { outFormat: oracledb.OUT_FORMAT_OBJECT });
+      if (!lockRes.rows || lockRes.rows.length === 0) {
+        throw new AppError(`Service request ${requestId} not found`, 404, 'NOT_FOUND');
+      }
+
+      const currentStatus = lockRes.rows[0].STATUS;
+      if (currentStatus !== 'CALL_CLOSURE_SUBMITTED') {
+        throw new AppError(
+          `Cannot return repair: Request must be in 'CALL_CLOSURE_SUBMITTED' status (current: '${currentStatus}')`,
+          400,
+          'INVALID_STATUS'
+        );
+      }
+
+      await serviceRequestRepository.updateStatus(requestId, 'IN_PROGRESS_REPAIR', conn);
+
+      await serviceRequestEventRepository.createEvent(
+        {
+          requestId,
+          fromState: 'CALL_CLOSURE_SUBMITTED',
+          toState: 'IN_PROGRESS_REPAIR',
+          eventType: 'REPAIR_RETURNED_FOR_CORRECTION',
+          triggeredByUserId: actor.userId,
+          triggeredByUsername: actor.username,
+          triggeredByRole: actor.roles[0] || 'ASF',
+          remarks: `Returned to engineer for rework: ${reason.trim()}`,
+          metadataJson: {
+            returnedBy: actor.username,
+            reason: reason.trim(),
+          },
+        },
+        conn
+      );
+
+      await conn.commit();
+
+      return {
+        success: true,
+        message: 'Repair returned to field engineer for correction.',
+        status: 'IN_PROGRESS_REPAIR',
       };
     } catch (err) {
       await conn.rollback();

@@ -33,9 +33,11 @@ import ArrowForwardIcon from '@mui/icons-material/ArrowForward';
 import ArrowBackIcon from '@mui/icons-material/ArrowBack';
 
 import {
+  callCenterApi,
   CustomerWithGeography,
   RegisterComplaintPayload,
   RegisterComplaintResponse,
+  ServiceRequest,
   useCustomerSearch,
   usePincodeServiceability,
   useRegisterComplaint,
@@ -59,6 +61,11 @@ export function FastCallRegistrationDialog({ open, onClose, onSuccess }: FastCal
   // Client idempotency token to prevent double submissions
   const idempotencyKeyRef = useRef<string>('');
 
+  // Duplicate warning states
+  const [duplicateWarningOpen, setDuplicateWarningOpen] = useState(false);
+  const [duplicateJobs, setDuplicateJobs] = useState<ServiceRequest[]>([]);
+  const [allowDuplicateProceed, setAllowDuplicateProceed] = useState(false);
+
   // Step 1: Customer State
   const [mobileQuery, setMobileQuery] = useState('');
   const [selectedCustomer, setSelectedCustomer] = useState<CustomerWithGeography | null>(null);
@@ -73,6 +80,19 @@ export function FastCallRegistrationDialog({ open, onClose, onSuccess }: FastCal
   const [newCustStateId, setNewCustStateId] = useState('');
   const [newCustCityId, setNewCustCityId] = useState('');
   const [newCustPincode, setNewCustPincode] = useState('');
+
+  // Step 1 & 2 Validation Errors and Input Refs
+  const [step1Errors, setStep1Errors] = useState<Record<string, string>>({});
+  const [step2Errors, setStep2Errors] = useState<Record<string, string>>({});
+
+  const newCustNameRef = useRef<HTMLInputElement>(null);
+  const newCustMobileRef = useRef<HTMLInputElement>(null);
+  const newCustAltMobileRef = useRef<HTMLInputElement>(null);
+  const newCustEmailRef = useRef<HTMLInputElement>(null);
+  const newCustAddressRef = useRef<HTMLInputElement>(null);
+  const newCustStateRef = useRef<HTMLInputElement>(null);
+  const newCustCityRef = useRef<HTMLInputElement>(null);
+  const newCustPincodeRef = useRef<HTMLInputElement>(null);
 
   // Step 2: Product & Complaint State
   const [selectedBrandId, setSelectedBrandId] = useState('');
@@ -134,6 +154,8 @@ export function FastCallRegistrationDialog({ open, onClose, onSuccess }: FastCal
       setMobileQuery('');
       setSubmitError(null);
       setRegisteredResult(null);
+      setStep1Errors({});
+      setStep2Errors({});
       idempotencyKeyRef.current = `CALL-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
 
       // Reset product & complaint fields
@@ -165,8 +187,20 @@ export function FastCallRegistrationDialog({ open, onClose, onSuccess }: FastCal
     }
   }, [selectedCustomer]);
 
+  // Auto-sync state and city from pincode serviceability for new customer registration
+  useEffect(() => {
+    if (isRegisteringNewCustomer && serviceabilityData?.isServiceable) {
+      if (serviceabilityData.stateId && !newCustStateId) {
+        setNewCustStateId(serviceabilityData.stateId);
+      }
+      if (serviceabilityData.cityId && !newCustCityId) {
+        setNewCustCityId(serviceabilityData.cityId);
+      }
+    }
+  }, [isRegisteringNewCustomer, serviceabilityData, newCustStateId, newCustCityId]);
+
   // Selected Model Master Details
-  const selectedModel = modelsData?.items.find((m) => m.modelId === selectedModelId);
+  const selectedModel = modelsData?.items?.find((m) => m.modelId === selectedModelId);
 
   // Live estimated warranty calculation
   const estimatedWarranty = React.useMemo(() => {
@@ -178,18 +212,6 @@ export function FastCallRegistrationDialog({ open, onClose, onSuccess }: FastCal
     return elapsedDays <= selectedModel.customerWarrantyDays ? 'IN_WARRANTY' : 'OUT_OF_WARRANTY';
   }, [purchaseDate, selectedModel]);
 
-  // Validation guards
-  const isStep1Valid = Boolean(
-    selectedCustomer ||
-      (isRegisteringNewCustomer &&
-        newCustName.trim().length >= 2 &&
-        /^[6-9]\d{9}$/.test(newCustMobile.replace(/\D/g, '')) &&
-        newCustAddress.trim().length >= 5 &&
-        newCustStateId &&
-        newCustCityId &&
-        /^\d{6}$/.test(newCustPincode.trim()))
-  );
-
   const isSerialValid = React.useMemo(() => {
     if (!selectedModel) return true;
     if (selectedModel.checkSerialNumber === 'Y') {
@@ -198,23 +220,152 @@ export function FastCallRegistrationDialog({ open, onClose, onSuccess }: FastCal
     return true;
   }, [selectedModel, serialNumber]);
 
-  const isStep2Valid = Boolean(
-    selectedBrandId &&
-      selectedProductId &&
-      selectedModelId &&
-      isSerialValid &&
-      callType &&
-      serviceType &&
-      effectivePincode &&
-      /^\d{6}$/.test(effectivePincode.trim()) &&
-      serviceabilityData?.isServiceable
-  );
+  // Comprehensive Step 1 Validator
+  const validateStep1 = (): boolean => {
+    const errors: Record<string, string> = {};
+
+    if (!selectedCustomer && !isRegisteringNewCustomer) {
+      errors.customer = 'Please select an existing customer or click "New Customer" to register a new account.';
+      setStep1Errors(errors);
+      setSubmitError('Please select or register a customer before proceeding.');
+      return false;
+    }
+
+    if (isRegisteringNewCustomer) {
+      if (!newCustName.trim()) {
+        errors.name = 'Full Name is required.';
+      } else if (newCustName.trim().length < 2) {
+        errors.name = 'Customer full name must be at least 2 characters.';
+      }
+
+      const cleanMobile = newCustMobile.replace(/\D/g, '');
+      if (!cleanMobile) {
+        errors.mobile = 'Primary mobile number is required.';
+      } else if (cleanMobile.length !== 10) {
+        errors.mobile = `Mobile number must be exactly 10 digits (currently ${cleanMobile.length}).`;
+      } else if (!/^[6-9]/.test(cleanMobile)) {
+        errors.mobile = `Indian mobile numbers must begin with 6, 7, 8, or 9 (entered number begins with ${cleanMobile[0]}).`;
+      }
+
+      const cleanAltMobile = newCustAltMobile.replace(/\D/g, '');
+      if (cleanAltMobile) {
+        if (cleanAltMobile.length !== 10) {
+          errors.altMobile = `Alternate mobile must be exactly 10 digits (currently ${cleanAltMobile.length}).`;
+        } else if (!/^[6-9]/.test(cleanAltMobile)) {
+          errors.altMobile = `Alternate mobile must begin with 6, 7, 8, or 9 (entered begins with ${cleanAltMobile[0]}).`;
+        }
+      }
+
+      const cleanEmail = newCustEmail.trim();
+      if (cleanEmail) {
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+          errors.email = 'Please enter a valid email address.';
+        }
+      }
+
+      if (!newCustAddress.trim()) {
+        errors.address = 'Address line is required.';
+      } else if (newCustAddress.trim().length < 5) {
+        errors.address = 'Address line must be at least 5 characters.';
+      }
+
+      if (!newCustStateId) {
+        errors.stateId = 'Please select a state.';
+      }
+
+      if (!newCustCityId) {
+        errors.cityId = 'Please select a city.';
+      }
+
+      const cleanPin = newCustPincode.trim();
+      if (!cleanPin) {
+        errors.pincode = 'Pincode is required.';
+      } else if (!/^\d{6}$/.test(cleanPin)) {
+        errors.pincode = 'Pincode must be exactly 6 digits.';
+      } else if (serviceabilityData && !serviceabilityData.isServiceable) {
+        errors.pincode = `Pincode ${cleanPin} is non-serviceable. No service coverage in this zone.`;
+      } else if (serviceabilityData && serviceabilityData.isServiceable) {
+        if (serviceabilityData.stateId && newCustStateId && serviceabilityData.stateId !== newCustStateId) {
+          errors.pincode = `Pincode belongs to ${serviceabilityData.stateName}, which does not match selected State.`;
+        } else if (serviceabilityData.cityId && newCustCityId && serviceabilityData.cityId !== newCustCityId) {
+          errors.pincode = `Pincode belongs to ${serviceabilityData.cityName}, which does not match selected City.`;
+        }
+      }
+    }
+
+    setStep1Errors(errors);
+
+    if (Object.keys(errors).length > 0) {
+      setSubmitError('Please resolve the highlighted errors before proceeding.');
+      if (errors.name) newCustNameRef.current?.focus();
+      else if (errors.mobile) newCustMobileRef.current?.focus();
+      else if (errors.altMobile) newCustAltMobileRef.current?.focus();
+      else if (errors.email) newCustEmailRef.current?.focus();
+      else if (errors.address) newCustAddressRef.current?.focus();
+      else if (errors.stateId) newCustStateRef.current?.focus();
+      else if (errors.cityId) newCustCityRef.current?.focus();
+      else if (errors.pincode) newCustPincodeRef.current?.focus();
+      return false;
+    }
+
+    setSubmitError(null);
+    return true;
+  };
+
+  // Comprehensive Step 2 Validator
+  const validateStep2 = (): boolean => {
+    const errors: Record<string, string> = {};
+
+    if (!selectedBrandId) errors.brandId = 'Please select a brand.';
+    if (!selectedProductId) errors.productId = 'Please select a product category.';
+    if (!selectedModelId) errors.modelId = 'Please select a product model.';
+
+    if (selectedModel && selectedModel.checkSerialNumber === 'Y') {
+      if (!serialNumber.trim()) {
+        errors.serialNumber = `Serial number is required for this model (${selectedModel.serialNumberLength} characters).`;
+      } else if (serialNumber.trim().length !== selectedModel.serialNumberLength) {
+        errors.serialNumber = `Serial number must be exactly ${selectedModel.serialNumberLength} characters (current: ${serialNumber.trim().length}).`;
+      }
+    }
+
+    if (!callType) errors.callType = 'Please select a call type.';
+    if (!serviceType) errors.serviceType = 'Please select a service delivery mode.';
+
+    const pin = effectivePincode.trim();
+    if (!pin) {
+      errors.pincode = 'Pincode is required.';
+    } else if (!/^\d{6}$/.test(pin)) {
+      errors.pincode = 'Pincode must be exactly 6 digits.';
+    } else if (serviceabilityData && !serviceabilityData.isServiceable) {
+      errors.pincode = 'Entered pincode is non-serviceable.';
+    }
+
+    setStep2Errors(errors);
+
+    if (Object.keys(errors).length > 0) {
+      setSubmitError('Please resolve all highlighted fields before proceeding.');
+      return false;
+    }
+
+    setSubmitError(null);
+    return true;
+  };
 
   // Handlers
   const handleNext = () => {
     setSubmitError(null);
-    if (activeStep < STEPS.length - 1) {
-      setActiveStep((prev) => prev + 1);
+    if (activeStep === 0) {
+      if (!validateStep1()) return;
+      if (isRegisteringNewCustomer) {
+        setPincodeInput(newCustPincode.trim());
+        setAddressInput(newCustAddress.trim());
+        setStateIdInput(newCustStateId);
+        setCityIdInput(newCustCityId);
+      }
+      setActiveStep(1);
+    } else if (activeStep === 1) {
+      if (!validateStep2()) return;
+      setActiveStep(2);
     }
   };
 
@@ -225,8 +376,27 @@ export function FastCallRegistrationDialog({ open, onClose, onSuccess }: FastCal
     }
   };
 
-  const handleSubmitComplaint = async () => {
+  const handleSubmitComplaint = async (bypassDup = false) => {
     setSubmitError(null);
+
+    const mobileToCheck = isRegisteringNewCustomer ? newCustMobile.trim() : (selectedCustomer?.primaryMobile || '');
+    if (!bypassDup && !allowDuplicateProceed && (mobileToCheck || serialNumber.trim())) {
+      try {
+        const checkRes = await callCenterApi.checkDuplicates({
+          mobile: mobileToCheck || undefined,
+          serialNumber: serialNumber.trim() || undefined,
+          customerId: selectedCustomer?.customerId,
+          modelId: selectedModelId,
+        });
+        if (checkRes.hasDuplicates && checkRes.duplicates.length > 0) {
+          setDuplicateJobs(checkRes.duplicates);
+          setDuplicateWarningOpen(true);
+          return;
+        }
+      } catch {
+        // If duplicate check network fails, proceed gracefully
+      }
+    }
 
     const payload: RegisterComplaintPayload = {
       brandId: selectedBrandId,
@@ -550,8 +720,14 @@ export function FastCallRegistrationDialog({ open, onClose, onSuccess }: FastCal
                           size="small"
                           fullWidth
                           required
+                          inputRef={newCustNameRef}
                           value={newCustName}
-                          onChange={(e) => setNewCustName(e.target.value)}
+                          error={Boolean(step1Errors.name)}
+                          helperText={step1Errors.name || 'Full legal or commercial name'}
+                          onChange={(e) => {
+                            setNewCustName(e.target.value);
+                            setStep1Errors((prev) => ({ ...prev, name: '' }));
+                          }}
                         />
                       </Grid>
                       <Grid item xs={12} sm={6}>
@@ -574,36 +750,56 @@ export function FastCallRegistrationDialog({ open, onClose, onSuccess }: FastCal
                           size="small"
                           fullWidth
                           required
+                          inputRef={newCustMobileRef}
                           value={newCustMobile}
-                          onChange={(e) => setNewCustMobile(e.target.value)}
-                          helperText="Standard Indian 10-digit number"
+                          error={Boolean(step1Errors.mobile)}
+                          helperText={
+                            step1Errors.mobile || 'Standard Indian 10-digit number (must begin with 6, 7, 8, or 9)'
+                          }
+                          onChange={(e) => {
+                            setNewCustMobile(e.target.value);
+                            setStep1Errors((prev) => ({ ...prev, mobile: '' }));
+                          }}
                         />
                       </Grid>
                       <Grid item xs={12} sm={6}>
                         <TextField
-                          label="Alternate Mobile"
+                          label="Alternate Mobile (Optional)"
                           size="small"
                           fullWidth
+                          inputRef={newCustAltMobileRef}
                           value={newCustAltMobile}
-                          onChange={(e) => setNewCustAltMobile(e.target.value)}
+                          error={Boolean(step1Errors.altMobile)}
+                          helperText={step1Errors.altMobile || 'Optional secondary mobile'}
+                          onChange={(e) => {
+                            setNewCustAltMobile(e.target.value);
+                            setStep1Errors((prev) => ({ ...prev, altMobile: '' }));
+                          }}
                         />
                       </Grid>
                       <Grid item xs={12} sm={6}>
                         <TextField
-                          label="Email Address"
+                          label="Email Address (Optional)"
                           size="small"
                           fullWidth
                           type="email"
+                          inputRef={newCustEmailRef}
                           value={newCustEmail}
-                          onChange={(e) => setNewCustEmail(e.target.value)}
+                          error={Boolean(step1Errors.email)}
+                          helperText={step1Errors.email || 'Optional email for digital invoice & status'}
+                          onChange={(e) => {
+                            setNewCustEmail(e.target.value);
+                            setStep1Errors((prev) => ({ ...prev, email: '' }));
+                          }}
                         />
                       </Grid>
                       <Grid item xs={12} sm={6}>
                         <TextField
-                          label="Landmark"
+                          label="Landmark (Optional)"
                           size="small"
                           fullWidth
                           value={newCustLandmark}
+                          helperText="Optional landmark or building identifier"
                           onChange={(e) => setNewCustLandmark(e.target.value)}
                         />
                       </Grid>
@@ -613,8 +809,14 @@ export function FastCallRegistrationDialog({ open, onClose, onSuccess }: FastCal
                           size="small"
                           fullWidth
                           required
+                          inputRef={newCustAddressRef}
                           value={newCustAddress}
-                          onChange={(e) => setNewCustAddress(e.target.value)}
+                          error={Boolean(step1Errors.address)}
+                          helperText={step1Errors.address || 'Street address / premises'}
+                          onChange={(e) => {
+                            setNewCustAddress(e.target.value);
+                            setStep1Errors((prev) => ({ ...prev, address: '' }));
+                          }}
                         />
                       </Grid>
                       <Grid item xs={12} sm={4}>
@@ -624,10 +826,14 @@ export function FastCallRegistrationDialog({ open, onClose, onSuccess }: FastCal
                           select
                           fullWidth
                           required
+                          inputRef={newCustStateRef}
                           value={newCustStateId}
+                          error={Boolean(step1Errors.stateId)}
+                          helperText={step1Errors.stateId}
                           onChange={(e) => {
                             setNewCustStateId(e.target.value);
                             setNewCustCityId('');
+                            setStep1Errors((prev) => ({ ...prev, stateId: '', cityId: '' }));
                           }}
                         >
                           {(statesData?.items || []).map((s) => (
@@ -645,8 +851,14 @@ export function FastCallRegistrationDialog({ open, onClose, onSuccess }: FastCal
                           fullWidth
                           required
                           disabled={!newCustStateId}
+                          inputRef={newCustCityRef}
                           value={newCustCityId}
-                          onChange={(e) => setNewCustCityId(e.target.value)}
+                          error={Boolean(step1Errors.cityId)}
+                          helperText={step1Errors.cityId}
+                          onChange={(e) => {
+                            setNewCustCityId(e.target.value);
+                            setStep1Errors((prev) => ({ ...prev, cityId: '' }));
+                          }}
                         >
                           {(citiesData?.items || []).map((c) => (
                             <MenuItem key={c.cityId} value={c.cityId}>
@@ -661,8 +873,19 @@ export function FastCallRegistrationDialog({ open, onClose, onSuccess }: FastCal
                           size="small"
                           fullWidth
                           required
+                          inputRef={newCustPincodeRef}
                           value={newCustPincode}
-                          onChange={(e) => setNewCustPincode(e.target.value)}
+                          error={Boolean(step1Errors.pincode)}
+                          helperText={
+                            step1Errors.pincode ||
+                            (serviceabilityData?.isServiceable
+                              ? `Serviceable (${serviceabilityData.cityName}, ${serviceabilityData.stateName})`
+                              : '6-digit postal code')
+                          }
+                          onChange={(e) => {
+                            setNewCustPincode(e.target.value);
+                            setStep1Errors((prev) => ({ ...prev, pincode: '' }));
+                          }}
                         />
                       </Grid>
                     </Grid>
@@ -1004,7 +1227,7 @@ export function FastCallRegistrationDialog({ open, onClose, onSuccess }: FastCal
                 variant="contained"
                 onClick={handleNext}
                 endIcon={<ArrowForwardIcon />}
-                disabled={activeStep === 0 ? !isStep1Valid : !isStep2Valid}
+                disabled={registerMutation.isPending}
               >
                 Continue
               </Button>
@@ -1012,7 +1235,7 @@ export function FastCallRegistrationDialog({ open, onClose, onSuccess }: FastCal
               <Button
                 variant="contained"
                 color="primary"
-                onClick={handleSubmitComplaint}
+                onClick={() => handleSubmitComplaint(false)}
                 disabled={registerMutation.isPending}
                 startIcon={registerMutation.isPending && <CircularProgress size={16} color="inherit" />}
               >
@@ -1022,6 +1245,62 @@ export function FastCallRegistrationDialog({ open, onClose, onSuccess }: FastCal
           </Box>
         </DialogActions>
       )}
+
+      {/* Duplicate Open Complaints Warning Dialog */}
+      <Dialog
+        open={duplicateWarningOpen}
+        onClose={() => setDuplicateWarningOpen(false)}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle sx={{ display: 'flex', alignItems: 'center', gap: 1, color: 'warning.main', fontWeight: 700 }}>
+          Potential Duplicate Complaint Warning
+        </DialogTitle>
+        <DialogContent dividers>
+          <Alert severity="warning" sx={{ mb: 2 }}>
+            Open service requests already exist for this customer mobile or serial number. Please review the existing tickets below.
+          </Alert>
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
+            {duplicateJobs.map((dup) => (
+              <Card key={dup.requestId} variant="outlined" sx={{ p: 1.5, bgcolor: 'background.default' }}>
+                <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 0.5 }}>
+                  <Typography variant="subtitle2" sx={{ fontFamily: 'monospace', fontWeight: 700 }}>
+                    #{dup.jobNumber}
+                  </Typography>
+                  <StatusBadge status={dup.status} />
+                </Box>
+                <Typography variant="body2">
+                  {dup.brandName} • {dup.productName} ({dup.modelName})
+                </Typography>
+                <Typography variant="caption" color="text.secondary" display="block">
+                  Registered: {new Date(dup.registeredAt).toLocaleDateString()} • {dup.assignedLocationName || 'Unassigned'}
+                </Typography>
+                {dup.serialNumber && (
+                  <Typography variant="caption" color="text.secondary" display="block">
+                    Serial: {dup.serialNumber}
+                  </Typography>
+                )}
+              </Card>
+            ))}
+          </Box>
+        </DialogContent>
+        <DialogActions sx={{ p: 2, justifyContent: 'space-between' }}>
+          <Button variant="outlined" onClick={() => setDuplicateWarningOpen(false)}>
+            Review Current Input
+          </Button>
+          <Button
+            variant="contained"
+            color="warning"
+            onClick={() => {
+              setAllowDuplicateProceed(true);
+              setDuplicateWarningOpen(false);
+              handleSubmitComplaint(true);
+            }}
+          >
+            Proceed Anyway (Legitimate Repeat Call)
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Dialog>
   );
 }

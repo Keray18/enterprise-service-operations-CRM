@@ -496,8 +496,8 @@ export const job360Api = {
   initiateClosure: async (
     requestId: string,
     payload: InitiateClosurePayload
-  ): Promise<{ success: boolean; message: string; status: string }> => {
-    return apiClient.post<{ success: boolean; message: string; status: string }>(
+  ): Promise<{ success: boolean; message: string; status: string; devHappyCodePreview?: string }> => {
+    return apiClient.post<{ success: boolean; message: string; status: string; devHappyCodePreview?: string }>(
       `/api/v1/asf/jobs/${encodeURIComponent(requestId)}/closure/initiate`,
       payload
     );
@@ -505,18 +505,28 @@ export const job360Api = {
 
   regenerateHappyCode: async (
     requestId: string
-  ): Promise<{ success: boolean; message: string }> => {
-    return apiClient.post<{ success: boolean; message: string }>(
+  ): Promise<{ success: boolean; message: string; devHappyCodePreview?: string }> => {
+    return apiClient.post<{ success: boolean; message: string; devHappyCodePreview?: string }>(
       `/api/v1/asf/jobs/${encodeURIComponent(requestId)}/closure/regenerate-happy-code`,
       {}
+    );
+  },
+
+  returnRepair: async (
+    requestId: string,
+    payload: { reason: string }
+  ): Promise<{ success: boolean; message: string; status: string }> => {
+    return apiClient.post<{ success: boolean; message: string; status: string }>(
+      `/api/v1/asf/jobs/${encodeURIComponent(requestId)}/closure/return`,
+      payload
     );
   },
 
   verifyHappyCode: async (
     requestId: string,
     payload: VerifyHappyCodePayload
-  ): Promise<{ success: boolean; message: string; status: string }> => {
-    return apiClient.post<{ success: boolean; message: string; status: string }>(
+  ): Promise<{ success: boolean; message: string; status: string; feedbackToken?: string; feedbackUrl?: string }> => {
+    return apiClient.post<{ success: boolean; message: string; status: string; feedbackToken?: string; feedbackUrl?: string }>(
       `/api/v1/asf/jobs/${encodeURIComponent(requestId)}/closure/verify`,
       payload
     );
@@ -710,6 +720,17 @@ export function useVerifyHappyCode(requestId: string) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (payload: VerifyHappyCodePayload) => job360Api.verifyHappyCode(requestId, payload),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['job360', requestId] });
+      queryClient.invalidateQueries({ queryKey: ['asfQueue'] });
+    },
+  });
+}
+
+export function useReturnRepair(requestId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: { reason: string }) => job360Api.returnRepair(requestId, payload),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['job360', requestId] });
       queryClient.invalidateQueries({ queryKey: ['asfQueue'] });

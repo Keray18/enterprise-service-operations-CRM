@@ -1,3 +1,4 @@
+import fs from 'fs';
 import path from 'path';
 import { logger } from '../logging/logger.js';
 import { getAppliedMigrations, loadMigrationFiles, runMigrations } from './migrationRunner.js';
@@ -5,7 +6,9 @@ import { closeOraclePool, getOracleConnection } from './oraclePool.js';
 
 async function main(): Promise<void> {
   const isStatusOnly = process.argv.includes('--status');
-  const migrationsDir = path.resolve(process.cwd(), '../database/migrations');
+  const rootMigrationsDir = path.resolve(process.cwd(), 'database/migrations');
+  const parentMigrationsDir = path.resolve(process.cwd(), '../database/migrations');
+  const migrationsDir = fs.existsSync(rootMigrationsDir) ? rootMigrationsDir : parentMigrationsDir;
 
   try {
     if (isStatusOnly) {

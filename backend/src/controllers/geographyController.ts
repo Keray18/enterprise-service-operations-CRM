@@ -1,5 +1,5 @@
 import { NextFunction, Request, Response } from 'express';
-import { sendSuccess } from '../middleware/errorHandler.js';
+import { AppError, sendSuccess } from '../middleware/errorHandler.js';
 import { ActingUser, geographyService } from '../services/geographyService.js';
 import {
   catalogQuerySchema,
@@ -253,13 +253,34 @@ export class GeographyController {
   async listLocations(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const page = req.query.page ? Number(req.query.page) : 1;
-      const limit = req.query.limit ? Number(req.query.limit) : 50;
-      const search = req.query.search as string | undefined;
+      const limit = req.query.pageSize ? Number(req.query.pageSize) : (req.query.limit ? Number(req.query.limit) : 50);
+      const search = (req.query.search || req.query.q) as string | undefined;
       const partyType = req.query.partyType as string | undefined;
       const isActive = req.query.isActive as 'Y' | 'N' | undefined;
+      const includeTestFixtures = req.query.includeTestFixtures === 'true';
 
-      const result = await geographyService.listLocations({ search, partyType, isActive, page, limit });
+      const result = await geographyService.listLocations({
+        search,
+        partyType,
+        isActive,
+        includeTestFixtures,
+        page,
+        limit,
+      });
       sendSuccess(res, result);
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  async getLocationById(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const id = req.params.id as string;
+      const location = await geographyService.getLocationById(id);
+      if (!location) {
+        throw new AppError('Location not found', 404, 'LOCATION_NOT_FOUND');
+      }
+      sendSuccess(res, location);
     } catch (err) {
       next(err);
     }

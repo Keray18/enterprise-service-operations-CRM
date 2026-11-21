@@ -149,12 +149,16 @@ export async function middleware(request: NextRequest): Promise<NextResponse> {
     return NextResponse.next();
   }
 
-  // 4. Gated operational workspaces: /admin, /call-center, /asf, /warehouse
+  // 4. Gated operational workspaces: /admin, /call-center, /service-center, /asf, /engineer, /warehouse, /finance, /reports
   const isProtectedWorkspace =
     pathname.startsWith('/admin') ||
     pathname.startsWith('/call-center') ||
+    pathname.startsWith('/service-center') ||
     pathname.startsWith('/asf') ||
-    pathname.startsWith('/warehouse');
+    pathname.startsWith('/engineer') ||
+    pathname.startsWith('/warehouse') ||
+    pathname.startsWith('/finance') ||
+    pathname.startsWith('/reports');
 
   if (isProtectedWorkspace) {
     // A. Missing session cookie

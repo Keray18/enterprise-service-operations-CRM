@@ -302,6 +302,25 @@ export class Job360Controller {
     }
   }
 
+  async returnRepair(req: Request, res: Response, next: NextFunction) {
+    try {
+      const actor = req.user as AuthenticatedUser;
+      const id = req.params.id as string;
+      if (!id) {
+        throw new AppError('Job ID is required', 400, 'BAD_REQUEST');
+      }
+      const reason = req.body?.reason;
+      const data = await job360Service.returnRepairForCorrection(id, reason, actor);
+      res.json({
+        success: true,
+        data,
+        message: data.message,
+      });
+    } catch (err) {
+      next(err);
+    }
+  }
+
   async submitFeedback(req: Request, res: Response, next: NextFunction) {
     try {
       const actor = req.user as AuthenticatedUser;

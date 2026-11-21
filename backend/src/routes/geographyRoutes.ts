@@ -146,7 +146,7 @@ geographyRouter.patch(
 );
 
 // ============================================================================
-// Location Reference Routes (for default ASF dropdown)
+// Location Reference Routes (for default ASF dropdown and global location selectors)
 // ============================================================================
 
 geographyRouter.get(
@@ -154,4 +154,11 @@ geographyRouter.get(
   requireAuth,
   requirePermission('masters:read'),
   geographyController.listLocations.bind(geographyController)
+);
+
+geographyRouter.get(
+  '/locations/:id',
+  requireAuth,
+  requirePermission('masters:read'),
+  geographyController.getLocationById.bind(geographyController)
 );

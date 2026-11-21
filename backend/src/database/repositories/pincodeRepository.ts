@@ -154,8 +154,8 @@ export class PincodeRepository {
     }
   }
 
-  async findByPincode(pincode: string): Promise<PincodeRecord | null> {
-    const conn = await getOracleConnection();
+  async findByPincode(pincode: string, connection?: oracledb.Connection): Promise<PincodeRecord | null> {
+    const conn = connection || (await getOracleConnection());
     try {
       const sql = `
         SELECT PINCODE_ID, PINCODE, STATE_ID, CITY_ID, DEFAULT_ASF_ID,
@@ -180,12 +180,14 @@ export class PincodeRepository {
         updatedBy: row.UPDATED_BY || undefined,
       };
     } finally {
-      await conn.close();
+      if (!connection) {
+        await conn.close();
+      }
     }
   }
 
-  async lookupPincode(pincode: string): Promise<PincodeLookupResult | null> {
-    const conn = await getOracleConnection();
+  async lookupPincode(pincode: string, connection?: oracledb.Connection): Promise<PincodeLookupResult | null> {
+    const conn = connection || (await getOracleConnection());
     try {
       const sql = `
         SELECT p.PINCODE, p.STATE_ID, s.STATE_CODE, s.STATE_NAME,
@@ -213,7 +215,9 @@ export class PincodeRepository {
         defaultAsfName: row.DEFAULT_ASF_NAME || undefined,
       };
     } finally {
-      await conn.close();
+      if (!connection) {
+        await conn.close();
+      }
     }
   }
 

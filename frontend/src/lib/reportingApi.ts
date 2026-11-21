@@ -334,6 +334,10 @@ export interface AdminDashboardData {
       happyCodeVerificationRate: number;
       avgResolutionTatHours: number;
       totalClosedWithTat: number;
+      feedbackPending?: number;
+      feedbackReceived?: number;
+      averageCustomerRating?: number | null;
+      lowRatingCases?: number;
     };
   };
   pendingActions: {
@@ -375,6 +379,65 @@ export function useAdminDashboard(
       if (params.toDate) searchParams.append('toDate', params.toDate);
       const queryStr = searchParams.toString();
       return apiClient.get<AdminDashboardData>(`/api/v1/reports/admin/dashboard${queryStr ? `?${queryStr}` : ''}`);
+    },
+    staleTime: 30000,
+  });
+}
+
+export interface ServiceCenterWorkloadRow {
+  locationId: string;
+  locationCode: string;
+  locationName: string;
+  stateId?: string;
+  stateName?: string;
+  cityId?: string;
+  cityName?: string;
+  isActive: boolean;
+  assignedOpenJobs: number;
+  awaitingAck: number;
+  inProgress: number;
+  pendingParts: number;
+  completedTotal: number;
+  overdueJobs: number;
+  activeTechnicians: number;
+  capacityConfigured: boolean;
+  configuredCapacity: number | null;
+}
+
+export interface ServiceCenterWorkloadParams {
+  page?: number;
+  limit?: number;
+  search?: string;
+  stateId?: string;
+  cityId?: string;
+  status?: string;
+  sortBy?: string;
+  sortDir?: string;
+}
+
+export function useServiceCenterWorkload(params: ServiceCenterWorkloadParams = {}) {
+  return useQuery({
+    queryKey: ['reports', 'admin-service-centers', params],
+    queryFn: () => {
+      const searchParams = new URLSearchParams();
+      if (params.page) searchParams.append('page', String(params.page));
+      if (params.limit) searchParams.append('limit', String(params.limit));
+      if (params.search) searchParams.append('search', params.search);
+      if (params.stateId) searchParams.append('stateId', params.stateId);
+      if (params.cityId) searchParams.append('cityId', params.cityId);
+      if (params.status) searchParams.append('status', params.status);
+      if (params.sortBy) searchParams.append('sortBy', params.sortBy);
+      if (params.sortDir) searchParams.append('sortDir', params.sortDir);
+      const queryStr = searchParams.toString();
+      return apiClient.get<{
+        items: ServiceCenterWorkloadRow[];
+        pagination: {
+          page: number;
+          limit: number;
+          total: number;
+          totalPages: number;
+        };
+      }>(`/api/v1/reports/admin/service-centers${queryStr ? `?${queryStr}` : ''}`);
     },
     staleTime: 30000,
   });

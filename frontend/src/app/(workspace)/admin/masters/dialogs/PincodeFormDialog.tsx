@@ -24,10 +24,10 @@ import {
   Pincode,
   useCities,
   useCreatePincode,
-  useLocations,
   useStates,
   useUpdatePincode,
 } from '../../../../../lib/catalogApi';
+import { LocationAutocomplete } from '../../../../../components/forms/LocationAutocomplete';
 
 const pincodeSchema = z.object({
   pincode: z
@@ -57,9 +57,6 @@ export function PincodeFormDialog({ open, pincodeToEdit, onClose, onSuccess }: P
 
   const { data: statesData } = useStates({ limit: 100, isActive: 'Y' });
   const states = statesData?.items || [];
-
-  const { data: locationsData } = useLocations({ limit: 100, isActive: 'Y' });
-  const locations = locationsData?.items || [];
 
   const {
     control,
@@ -229,24 +226,15 @@ export function PincodeFormDialog({ open, pincodeToEdit, onClose, onSuccess }: P
               name="defaultAsfId"
               control={control}
               render={({ field }) => (
-                <FormControl fullWidth>
-                  <InputLabel id="pincode-asf-label">Default Authorized Service Center (ASF)</InputLabel>
-                  <Select
-                    {...field}
-                    labelId="pincode-asf-label"
-                    label="Default Authorized Service Center (ASF)"
-                  >
-                    <MenuItem value="">
-                      <em>None (Unassigned — Direct or Dynamic Dispatch)</em>
-                    </MenuItem>
-                    {locations.map((loc) => (
-                      <MenuItem key={loc.locationId} value={loc.locationId}>
-                        {loc.locationName} ({loc.locationCode}) — {loc.partyType}
-                      </MenuItem>
-                    ))}
-                  </Select>
-                  <FormHelperText>Default service partner for automated technician dispatch</FormHelperText>
-                </FormControl>
+                <LocationAutocomplete
+                  value={field.value}
+                  onChange={(locId) => field.onChange(locId)}
+                  label="Default Authorized Service Center (ASF)"
+                  placeholder="Search operational service centers..."
+                  partyType="ASF"
+                  allowClear
+                  helperText="Default service partner for automated technician dispatch"
+                />
               )}
             />
 

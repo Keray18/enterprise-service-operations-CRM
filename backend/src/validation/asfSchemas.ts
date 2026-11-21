@@ -12,7 +12,10 @@ export const dispatchComplaintSchema = z.object({
     .max(50, 'Appointment slot cannot exceed 50 characters'),
   engineerId: z.string().uuid('Valid field engineer user UUID is required'),
   travelDistanceKm: z.number().min(0, 'Distance cannot be negative').max(9999).optional(),
-  areaType: z.enum(['LOCAL', 'UPCOUNTRY']).optional(),
+  areaType: z
+    .enum(['LOCAL', 'UPCOUNTRY', 'URBAN', 'RURAL'])
+    .transform((v) => (v === 'URBAN' ? 'LOCAL' : v === 'RURAL' ? 'UPCOUNTRY' : v) as 'LOCAL' | 'UPCOUNTRY')
+    .optional(),
   remarks: z.string().max(1000, 'Remarks cannot exceed 1000 characters').optional(),
   idempotencyKey: z.string().max(100).optional(),
 });
@@ -35,6 +38,21 @@ export const regenerateOtpSchema = z.object({
   reason: z.string().max(500).optional(),
 });
 
+export const acknowledgeComplaintSchema = z.object({
+  remarks: z.string().max(1000).optional(),
+});
+
+export const rejectAssignmentSchema = z.object({
+  reason: z.enum(['UNSUPPORTED_PRODUCT', 'INCORRECT_ASSIGNMENT', 'CAPACITY_EXCEEDED', 'OUT_OF_TERRITORY', 'OTHER']),
+  remarks: z.string().min(1, 'Rejection remarks are mandatory').max(1000),
+});
+
+export const reassignComplaintSchema = z.object({
+  newLocationId: z.string().uuid('Valid target Service Center UUID is required'),
+  remarks: z.string().max(1000).optional(),
+  preserveAssignment: z.boolean().optional(),
+});
+
 export const asfQueueQuerySchema = z.object({
   view: z
     .enum([
@@ -51,6 +69,7 @@ export const asfQueueQuerySchema = z.object({
       'parts_dispatched',
       'awaiting_verification',
       'overdue',
+      'assignment_required',
     ])
     .optional()
     .default('all'),

@@ -80,12 +80,18 @@ describe('Phase 2A ASF Operations & Dispatch Frontend API Tests', () => {
           username: 'tech_rajesh',
           fullName: 'Rajesh Kumar',
           phoneNumber: '9876540001',
+          isActive: 'Y',
+          openJobCount: 1,
+          availabilityStatus: 'ACTIVE',
         },
         {
           userId: 'eng-02',
           username: 'tech_vikram',
           fullName: 'Vikram Singh',
           phoneNumber: '9876540002',
+          isActive: 'Y',
+          openJobCount: 0,
+          availabilityStatus: 'AVAILABLE',
         },
       ];
 

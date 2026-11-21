@@ -11,7 +11,7 @@ interface ProtectedRouteProps {
   children: React.ReactNode;
   requiredPermission?: string;
   requiredAnyPermission?: string[];
-  requiredRole?: string;
+  requiredRole?: string | string[];
 }
 
 export function ProtectedRoute({
@@ -96,8 +96,8 @@ export function ProtectedRoute({
             Unauthorized Workspace Capability
           </Typography>
           <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
-            Your account (<strong>{user?.username}</strong> with roles{' '}
-            <strong>{user?.roles.join(', ')}</strong>) lacks the required permission:
+            Your account (<strong>{user?.username || 'Guest'}</strong> with roles{' '}
+            <strong>{user?.roles?.join(', ') || 'NONE'}</strong>) lacks the required permission:
             <code style={{ marginLeft: 6, padding: '2px 6px', background: '#f1f5f9', borderRadius: 4 }}>
               {requiredPermission}
             </code>
@@ -142,8 +142,8 @@ export function ProtectedRoute({
               Unauthorized Workspace Capability
             </Typography>
             <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
-              Your account (<strong>{user?.username}</strong> with roles{' '}
-              <strong>{user?.roles.join(', ')}</strong>) lacks required permissions:
+              Your account (<strong>{user?.username || 'Guest'}</strong> with roles{' '}
+              <strong>{user?.roles?.join(', ') || 'NONE'}</strong>) lacks required permissions:
               <code style={{ marginLeft: 6, padding: '2px 6px', background: '#f1f5f9', borderRadius: 4 }}>
                 {requiredAnyPermission.join(', ')}
               </code>
@@ -164,7 +164,10 @@ export function ProtectedRoute({
     }
   }
 
-  if (requiredRole && !hasRole(requiredRole)) {
+  if (requiredRole) {
+    const roles = Array.isArray(requiredRole) ? requiredRole : [requiredRole];
+    const hasAnyRole = roles.some((r) => hasRole(r));
+    if (!hasAnyRole) {
     return (
       <Card variant="outlined" sx={{ maxWidth: 540, mx: 'auto', my: 6, p: 3 }}>
         <CardContent sx={{ textAlign: 'center' }}>
@@ -184,7 +187,7 @@ export function ProtectedRoute({
             403 — Role Restriction
           </Typography>
           <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
-            This operational area is restricted to users with role: <strong>{requiredRole}</strong>.
+            This operational area is restricted to users with role: <strong>{Array.isArray(requiredRole) ? requiredRole.join(' or ') : requiredRole}</strong>.
           </Typography>
           <Button
             variant="outlined"
@@ -199,6 +202,7 @@ export function ProtectedRoute({
         </CardContent>
       </Card>
     );
+    }
   }
 
   return <>{children}</>;

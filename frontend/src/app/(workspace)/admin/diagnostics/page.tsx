@@ -222,7 +222,7 @@ export default function AdminDiagnosticsPage() {
                   {user?.fullName || 'Administrator'}
                 </Typography>
                 <Typography variant="body2" sx={{ color: 'text.secondary', fontSize: '0.75rem' }}>
-                  Roles: {user?.roles.join(', ')} ({user?.permissions.length} perms)
+                  Roles: {user?.roles?.join(', ') || 'N/A'} ({user?.permissions?.length || 0} perms)
                 </Typography>
               </Box>
             </Box>

@@ -8,6 +8,7 @@ import ChevronLeftIcon from '@mui/icons-material/ChevronLeft';
 import ChevronRightIcon from '@mui/icons-material/ChevronRight';
 import DashboardIcon from '@mui/icons-material/Dashboard';
 import DnsIcon from '@mui/icons-material/Dns';
+import EngineeringIcon from '@mui/icons-material/Engineering';
 import HeadsetMicIcon from '@mui/icons-material/HeadsetMic';
 import Inventory2Icon from '@mui/icons-material/Inventory2';
 import LocalShippingIcon from '@mui/icons-material/LocalShipping';
@@ -40,7 +41,7 @@ interface NavItem {
   href: string;
   icon: React.ReactNode;
   requiredPermission?: string;
-  requiredRole?: string;
+  requiredRole?: string | string[];
 }
 
 interface NavSection {
@@ -50,12 +51,24 @@ interface NavSection {
 
 const NAV_SECTIONS: NavSection[] = [
   {
+    title: 'FIELD SERVICE',
+    items: [
+      {
+        label: 'Field Service Workspace',
+        href: '/engineer',
+        icon: <EngineeringIcon fontSize="small" />,
+        requiredRole: ['ENGINEER', 'ADMIN'],
+      },
+    ],
+  },
+  {
     title: 'CALL CENTER',
     items: [
       {
         label: 'Call Center Workspace',
         href: '/call-center',
         icon: <HeadsetMicIcon fontSize="small" />,
+        requiredRole: ['CALL_CENTER', 'CALL_CENTER_SUPERVISOR', 'ADMIN'],
         requiredPermission: 'calls:read',
       },
     ],
@@ -91,6 +104,12 @@ const NAV_SECTIONS: NavSection[] = [
         icon: <SettingsIcon fontSize="small" />,
         requiredRole: 'ADMIN',
         requiredPermission: 'users:read',
+      },
+      {
+        label: 'Engineer Management',
+        href: '/admin/engineers',
+        icon: <PeopleIcon fontSize="small" />,
+        requiredRole: 'ADMIN',
       },
       {
         label: 'Catalog Masters',
@@ -153,7 +172,10 @@ export function AppSidebar({
       if (!item.requiredPermission && !item.requiredRole) return true;
       if (!isAuthenticated) return false;
       if (item.requiredPermission && !hasPermission(item.requiredPermission)) return false;
-      if (item.requiredRole && !hasRole(item.requiredRole)) return false;
+      if (item.requiredRole) {
+        const roles = Array.isArray(item.requiredRole) ? item.requiredRole : [item.requiredRole];
+        if (!roles.some((r) => hasRole(r))) return false;
+      }
       return true;
     }),
   })).filter((section) => section.items.length > 0);

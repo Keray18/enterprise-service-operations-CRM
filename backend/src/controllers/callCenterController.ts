@@ -4,6 +4,7 @@ import { customerRepository } from '../database/repositories/customerRepository.
 import { sendSuccess } from '../middleware/errorHandler.js';
 import { callCenterService } from '../services/callCenterService.js';
 import {
+  checkDuplicatesSchema,
   customerSearchSchema,
   newCustomerSchema,
   registerComplaintSchema,
@@ -96,6 +97,19 @@ export class CallCenterController {
       const brandId = typeof req.query.brandId === 'string' ? req.query.brandId : undefined;
       const vocs = await callCenterService.listVOCs(productId, brandId);
       sendSuccess(res, vocs);
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  /**
+   * GET /api/v1/call-center/complaints/check-duplicates
+   */
+  async checkDuplicates(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const validated = checkDuplicatesSchema.parse(req.query);
+      const result = await callCenterService.checkDuplicateComplaints(validated);
+      sendSuccess(res, result);
     } catch (err) {
       next(err);
     }

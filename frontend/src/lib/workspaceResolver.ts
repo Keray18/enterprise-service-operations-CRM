@@ -27,8 +27,11 @@ export function resolveDefaultWorkspace(user: AuthUser | null): string | null {
   if (roles.includes('CALL_CENTER') || roles.includes('CALL_CENTER_SUPERVISOR')) {
     return '/call-center';
   }
-  if (roles.includes('ASF') || roles.includes('ENGINEER') || roles.includes('ASF_MANAGER') || roles.includes('SERVICE_ENGINEER')) {
-    return '/asf';
+  if (roles.includes('ENGINEER') || roles.includes('SERVICE_ENGINEER')) {
+    return '/engineer';
+  }
+  if (roles.includes('ASF') || roles.includes('ASF_MANAGER')) {
+    return '/service-center';
   }
   if (roles.includes('WAREHOUSE')) {
     return '/warehouse';
@@ -44,11 +47,14 @@ export function resolveDefaultWorkspace(user: AuthUser | null): string | null {
   if (permissions.includes('users:read') || permissions.includes('masters:manage')) {
     return '/admin';
   }
-  if (permissions.includes('calls:create') || (permissions.includes('calls:read') && !permissions.includes('asf:read'))) {
+  if (permissions.includes('calls:create') || (permissions.includes('calls:read') && !permissions.includes('asf:read') && !permissions.includes('calls:checkin'))) {
     return '/call-center';
   }
+  if (permissions.includes('calls:checkin') && !permissions.includes('asf:read')) {
+    return '/engineer';
+  }
   if (permissions.includes('asf:read') || permissions.includes('calls:diagnose') || permissions.includes('calls:repair')) {
-    return '/asf';
+    return '/service-center';
   }
   if (permissions.includes('inventory:read')) {
     return '/warehouse';
@@ -78,7 +84,13 @@ export function isAuthorizedForPath(user: AuthUser | null, pathname: string): bo
     return permissions.includes('system:audit');
   }
 
-  // 2. Admin Workspace (/admin, /admin/masters)
+  // 2. Admin Engineer Management (/admin/engineers)
+  // Strictly restricted to System Administrator
+  if (pathname.startsWith('/admin/engineers')) {
+    return roles.includes('ADMIN');
+  }
+
+  // 3. Admin Workspace (/admin, /admin/masters)
   if (pathname.startsWith('/admin')) {
     return (
       roles.includes('ADMIN') ||
@@ -88,7 +100,19 @@ export function isAuthorizedForPath(user: AuthUser | null, pathname: string): bo
     );
   }
 
-  // 2. Call Center Workspace (/call-center)
+  // 4. Dedicated Field Engineer Workspace (/engineer)
+  if (pathname.startsWith('/engineer')) {
+    return (
+      roles.includes('ADMIN') ||
+      roles.includes('ENGINEER') ||
+      roles.includes('SERVICE_ENGINEER') ||
+      permissions.includes('calls:checkin') ||
+      permissions.includes('calls:diagnose') ||
+      permissions.includes('calls:repair')
+    );
+  }
+
+  // 5. Call Center Workspace (/call-center)
   if (pathname.startsWith('/call-center')) {
     return (
       roles.includes('ADMIN') ||
@@ -98,17 +122,26 @@ export function isAuthorizedForPath(user: AuthUser | null, pathname: string): bo
     );
   }
 
-  // 3. Service Center / ASF / Technician Workspace (/service-center, /asf, /asf/jobs/...)
-  if (pathname.startsWith('/service-center') || pathname.startsWith('/asf')) {
+  // 6. Service Center / ASF Workspace (/service-center, /asf)
+  // Job 360 subroutes (/asf/jobs/...) are accessible to assigned engineers
+  if (pathname.startsWith('/asf/jobs') || pathname.startsWith('/service-center/jobs')) {
     return (
       roles.includes('ADMIN') ||
       roles.includes('ASF') ||
       roles.includes('ENGINEER') ||
       roles.includes('ASF_MANAGER') ||
       roles.includes('SERVICE_ENGINEER') ||
-      permissions.includes('asf:read') ||
       permissions.includes('calls:diagnose') ||
       permissions.includes('calls:repair')
+    );
+  }
+
+  if (pathname.startsWith('/service-center') || pathname.startsWith('/asf')) {
+    return (
+      roles.includes('ADMIN') ||
+      roles.includes('ASF') ||
+      roles.includes('ASF_MANAGER') ||
+      permissions.includes('asf:read')
     );
   }
 

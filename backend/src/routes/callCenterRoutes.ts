@@ -18,6 +18,13 @@ callCenterRouter.get(
   callCenterController.listVOCs.bind(callCenterController)
 );
 
+callCenterRouter.get(
+  '/complaints/check-duplicates',
+  requireAuth,
+  requirePermission('calls:read'),
+  callCenterController.checkDuplicates.bind(callCenterController)
+);
+
 callCenterRouter.post(
   '/complaints',
   requireAuth,

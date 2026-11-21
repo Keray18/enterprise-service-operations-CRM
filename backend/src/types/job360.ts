@@ -142,12 +142,40 @@ export interface CustomerEstimateDecisionInput {
 export interface CustomerFeedbackRecord {
   feedbackId: string;
   requestId: string;
-  rating: number; // 1 to 5
+  tokenHash?: string;
+  rating?: number; // 1 to 5 (Overall Service Rating)
+  techRating?: number; // 1 to 5 (Technician Professionalism)
+  repairRating?: number; // 1 to 5 (Repair Satisfaction)
+  issueResolved?: 'Y' | 'N';
   feedbackRemarks?: string;
   qualityAnalysis?: string;
+  status: 'PENDING' | 'SUBMITTED' | 'EXPIRED';
+  invitedAt: Date;
+  submittedAt?: Date;
+  expiresAt?: Date;
   submittedBy?: string;
   submittedByUsername?: string;
-  submittedAt: Date;
+  createdAt?: Date;
+  updatedAt?: Date;
+}
+
+export interface PublicFeedbackSummary {
+  feedbackId: string;
+  jobNumber: string;
+  productName: string;
+  brandName: string;
+  serviceDate: string;
+  status: 'PENDING' | 'SUBMITTED' | 'EXPIRED';
+  isExpired: boolean;
+  alreadySubmitted: boolean;
+}
+
+export interface SubmitPublicFeedbackInput {
+  overallRating: number; // 1-5
+  techRating: number; // 1-5
+  repairRating: number; // 1-5
+  issueResolved: 'Y' | 'N';
+  comments?: string;
 }
 
 export interface SubmitFeedbackInput {

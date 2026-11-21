@@ -363,6 +363,25 @@ export class ReportingService {
     const permissions = user?.permissions || [];
     return reportingRepository.getAdminDashboardSummary(preset, fromDate, toDate, permissions);
   }
+
+  /**
+   * Paginated service center workload and capacity breakdown.
+   */
+  async getServiceCenterWorkload(
+    params: {
+      page?: number;
+      limit?: number;
+      search?: string;
+      stateId?: string;
+      cityId?: string;
+      status?: string;
+      sortBy?: string;
+      sortDir?: string;
+    },
+    _user?: AuthenticatedUser
+  ): Promise<any> {
+    return reportingRepository.getServiceCenterWorkloadPaginated(params);
+  }
 }
 
 export const reportingService = new ReportingService();

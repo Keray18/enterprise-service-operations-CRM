@@ -597,12 +597,12 @@ export class WarehouseController {
       const result = await conn.execute<any>(sql, {}, { outFormat: oracledb.OUT_FORMAT_OBJECT });
       const row = result.rows?.[0];
 
-      // Fetch active locations for warehouse operations
+      // Fetch active operational locations for warehouse operations
       const locResult = await conn.execute<any>(
         `SELECT LOCATION_ID, LOCATION_CODE, LOCATION_NAME, PARTY_TYPE
          FROM LOCATIONS
-         WHERE IS_ACTIVE = 'Y'
-         ORDER BY LOCATION_NAME ASC`,
+         WHERE IS_ACTIVE = 'Y' AND IS_TEST_FIXTURE = 'N'
+         ORDER BY IS_DEFAULT DESC, LOCATION_NAME ASC, LOCATION_CODE ASC`,
         {},
         { outFormat: oracledb.OUT_FORMAT_OBJECT }
       );

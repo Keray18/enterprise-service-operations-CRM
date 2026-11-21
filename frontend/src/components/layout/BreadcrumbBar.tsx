@@ -9,6 +9,20 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import React from 'react';
 
+const SEGMENT_LABELS: Record<string, string> = {
+  engineer: 'Field Service',
+  'service-center': 'Service Center',
+  asf: 'Service Center',
+  'call-center': 'Call Center',
+  warehouse: 'Warehouse',
+  admin: 'Admin Console',
+  masters: 'Catalog Masters',
+  engineers: 'Engineer Management',
+  diagnostics: 'Diagnostics',
+  finance: 'Finance & Settlements',
+  reports: 'Reports & Telemetry',
+};
+
 interface BreadcrumbBarProps {
   actions?: React.ReactNode;
 }
@@ -52,9 +66,12 @@ export function BreadcrumbBar({ actions }: BreadcrumbBarProps) {
         {segments.map((segment, index) => {
           const isLast = index === segments.length - 1;
           const href = `/${segments.slice(0, index + 1).join('/')}`;
-          const formatted = segment
-            .replace(/-/g, ' ')
-            .replace(/\b\w/g, (c) => c.toUpperCase());
+          const lower = segment.toLowerCase();
+          const formatted =
+            SEGMENT_LABELS[lower] ||
+            segment
+              .replace(/-/g, ' ')
+              .replace(/\b\w/g, (c) => c.toUpperCase());
 
           return isLast ? (
             <Typography key={href} color="text.primary" sx={{ fontSize: '0.8125rem', fontWeight: 600 }}>

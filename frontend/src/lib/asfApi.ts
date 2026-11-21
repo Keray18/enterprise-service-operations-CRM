@@ -24,10 +24,19 @@ export interface AsfQueueItem extends ServiceRequest {
   slaBreached48h: 'Y' | 'N';
   slaBreached48hAt?: string;
   acknowledgedAt?: string;
+  acknowledgedBy?: string;
+  acknowledgedByUsername?: string;
+  reassignmentRequested?: 'Y' | 'N';
+  reassignmentReason?: string;
+  reassignmentRemarks?: string;
+  reassignmentRequestedBy?: string;
+  reassignmentRequestedAt?: string;
+  assignmentSource?: string;
+  assignmentFailedReason?: string;
   appointmentDate?: string;
   appointmentSlot?: 'MORNING' | 'AFTERNOON' | 'EVENING';
   travelDistanceKm?: number;
-  areaType?: 'URBAN' | 'RURAL';
+  areaType?: 'URBAN' | 'RURAL' | 'LOCAL' | 'UPCOUNTRY';
   checkedInAt?: string;
   assignedEngineerName?: string;
   assignedEngineerPhone?: string;
@@ -38,6 +47,13 @@ export interface EligibleEngineer {
   username: string;
   fullName: string;
   phoneNumber?: string;
+  email?: string;
+  isActive: 'Y' | 'N';
+  homeLocationId?: string;
+  homeLocationCode?: string;
+  homeLocationName?: string;
+  openJobCount: number;
+  availabilityStatus: 'AVAILABLE' | 'ACTIVE' | 'BUSY';
 }
 
 export interface DispatchComplaintPayload {
@@ -46,8 +62,9 @@ export interface DispatchComplaintPayload {
   appointmentDate: string; // YYYY-MM-DD
   appointmentSlot: 'MORNING' | 'AFTERNOON' | 'EVENING';
   travelDistanceKm?: number;
-  areaType?: 'URBAN' | 'RURAL';
+  areaType?: 'LOCAL' | 'UPCOUNTRY' | 'URBAN' | 'RURAL';
   remarks?: string;
+  idempotencyKey?: string;
 }
 
 export interface DispatchComplaintResponse {
@@ -61,6 +78,7 @@ export interface DispatchComplaintResponse {
   otpExpiresAt: string;
   smsQueued: boolean;
   message: string;
+  devOtpPreview?: string;
 }
 
 export interface CheckInComplaintPayload {
@@ -91,6 +109,7 @@ export interface RegenerateOtpResponse {
   otpExpiresAt: string;
   smsQueued: boolean;
   message: string;
+  devOtpPreview?: string;
 }
 
 export interface SlaEvaluationResult {
@@ -113,6 +132,7 @@ export type ServiceCenterQueueView =
   | 'parts_dispatched'
   | 'awaiting_verification'
   | 'overdue'
+  | 'assignment_required'
   | 'my_visits';
 
 export interface AsfQueueFilters {
@@ -150,8 +170,8 @@ export const asfApi = {
     return apiClient.get<PaginatedResult<AsfQueueItem>>(`/api/v1/asf/queue${qs ? `?${qs}` : ''}`);
   },
 
-  getEligibleEngineers: async (locationId: string): Promise<EligibleEngineer[]> => {
-    return apiClient.get<EligibleEngineer[]>(`/api/v1/asf/engineers/${locationId}`);
+  getEligibleEngineers: async (locationId?: string): Promise<EligibleEngineer[]> => {
+    return apiClient.get<EligibleEngineer[]>(locationId ? `/api/v1/asf/engineers/${locationId}` : '/api/v1/asf/engineers');
   },
 
   getEngineerJobs: async (params?: { page?: number; limit?: number; status?: string }): Promise<PaginatedResult<AsfQueueItem>> => {
@@ -162,6 +182,29 @@ export const asfApi = {
 
     const qs = query.toString();
     return apiClient.get<PaginatedResult<AsfQueueItem>>(`/api/v1/asf/engineer-jobs${qs ? `?${qs}` : ''}`);
+  },
+
+  acknowledgeComplaint: async (payload: { requestId: string; remarks?: string }): Promise<any> => {
+    const { requestId, ...body } = payload;
+    return apiClient.post(`/api/v1/asf/requests/${requestId}/acknowledge`, body);
+  },
+
+  rejectAssignment: async (payload: {
+    requestId: string;
+    reason: 'UNSUPPORTED_PRODUCT' | 'INCORRECT_ASSIGNMENT' | 'CAPACITY_EXCEEDED' | 'OUT_OF_TERRITORY' | 'OTHER';
+    remarks: string;
+  }): Promise<any> => {
+    const { requestId, ...body } = payload;
+    return apiClient.post(`/api/v1/asf/requests/${requestId}/reject-assignment`, body);
+  },
+
+  reassignComplaint: async (payload: {
+    requestId: string;
+    newLocationId: string;
+    remarks?: string;
+  }): Promise<any> => {
+    const { requestId, ...body } = payload;
+    return apiClient.post(`/api/v1/asf/requests/${requestId}/reassign`, body);
   },
 
   dispatchComplaint: async (payload: DispatchComplaintPayload): Promise<DispatchComplaintResponse> => {
@@ -199,9 +242,8 @@ export function useAsfQueue(filters: AsfQueueFilters = {}) {
 
 export function useEligibleEngineers(locationId?: string) {
   return useQuery({
-    queryKey: ['asf', 'engineers', locationId],
-    queryFn: () => asfApi.getEligibleEngineers(locationId!),
-    enabled: Boolean(locationId),
+    queryKey: ['asf', 'engineers', locationId || 'all'],
+    queryFn: () => asfApi.getEligibleEngineers(locationId),
     staleTime: 60_000,
   });
 }
@@ -228,6 +270,36 @@ export function useCheckInComplaint() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: asfApi.checkInWithOtp,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['asf'] });
+    },
+  });
+}
+
+export function useAcknowledgeComplaint() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: asfApi.acknowledgeComplaint,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['asf'] });
+    },
+  });
+}
+
+export function useRejectAssignment() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: asfApi.rejectAssignment,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['asf'] });
+    },
+  });
+}
+
+export function useReassignComplaint() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: asfApi.reassignComplaint,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['asf'] });
     },

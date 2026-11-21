@@ -99,6 +99,7 @@ import {
   useSubmitFeedback,
   useUploadAttachment,
   useVerifyHappyCode,
+  useReturnRepair,
 } from '../../../../../lib/job360Api';
 import { TechnicianCheckInDialog } from '../../components/TechnicianCheckInDialog';
 
@@ -176,6 +177,12 @@ export default function Job360WorkspacePage() {
   const [cancellationReviewDecision, setCancellationReviewDecision] = useState<'APPROVED' | 'REJECTED'>('APPROVED');
   const [cancellationReviewRemarks, setCancellationReviewRemarks] = useState<string>('');
 
+  // P0 Service Center Handoff & Dev Previews
+  const [returnRepairDialogOpen, setReturnRepairDialogOpen] = useState<boolean>(false);
+  const [returnReason, setReturnReason] = useState<string>('');
+  const [devHappyCodePreview, setDevHappyCodePreview] = useState<string | null>(null);
+  const [devFeedbackUrl, setDevFeedbackUrl] = useState<string | null>(null);
+
   const serviceRequest = jobData?.serviceRequest;
   const verification = jobData?.verification;
   const parts = jobData?.parts || [];
@@ -223,6 +230,7 @@ export default function Job360WorkspacePage() {
   const reviewReplacementMutation = useReviewReplacement(serviceRequest?.requestId || '');
   const requestCancellationMutation = useRequestCancellation(serviceRequest?.requestId || '');
   const reviewCancellationMutation = useReviewCancellation(serviceRequest?.requestId || '');
+  const returnRepairMutation = useReturnRepair(serviceRequest?.requestId || '');
   const acknowledgeDispatchMutation = useAcknowledgeDispatch();
 
   // Prepopulate diagnosis form if exists
@@ -398,6 +406,9 @@ export default function Job360WorkspacePage() {
       const res = await initiateClosureMutation.mutateAsync({
         remarks: closureRemarks.trim() || undefined,
       });
+      if (res.devHappyCodePreview) {
+        setDevHappyCodePreview(res.devHappyCodePreview);
+      }
       setActionSuccessMsg(res.message || 'Repair completed. Happy Code generated and sent to customer via SMS 4.');
       setClosureRemarks('');
       refetch();
@@ -409,10 +420,29 @@ export default function Job360WorkspacePage() {
   const handleRegenerateHappyCode = async () => {
     try {
       const res = await regenerateHappyCodeMutation.mutateAsync();
+      if (res.devHappyCodePreview) {
+        setDevHappyCodePreview(res.devHappyCodePreview);
+      }
       setActionSuccessMsg(res.message || 'Happy Code regenerated and dispatched via SMS 5.');
       refetch();
     } catch (err: any) {
       setActionErrorMsg(err.message || 'Failed to regenerate Happy Code.');
+    }
+  };
+
+  const handleReturnRepair = async () => {
+    if (!returnReason || returnReason.trim().length < 10) {
+      setActionErrorMsg('A clear written correction reason (minimum 10 characters) is required.');
+      return;
+    }
+    try {
+      const res = await returnRepairMutation.mutateAsync({ reason: returnReason.trim() });
+      setActionSuccessMsg(res.message || 'Repair returned to engineer for correction.');
+      setReturnRepairDialogOpen(false);
+      setReturnReason('');
+      refetch();
+    } catch (err: any) {
+      setActionErrorMsg(err?.message || 'Failed to return repair.');
     }
   };
 
@@ -438,6 +468,9 @@ export default function Job360WorkspacePage() {
           qualityAnalysis: qualityAnalysisInput.trim() || undefined,
         } : undefined,
       });
+      if (res.feedbackUrl) {
+        setDevFeedbackUrl(res.feedbackUrl);
+      }
       setActionSuccessMsg(res.message || 'Service call verified and closed successfully!');
       setHappyCodeInput('');
       setOverrideReason('');
@@ -1784,8 +1817,42 @@ export default function Job360WorkspacePage() {
 
                 {/* 2. STATE: CALL_CLOSURE_SUBMITTED — AWAITING HAPPY CODE VERIFICATION */}
                 {serviceRequest.status === 'CALL_CLOSURE_SUBMITTED' && (
-                  <Grid container spacing={3}>
-                    {/* Happy Code Entry Card */}
+                  <>
+                    {devHappyCodePreview && (
+                      <Alert severity="warning" sx={{ mb: 3 }}>
+                        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
+                          <Box>
+                            <Typography variant="subtitle2" sx={{ fontWeight: 800 }}>
+                              Development Only Happy Code Preview:
+                            </Typography>
+                            <Typography variant="h5" sx={{ fontFamily: 'monospace', letterSpacing: 4, fontWeight: 900, color: 'warning.dark' }}>
+                              {devHappyCodePreview}
+                            </Typography>
+                          </Box>
+                          <Box sx={{ display: 'flex', gap: 1 }}>
+                            <Button
+                              size="small"
+                              variant="outlined"
+                              color="warning"
+                              onClick={() => setHappyCodeInput(devHappyCodePreview)}
+                            >
+                              Fill Code
+                            </Button>
+                            <Button
+                              size="small"
+                              variant="contained"
+                              color="warning"
+                              onClick={() => navigator.clipboard.writeText(devHappyCodePreview)}
+                            >
+                              Copy
+                            </Button>
+                          </Box>
+                        </Box>
+                      </Alert>
+                    )}
+
+                    <Grid container spacing={3}>
+                      {/* Happy Code Entry Card */}
                     <Grid item xs={12} md={7}>
                       <Paper variant="outlined" sx={{ p: 3, borderRadius: 2 }}>
                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
@@ -1951,10 +2018,29 @@ export default function Job360WorkspacePage() {
                             {regenerateHappyCodeMutation.isPending ? 'Regenerating...' : 'Regenerate Code (SMS 5)'}
                           </Button>
                         </Box>
+
+                        <Divider sx={{ my: 2 }} />
+
+                        <Typography variant="subtitle2" sx={{ fontWeight: 700, mb: 1, color: 'warning.dark' }}>
+                          Service Quality Review &amp; Handoff
+                        </Typography>
+                        <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+                          If work is incomplete or evidence is unsatisfactory, return this job to the technician for rework.
+                        </Typography>
+                        <Button
+                          variant="outlined"
+                          color="error"
+                          fullWidth
+                          onClick={() => setReturnRepairDialogOpen(true)}
+                          sx={{ textTransform: 'none', fontWeight: 600 }}
+                        >
+                          Return to Engineer for Rework
+                        </Button>
                       </Paper>
                     </Grid>
                   </Grid>
-                )}
+                </>
+              )}
 
                 {/* 3. STATE: CLOSED — PERMANENT CLOSURE RECORD */}
                 {serviceRequest.status === 'CLOSED' && (
@@ -1974,6 +2060,27 @@ export default function Job360WorkspacePage() {
                         </Typography>
                       </Box>
                     </Box>
+
+                    {devFeedbackUrl && (
+                      <Box sx={{ mb: 3, p: 2, backgroundColor: '#f0fdf4', border: '1px dashed #22c55e', borderRadius: 2 }}>
+                        <Typography variant="subtitle2" sx={{ fontWeight: 700, color: '#15803d' }}>
+                          Post-Service Customer Feedback Link (Development Active):
+                        </Typography>
+                        <Typography variant="body2" sx={{ my: 1, wordBreak: 'break-all' }}>
+                          <a href={devFeedbackUrl} target="_blank" rel="noopener noreferrer" style={{ color: '#047857', fontWeight: 600 }}>
+                            {devFeedbackUrl}
+                          </a>
+                        </Typography>
+                        <Button
+                          size="small"
+                          variant="outlined"
+                          color="success"
+                          onClick={() => navigator.clipboard.writeText(devFeedbackUrl)}
+                        >
+                          Copy Feedback Link
+                        </Button>
+                      </Box>
+                    )}
 
                     {serviceRequest.supervisorOverrideReason ? (
                       <Alert severity="warning" sx={{ mb: 3 }}>
@@ -2738,6 +2845,46 @@ export default function Job360WorkspacePage() {
                 </Button>
               </DialogActions>
             </Box>
+          </Dialog>
+
+          {/* Return Repair for Correction Modal */}
+          <Dialog
+            open={returnRepairDialogOpen}
+            onClose={() => setReturnRepairDialogOpen(false)}
+            maxWidth="sm"
+            fullWidth
+          >
+            <DialogTitle sx={{ fontWeight: 700 }}>Return Repair to Field Engineer</DialogTitle>
+            <DialogContent dividers>
+              <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+                Provide detailed correction instructions for job <strong>{serviceRequest.jobNumber}</strong>. This complaint will return to <strong>IN_PROGRESS_REPAIR</strong> status for technician rework.
+              </Typography>
+              <TextField
+                fullWidth
+                required
+                multiline
+                rows={4}
+                label="Mandatory Correction Justification (minimum 10 characters)"
+                placeholder="e.g. Unit vibration persists at high spin. Balance weights must be re-calibrated..."
+                value={returnReason}
+                onChange={(e) => setReturnReason(e.target.value)}
+                helperText={`${returnReason.trim().length}/10 characters minimum`}
+                error={returnReason.length > 0 && returnReason.trim().length < 10}
+              />
+            </DialogContent>
+            <DialogActions sx={{ px: 3, pb: 2 }}>
+              <Button onClick={() => setReturnRepairDialogOpen(false)} color="inherit">
+                Cancel
+              </Button>
+              <Button
+                onClick={handleReturnRepair}
+                variant="contained"
+                color="error"
+                disabled={returnRepairMutation.isPending || returnReason.trim().length < 10}
+              >
+                {returnRepairMutation.isPending ? 'Returning...' : 'Confirm Return for Correction'}
+              </Button>
+            </DialogActions>
           </Dialog>
         </Box>
     </ProtectedRoute>
