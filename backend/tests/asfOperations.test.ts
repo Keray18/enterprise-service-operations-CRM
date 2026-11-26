@@ -449,7 +449,7 @@ describe('ASF Operations, SLA Monitoring, Dispatch & OTP Check-In (Phase 2A)', (
       expect(deliveredSms?.messageBody).toContain(`Service Request #${ticket.jobNumber}`);
       expect(deliveredSms?.messageBody).toContain('Rajesh Kumar (Field Tech)');
       expect(deliveredSms?.messageBody).toContain('Please keep the required documents ready');
-      expect(deliveredSms?.messageBody).toMatch(/share the OTP \d{6}/);
+      expect(deliveredSms?.messageBody).toMatch(/share the Arrival Happy Code \d{6}/);
     });
 
     it('rejects dispatch to an engineer from a mismatched franchise location', async () => {
@@ -533,7 +533,7 @@ describe('ASF Operations, SLA Monitoring, Dispatch & OTP Check-In (Phase 2A)', (
 
       // Extract the OTP delivered to the customer via SMS 2
       const sentSms = mockSmsAdapter.getSentMessages();
-      const match = sentSms[0]?.messageBody.match(/share the OTP (\d{6})/);
+      const match = sentSms[0]?.messageBody.match(/share the Arrival Happy Code (\d{6})/);
       expectedOtp = match ? match[1]! : '123456';
     });
 
@@ -612,10 +612,10 @@ describe('ASF Operations, SLA Monitoring, Dispatch & OTP Check-In (Phase 2A)', (
       const sentSms = mockSmsAdapter.getSentMessages();
       expect(sentSms.length).toBe(1);
       expect(sentSms[0]?.templateCode).toBe('SMS_06_OTP_REGEN');
-      expect(sentSms[0]?.messageBody).toContain('Please share OTP');
+      expect(sentSms[0]?.messageBody).toMatch(/Please share (?:Arrival Happy Code|OTP)/);
 
-      // Extract new OTP
-      const match = sentSms[0]?.messageBody.match(/share OTP (\d{6})/);
+      // Extract new Happy Code
+      const match = sentSms[0]?.messageBody.match(/share (?:Arrival Happy Code|OTP) (\d{6})/);
       expectedOtp = match ? match[1]! : '';
       expect(expectedOtp).toHaveLength(6);
     });

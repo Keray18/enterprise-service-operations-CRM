@@ -21,9 +21,7 @@ describe('Phase 5 Completion Gate: Role-by-Report Authorization Matrix & Scope V
     admin: { id: crypto.randomUUID(), username: `rep_admin_${uniqueSuffix}`, role: 'ADMIN', cookie: '' },
     callCenter: { id: crypto.randomUUID(), username: `rep_cc_${uniqueSuffix}`, role: 'CALL_CENTER', cookie: '' },
     asf: { id: crypto.randomUUID(), username: `rep_asf_${uniqueSuffix}`, role: 'ASF', locationId: mumbaiLocationId, cookie: '' },
-    brand: { id: crypto.randomUUID(), username: `rep_brd_${uniqueSuffix}`, role: 'BRAND', locationId: brandLocationId, cookie: '' },
     warehouse: { id: crypto.randomUUID(), username: `rep_wh_${uniqueSuffix}`, role: 'WAREHOUSE', locationId: warehouseLocationId, cookie: '' },
-    finance: { id: crypto.randomUUID(), username: `rep_fin_${uniqueSuffix}`, role: 'FINANCE', cookie: '' },
     engineer: { id: crypto.randomUUID(), username: `rep_eng_${uniqueSuffix}`, role: 'ENGINEER', locationId: mumbaiLocationId, cookie: '' },
   };
 
@@ -136,30 +134,12 @@ describe('Phase 5 Completion Gate: Role-by-Report Authorization Matrix & Scope V
       expect(res2.headers['content-type']).toContain('text/csv');
     });
 
-    it('FINANCE should access Call Register and Export for operational audit', async () => {
-      const res1 = await request(app).get('/api/v1/reports/calls').set('Cookie', users.finance.cookie);
-      expect(res1.status).toBe(200);
-
-      const res2 = await request(app).get('/api/v1/reports/calls/export').set('Cookie', users.finance.cookie);
-      expect(res2.status).toBe(200);
-    });
-
     it('ASF should access Call Register scoped to their franchise location', async () => {
       const res = await request(app).get('/api/v1/reports/calls').set('Cookie', users.asf.cookie);
       expect(res.status).toBe(200);
       if (res.body.data?.length > 0) {
         for (const row of res.body.data) {
           expect(row.assignedLocation).toBe('Mumbai Central Service Franchise');
-        }
-      }
-    });
-
-    it('BRAND should access Call Register scoped to their brand', async () => {
-      const res = await request(app).get('/api/v1/reports/calls').set('Cookie', users.brand.cookie);
-      expect(res.status).toBe(200);
-      if (res.body.data?.length > 0) {
-        for (const row of res.body.data) {
-          expect(row.brandName).toBe('Skatercat');
         }
       }
     });
@@ -183,8 +163,8 @@ describe('Phase 5 Completion Gate: Role-by-Report Authorization Matrix & Scope V
   // ============================================================================
 
   describe('3. Parts Consumption & Defect Trends Authorization', () => {
-    it('ADMIN, WAREHOUSE, FINANCE, ASF, and BRAND should access Parts Consumption and Export', async () => {
-      const allowed = [users.admin, users.warehouse, users.finance, users.asf, users.brand];
+    it('ADMIN, WAREHOUSE, and ASF should access Parts Consumption and Export', async () => {
+      const allowed = [users.admin, users.warehouse, users.asf];
       for (const u of allowed) {
         const res = await request(app).get('/api/v1/reports/parts-consumption').set('Cookie', u.cookie);
         expect(res.status).toBe(200);
@@ -214,8 +194,8 @@ describe('Phase 5 Completion Gate: Role-by-Report Authorization Matrix & Scope V
   // ============================================================================
 
   describe('4. Warranty Claims & Settlement Audit Authorization', () => {
-    it('ADMIN, FINANCE, BRAND, and ASF should access Warranty Claims and Export', async () => {
-      const allowed = [users.admin, users.finance, users.brand, users.asf];
+    it('ADMIN and ASF should access Warranty Claims and Export', async () => {
+      const allowed = [users.admin, users.asf];
       for (const u of allowed) {
         const res = await request(app).get('/api/v1/reports/warranty-claims').set('Cookie', u.cookie);
         expect(res.status).toBe(200);
@@ -248,8 +228,8 @@ describe('Phase 5 Completion Gate: Role-by-Report Authorization Matrix & Scope V
   // ============================================================================
 
   describe('5. Inventory Stock Valuation Authorization', () => {
-    it('ADMIN, FINANCE, and WAREHOUSE should access Stock Valuation and Export', async () => {
-      const allowed = [users.admin, users.finance, users.warehouse];
+    it('ADMIN and WAREHOUSE should access Stock Valuation and Export', async () => {
+      const allowed = [users.admin, users.warehouse];
       for (const u of allowed) {
         const res = await request(app).get('/api/v1/reports/stock-valuation').set('Cookie', u.cookie);
         expect(res.status).toBe(200);
@@ -272,11 +252,6 @@ describe('Phase 5 Completion Gate: Role-by-Report Authorization Matrix & Scope V
       const res = await request(app).get('/api/v1/reports/stock-valuation').set('Cookie', users.asf.cookie);
       expect(res.status).toBe(403);
     });
-
-    it('BRAND should be STRICTLY DENIED (403) from Central Stock Valuation', async () => {
-      const res = await request(app).get('/api/v1/reports/stock-valuation').set('Cookie', users.brand.cookie);
-      expect(res.status).toBe(403);
-    });
   });
 
   // ============================================================================
@@ -284,8 +259,8 @@ describe('Phase 5 Completion Gate: Role-by-Report Authorization Matrix & Scope V
   // ============================================================================
 
   describe('6. Operational Queues & Notification Telemetry Authorization', () => {
-    it('All operational roles (ADMIN, CC, ASF, BRAND, FINANCE, WAREHOUSE) should access Operational Queues', async () => {
-      const allowed = [users.admin, users.callCenter, users.asf, users.brand, users.finance, users.warehouse];
+    it('All operational roles (ADMIN, CC, ASF, WAREHOUSE) should access Operational Queues', async () => {
+      const allowed = [users.admin, users.callCenter, users.asf, users.warehouse];
       for (const u of allowed) {
         const res = await request(app).get('/api/v1/reports/operational-queues').set('Cookie', u.cookie);
         expect(res.status).toBe(200);
@@ -302,7 +277,7 @@ describe('Phase 5 Completion Gate: Role-by-Report Authorization Matrix & Scope V
     });
 
     it('Non-admin roles should be DENIED (403) from Notification Metrics and Retry', async () => {
-      const nonAdmins = [users.callCenter, users.asf, users.brand, users.warehouse, users.finance, users.engineer];
+      const nonAdmins = [users.callCenter, users.asf, users.warehouse, users.engineer];
       for (const u of nonAdmins) {
         const res1 = await request(app).get('/api/v1/reports/notifications/metrics').set('Cookie', u.cookie);
         expect(res1.status).toBe(403);

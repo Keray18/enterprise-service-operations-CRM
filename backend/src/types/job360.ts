@@ -192,13 +192,33 @@ export type ReplacementReasonCode =
   | 'REASON_5'
   | 'REASON_6';
 
+export type ReplacementRequestStatus =
+  | 'PENDING'
+  | 'APPROVED'
+  | 'REJECTED'
+  | 'OPEN'
+  | 'PENDING_QUOTATION'
+  | 'QUOTATION_APPROVED'
+  | 'CUSTOMER_DECLINED'
+  | 'PENDING_STOCK'
+  | 'STOCK_RESERVED'
+  | 'DISPATCHED_TO_ASF'
+  | 'RECEIVED_AT_ASF'
+  | 'HANDED_OVER_TO_ENGINEER'
+  | 'APPOINTMENT_SCHEDULED'
+  | 'TECHNICIAN_CHECKED_IN'
+  | 'INSTALLATION_VERIFIED'
+  | 'CLOSED';
+
 export interface ReplacementRequestRecord {
   replacementId: string;
   requestId: string;
+  jobNumber?: string;
+  customerPhone?: string;
   reasonCode: ReplacementReasonCode;
   reasonDescription: string;
   technicianRemarks?: string;
-  status: 'PENDING' | 'APPROVED' | 'REJECTED';
+  status: ReplacementRequestStatus;
   approvalNumber?: string;
   requestedBy: string;
   requestedByUsername?: string;
@@ -207,6 +227,23 @@ export interface ReplacementRequestRecord {
   reviewedByUsername?: string;
   reviewedAt?: Date;
   reviewRemarks?: string;
+  requiredPartId?: string;
+  warrantyType?: 'IN_WARRANTY' | 'OUT_OF_WARRANTY';
+  quotationAmount?: number;
+  quotationStatus?: 'NOT_REQUIRED' | 'PENDING_CUSTOMER_APPROVAL' | 'APPROVED' | 'DECLINED';
+  quotationApprovedAt?: Date;
+  quotationRejectedAt?: Date;
+  quotationRejectionReason?: string;
+  stockStatus?: 'ALLOCATED' | 'PENDING_STOCK';
+  allocatedLocationId?: string;
+  dispatchId?: string;
+  assignedEngineerId?: string;
+  assignedEngineerName?: string;
+  appointmentSlot?: Date;
+  appointmentVersion?: number;
+  closedAt?: Date;
+  closedBy?: string;
+  updatedAt?: Date;
 }
 
 export interface CreateReplacementRequestInput {
@@ -258,6 +295,8 @@ export interface VerifyHappyCodeInput {
   happyCode?: string;
   isSupervisorOverride?: boolean;
   overrideReason?: string;
+  outcome?: 'COMPLETED' | 'ESCALATED';
+  escalationReason?: string;
   feedback?: {
     rating: number;
     feedbackRemarks?: string;

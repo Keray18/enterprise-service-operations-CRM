@@ -49,7 +49,7 @@ const NAV_SECTIONS: NavSection[] = [
     ],
   },
   {
-    title: 'ADMIN & FINANCE',
+    title: 'CLIENT ADMINISTRATION',
     items: [
       {
         label: 'Admin Console',
@@ -62,11 +62,6 @@ const NAV_SECTIONS: NavSection[] = [
         href: '/admin/masters',
         requiredRole: 'ADMIN',
         requiredPermission: 'masters:manage',
-      },
-      {
-        label: 'Finance & Settlements',
-        href: '/finance',
-        requiredPermission: 'finance:read',
       },
     ],
   },
@@ -122,7 +117,7 @@ describe('AppSidebar Navigation Visibility & RBAC Protection', () => {
     expect(visibleLabels).toContain('Catalog Masters');
     expect(visibleLabels).toContain('Admin Console');
     expect(visibleLabels).not.toContain('System Diagnostics');
-    expect(visibleLabels).toContain('Finance & Settlements');
+    expect(visibleLabels).not.toContain('Finance & Settlements');
     expect(visibleLabels).toContain('Call Center Workspace');
     expect(visibleLabels).toContain('Warehouse & PNA Hub');
     expect(visibleLabels).toContain('Franchise Queue & Jobs');
@@ -217,7 +212,7 @@ describe('AppSidebar Navigation Visibility & RBAC Protection', () => {
     expect(visibleLabels).not.toContain('Admin Console');
   });
 
-  it('Finance Officer does NOT see Catalog Masters', () => {
+  it('Deprecated Finance Officer does NOT see Finance & Settlements or Catalog Masters', () => {
     const finance = {
       roles: ['FINANCE'],
       permissions: ['finance:read', 'finance:approve', 'finance:settle', 'reports:view'],
@@ -226,12 +221,12 @@ describe('AppSidebar Navigation Visibility & RBAC Protection', () => {
     const visibleSections = getVisibleNavItems(finance);
     const visibleLabels = visibleSections.flatMap((s) => s.items.map((i) => i.label));
 
-    expect(visibleLabels).toContain('Finance & Settlements');
+    expect(visibleLabels).not.toContain('Finance & Settlements');
     expect(visibleLabels).not.toContain('Catalog Masters');
     expect(visibleLabels).not.toContain('Admin Console');
   });
 
-  it('Brand Partner does NOT see Catalog Masters', () => {
+  it('Deprecated Brand Partner does NOT see Finance & Settlements or Catalog Masters', () => {
     const brand = {
       roles: ['BRAND'],
       permissions: ['finance:read', 'finance:wallets', 'reports:view'],
@@ -240,7 +235,7 @@ describe('AppSidebar Navigation Visibility & RBAC Protection', () => {
     const visibleSections = getVisibleNavItems(brand);
     const visibleLabels = visibleSections.flatMap((s) => s.items.map((i) => i.label));
 
-    expect(visibleLabels).toContain('Finance & Settlements');
+    expect(visibleLabels).not.toContain('Finance & Settlements');
     expect(visibleLabels).not.toContain('Catalog Masters');
     expect(visibleLabels).not.toContain('Admin Console');
   });

@@ -47,7 +47,7 @@ const DEV_ACCOUNTS: DevAccountSpec[] = [
     username: 'mumbai_tech_1',
     email: 'tech1.mumbai@franchise.local',
     fullName: 'Field Engineer Mumbai',
-    route: '/asf',
+    route: '/engineer',
     preferredLocationType: 'ASF',
   },
   {
@@ -58,31 +58,6 @@ const DEV_ACCOUNTS: DevAccountSpec[] = [
     fullName: 'Central Warehouse Coordinator',
     route: '/warehouse',
     preferredLocationType: 'CENTRAL_WAREHOUSE',
-  },
-  {
-    dashboard: 'Finance & Claims',
-    role: 'FINANCE',
-    username: 'finance_officer',
-    email: 'finance@crm.internal',
-    fullName: 'Corporate Finance Officer',
-    route: '/finance',
-  },
-  {
-    dashboard: 'Brand Governance',
-    role: 'BRAND',
-    username: 'brand_manager',
-    email: 'brand@crm.internal',
-    fullName: 'Client Brand Manager',
-    route: '/finance',
-    preferredLocationType: 'HEAD_OFFICE',
-  },
-  {
-    dashboard: 'Infrastructure Diagnostics',
-    role: 'INFRA_OPS',
-    username: 'infra_ops',
-    email: 'infra_ops@crm.internal',
-    fullName: 'Infrastructure Operations Lead',
-    route: '/admin/diagnostics',
   },
 ];
 

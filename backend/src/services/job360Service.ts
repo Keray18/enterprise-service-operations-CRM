@@ -31,7 +31,6 @@ import {
   Job360DetailResponse,
   RecordDiagnosisInput,
   RecordRepairInput,
-  ReplacementReasonCode,
   ReviewCancellationRequestInput,
   ReviewReplacementRequestInput,
   SpecialPartEstimateInput,
@@ -104,7 +103,7 @@ export class Job360Service {
       const verification = await verificationRepository.findByRequestId(requestId, connection);
       if (!verification || !verification.checkInVerifiedAt) {
         throw new AppError(
-          'Technician OTP Check-In must be successfully completed before recording diagnosis, repairs, parts, or evidence.',
+          'Technician Happy Code Check-In must be successfully completed before recording diagnosis, repairs, parts, or evidence.',
           403,
           'CHECK_IN_REQUIRED'
         );
@@ -1299,6 +1298,32 @@ export class Job360Service {
       throw new AppError('No active Happy Code challenge found. Please initiate closure first.', 400, 'NO_ACTIVE_CODE');
     }
 
+    // When engineer submits escalation
+    if (input.outcome === 'ESCALATED') {
+      if (input.isSupervisorOverride) {
+        throw new AppError(
+          'Supervisor override is not permitted for repair escalation. Valid customer Happy Code is required.',
+          400,
+          'OVERRIDE_NOT_ALLOWED'
+        );
+      }
+      if (!input.escalationReason || input.escalationReason.trim().length < 5) {
+        throw new AppError(
+          'Escalation reason (minimum 5 characters) is required when escalating repair to ASF.',
+          400,
+          'ESCALATION_REASON_REQUIRED'
+        );
+      }
+      // Enforce assigned-engineer ownership
+      if (request.assignedEngineerId && request.assignedEngineerId !== actor.userId) {
+        throw new AppError(
+          'Forbidden: Only the assigned engineer can escalate this repair.',
+          403,
+          'FORBIDDEN_ENGINEER_MISMATCH'
+        );
+      }
+    }
+
     // Supervisor Override validation
     if (input.isSupervisorOverride) {
       const isSupervisor = actor.roles.includes('ADMIN') || actor.permissions.includes('calls:close');
@@ -1375,7 +1400,41 @@ export class Job360Service {
         await verificationRepository.markHappyCodeVerified(requestId, conn);
       }
 
-      // Permanently Close Service Request
+      // Branch: Engineer escalation to responsible ASF
+      if (input.outcome === 'ESCALATED') {
+        await serviceRequestRepository.recordRepairEscalation(
+          {
+            requestId,
+            escalationReason: input.escalationReason!.trim(),
+            escalatedBy: actor.userId,
+          },
+          conn
+        );
+
+        await serviceRequestEventRepository.createEvent(
+          {
+            requestId,
+            fromState: 'CALL_CLOSURE_SUBMITTED',
+            toState: 'REPAIR_ESCALATED',
+            eventType: 'REPAIR_ESCALATED',
+            triggeredByUserId: actor.userId,
+            triggeredByUsername: actor.username,
+            triggeredByRole: actor.roles[0] || 'ENGINEER',
+            remarks: input.escalationReason!.trim(),
+          },
+          conn
+        );
+
+        await conn.commit();
+
+        return {
+          success: true,
+          message: 'Repair successfully escalated to responsible ASF with valid Happy Code verification.',
+          status: 'REPAIR_ESCALATED',
+        };
+      }
+
+      // Permanently Close Service Request (Outcome = COMPLETED)
       await serviceRequestRepository.closeServiceRequest(
         {
           requestId,
@@ -1624,101 +1683,19 @@ export class Job360Service {
 
   /**
    * Submits a formal request for product replacement based on the 6 documented reasons.
+   * In Phase 2, this legacy bypass path is blocked: complaints must follow the engineer escalation
+   * and atomic ASF acceptance workflow.
    */
   async requestReplacement(
-    requestId: string,
-    input: CreateReplacementRequestInput,
-    actor: AuthenticatedUser
+    _requestId: string,
+    _input: CreateReplacementRequestInput,
+    _actor: AuthenticatedUser
   ): Promise<{ success: boolean; message: string; status: ServiceRequestStatus; replacementId?: string }> {
-    const { request } = await this.assertTechnicianCheckIn(requestId, actor);
-
-    if (['CLOSED', 'CANCELLED', 'REPLACED', 'REQUEST_FOR_REPLACEMENT', 'REPLACEMENT_APPROVED'].includes(request.status)) {
-      throw new AppError(
-        `Cannot request replacement for ticket in status '${request.status}'`,
-        400,
-        'INVALID_STATUS'
-      );
-    }
-
-    const REPLACEMENT_REASONS: Record<ReplacementReasonCode, string> = {
-      REASON_1: 'Spare part not received / service not completed within 168 Hours (7 Days)',
-      REASON_2: 'New piece damaged out of the box (Dead on Arrival / DOA)',
-      REASON_3: 'Customer refused repair due to recurring product quality failure',
-      REASON_4: 'Product model discontinued by brand manufacturer and spare parts unavailable',
-      REASON_5: 'Product non-repairable (severe electrical burnout or unserviceable structural damage)',
-      REASON_6: 'Complaint not acknowledged by assigned ASF within 48 hours (debited to ASF)',
-    };
-
-    const reasonDescription = REPLACEMENT_REASONS[input.reasonCode];
-    if (!reasonDescription) {
-      throw new AppError(`Invalid replacement reason code '${input.reasonCode}'`, 400, 'INVALID_REASON');
-    }
-
-    const conn = await getOracleConnection();
-    try {
-      const checkSql = `SELECT STATUS FROM SERVICE_REQUESTS WHERE REQUEST_ID = :requestId FOR UPDATE`;
-      const lockRes = await conn.execute<any>(checkSql, { requestId }, { outFormat: oracledb.OUT_FORMAT_OBJECT });
-      if (!lockRes.rows || lockRes.rows.length === 0) {
-        throw new AppError(`Service request ${requestId} not found`, 404, 'NOT_FOUND');
-      }
-
-      const currentStatus = lockRes.rows[0].STATUS;
-      if (['CLOSED', 'CANCELLED', 'REPLACED', 'REQUEST_FOR_REPLACEMENT'].includes(currentStatus)) {
-        throw new AppError(
-          `Conflict: Service request status changed concurrently to '${currentStatus}'`,
-          409,
-          'CONCURRENCY_CONFLICT'
-        );
-      }
-
-      const replacementId = crypto.randomUUID();
-      await replacementRequestRepository.createRequest(
-        {
-          replacementId,
-          requestId,
-          reasonCode: input.reasonCode,
-          reasonDescription,
-          technicianRemarks: input.technicianRemarks,
-          requestedBy: actor.userId,
-        },
-        conn
-      );
-
-      await serviceRequestRepository.updateStatus(requestId, 'REQUEST_FOR_REPLACEMENT', conn);
-
-      await serviceRequestEventRepository.createEvent(
-        {
-          requestId,
-          fromState: currentStatus,
-          toState: 'REQUEST_FOR_REPLACEMENT',
-          eventType: 'REQUEST_FOR_REPLACEMENT',
-          triggeredByUserId: actor.userId,
-          triggeredByUsername: actor.username,
-          triggeredByRole: actor.roles[0] || 'ENGINEER',
-          remarks: `Replacement requested: [${input.reasonCode}] ${reasonDescription}`,
-          metadataJson: {
-            replacementId,
-            reasonCode: input.reasonCode,
-            technicianRemarks: input.technicianRemarks,
-          },
-        },
-        conn
-      );
-
-      await conn.commit();
-
-      return {
-        success: true,
-        message: 'Product replacement request submitted for Head Office approval.',
-        status: 'REQUEST_FOR_REPLACEMENT',
-        replacementId,
-      };
-    } catch (err) {
-      await conn.rollback();
-      throw err;
-    } finally {
-      await conn.close();
-    }
+    throw new AppError(
+      'Direct replacement request creation is deprecated. Complaints must be escalated to REPAIR_ESCALATED with Happy Code verification and accepted by the responsible ASF.',
+      400,
+      'USE_ESCALATION_WORKFLOW'
+    );
   }
 
   /**

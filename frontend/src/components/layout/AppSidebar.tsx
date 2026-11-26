@@ -96,7 +96,7 @@ const NAV_SECTIONS: NavSection[] = [
     ],
   },
   {
-    title: 'ADMIN & FINANCE',
+    title: 'CLIENT ADMINISTRATION',
     items: [
       {
         label: 'Admin Console',
@@ -118,12 +118,6 @@ const NAV_SECTIONS: NavSection[] = [
         requiredRole: 'ADMIN',
         requiredPermission: 'masters:manage',
       },
-      {
-        label: 'Finance & Settlements',
-        href: '/finance',
-        icon: <AccountBalanceWalletIcon fontSize="small" />,
-        requiredPermission: 'finance:read',
-      },
     ],
   },
   {
@@ -134,17 +128,6 @@ const NAV_SECTIONS: NavSection[] = [
         href: '/reports',
         icon: <AssessmentIcon fontSize="small" />,
         requiredPermission: 'reports:view',
-      },
-    ],
-  },
-  {
-    title: 'SYSTEM & INFRASTRUCTURE',
-    items: [
-      {
-        label: 'System Diagnostics',
-        href: '/admin/diagnostics',
-        icon: <DnsIcon fontSize="small" />,
-        requiredPermission: 'system:audit',
       },
     ],
   },

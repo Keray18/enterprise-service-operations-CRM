@@ -359,3 +359,76 @@ asfRoutes.post(
   job360Controller.reviewCancellation.bind(job360Controller)
 );
 
+/* ==========================================================================
+   PHASE 2 STAGE B.2: ATOMIC ESCALATION ACCEPTANCE, QUOTATION & CUSTODY
+   ========================================================================== */
+
+/**
+ * POST /api/v1/asf/jobs/:id/accept-escalation
+ * Atomically accepts an engineer's repair escalation:
+ * Closes the original complaint as ESCALATED_TO_REPLACEMENT and creates the linked
+ * replacement request in OPEN state. Single Oracle transaction.
+ */
+asfRoutes.post(
+  '/jobs/:id/accept-escalation',
+  requireCsrf,
+  requireAnyPermission('asf:manage', 'asf:read', 'calls:close', 'replacement:request'),
+  asfController.acceptEscalation.bind(asfController)
+);
+
+/**
+ * POST /api/v1/asf/replacements/:id/quotation
+ * Prepares out-of-warranty replacement quotation (increments version, invalidates prior approval).
+ */
+asfRoutes.post(
+  '/replacements/:id/quotation',
+  requireCsrf,
+  requireAnyPermission('asf:manage', 'asf:read', 'calls:update'),
+  asfController.prepareQuotation.bind(asfController)
+);
+
+/**
+ * POST /api/v1/asf/replacements/:id/quotation/decision
+ * Records customer quotation approval or rejection (customer decline permanently blocks dispatch).
+ */
+asfRoutes.post(
+  '/replacements/:id/quotation/decision',
+  requireCsrf,
+  requireAnyPermission('asf:manage', 'asf:read', 'calls:update'),
+  asfController.quotationDecision.bind(asfController)
+);
+
+/**
+ * POST /api/v1/asf/replacements/:id/handover
+ * ASF initiates physical spare part handover to field engineer (status PENDING_COLLECTION).
+ */
+asfRoutes.post(
+  '/replacements/:id/handover',
+  requireCsrf,
+  requireAnyPermission('asf:manage', 'asf:read'),
+  asfController.createCustodyHandover.bind(asfController)
+);
+
+/**
+ * POST /api/v1/asf/replacements/:id/acknowledge-receipt
+ * Responsible ASF center acknowledges receipt of replacement part from central warehouse.
+ */
+asfRoutes.post(
+  '/replacements/:id/acknowledge-receipt',
+  requireCsrf,
+  requireAnyPermission('asf:manage', 'asf:read'),
+  asfController.acknowledgeReceipt.bind(asfController)
+);
+
+/**
+ * POST /api/v1/asf/replacements/:id/schedule
+ * ASF schedules customer appointment for replacement installation.
+ */
+asfRoutes.post(
+  '/replacements/:id/schedule',
+  requireCsrf,
+  requireAnyPermission('asf:manage', 'asf:read', 'calls:update'),
+  asfController.scheduleInstallation.bind(asfController)
+);
+
+

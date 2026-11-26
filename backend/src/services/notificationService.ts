@@ -84,7 +84,7 @@ export class NotificationService {
   }
 
   /**
-   * Generates the approved SMS 2 Appointment & Check-In OTP template.
+   * Generates the approved SMS 2 Appointment & Arrival Happy Code template.
    */
   buildSms2Message(params: {
     jobNumber: string;
@@ -93,7 +93,7 @@ export class NotificationService {
     appointmentDatetime: string;
     checkinOtp: string;
   }): string {
-    return `Dear Customer, Service Request #${params.jobNumber} has been assigned to ${params.techName} Mob no ${params.techMobile} and your appointment is scheduled for ${params.appointmentDatetime}. Please keep the required documents ready and kindly share the OTP ${params.checkinOtp}, at the time of Visit.`;
+    return `Dear Customer, Service Request #${params.jobNumber} has been assigned to ${params.techName} Mob no ${params.techMobile} and your appointment is scheduled for ${params.appointmentDatetime}. Please keep the required documents ready and kindly share the Arrival Happy Code ${params.checkinOtp}, at the time of Visit.`;
   }
 
   /**
@@ -104,24 +104,24 @@ export class NotificationService {
   }
 
   /**
-   * Generates the approved SMS 4 Call Closure Summary & Happy Code template.
+   * Generates the approved SMS 4 Call Closure Summary & Completion Happy Code template.
    */
   buildSms4Message(params: { jobNumber: string; happyCode: string }): string {
     return `Dear Customer, Your service Request #${params.jobNumber} is closed. If you are satisfied with our service, Kindly share happy code #${params.happyCode} to our technician.`;
   }
 
   /**
-   * Generates the approved SMS 5 Happy Code Regeneration template.
+   * Generates the approved SMS 5 Completion Happy Code Regeneration template.
    */
   buildSms5Message(params: { jobNumber: string; happyCode: string }): string {
     return `Dear Customer, Your happy code is ${params.happyCode} against your service request #${params.jobNumber} please share the same with the service executive.`;
   }
 
   /**
-   * Generates the approved SMS 6 Check-In OTP Regeneration template.
+   * Generates the approved SMS 6 Arrival Happy Code Regeneration template.
    */
   buildSms6Message(params: { jobNumber: string; checkinOtp: string }): string {
-    return `Dear Customer, Please share OTP ${params.checkinOtp} against your service request #${params.jobNumber} at the time of technician visit.`;
+    return `Dear Customer, Please share Arrival Happy Code ${params.checkinOtp} against your service request #${params.jobNumber} at the time of technician visit.`;
   }
 
   /**
@@ -139,11 +139,23 @@ export class NotificationService {
   }
 
   /**
+   * Generates the approved SMS Stock Shortage template (7-10 business days estimate).
+   */
+  buildSmsStockShortageMessage(params: { jobNumber: string }): string {
+    return `Dear Customer, The required replacement part for Service Request #${params.jobNumber} is currently unavailable. It is expected to be dispatched within 7–10 business days.`;
+  }
+
+  /**
    * Asynchronously attempts delivery for an enqueued outbox notification.
    * Gateway errors update the outbox status to FAILED/DEAD_LETTER without throwing errors back to caller.
    */
   async processNotification(notification: NotificationOutboxRecord, maxRetries = 3): Promise<void> {
     try {
+      // Due-time filter check
+      if (notification.scheduledFor && notification.scheduledFor.getTime() > Date.now()) {
+        return;
+      }
+
       if (notification.channel === 'SMS') {
         let textToSend = notification.messageBody;
 

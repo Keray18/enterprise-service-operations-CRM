@@ -34,6 +34,54 @@ workspaceRouter.get(
   }
 );
 
+// Service Center (ASF) Workspace Check
+workspaceRouter.get(
+  '/service-center',
+  requireAuth,
+  requirePermission('asf:read'),
+  (req: Request, res: Response) => {
+    sendSuccess(res, {
+      workspace: 'ASF',
+      accessible: true,
+      user: req.user,
+      message: 'Service Center operational privileges verified.',
+    });
+  }
+);
+
+workspaceRouter.get(
+  '/asf',
+  requireAuth,
+  requirePermission('asf:read'),
+  (req: Request, res: Response) => {
+    sendSuccess(res, {
+      workspace: 'ASF',
+      accessible: true,
+      user: req.user,
+      message: 'Service Center operational privileges verified.',
+    });
+  }
+);
+
+// Field Engineer Workspace Check
+workspaceRouter.get(
+  '/engineer',
+  requireAuth,
+  (req: Request, res: Response) => {
+    const roles = req.user?.roles || [];
+    if (!roles.includes('ENGINEER') && !roles.includes('ADMIN')) {
+      res.status(403).json({ success: false, error: { message: 'Access denied. Field Engineer or Admin role required.', code: 'FORBIDDEN' } });
+      return;
+    }
+    sendSuccess(res, {
+      workspace: 'ENGINEER',
+      accessible: true,
+      user: req.user,
+      message: 'Field Engineer workspace privileges verified.',
+    });
+  }
+);
+
 // Warehouse Workspace Check
 workspaceRouter.get(
   '/warehouse',

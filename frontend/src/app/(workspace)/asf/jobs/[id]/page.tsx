@@ -726,7 +726,7 @@ export default function Job360WorkspacePage() {
                     <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                       <WarningAmberIcon color="warning" />
                       <Typography variant="body2" sx={{ color: '#facc15', fontWeight: 600 }}>
-                        Awaiting Technician OTP Check-In
+                        Awaiting Technician Arrival Happy Code Check-In
                       </Typography>
                       {availableActions?.canCheckIn && (
                         <Button
@@ -946,8 +946,8 @@ export default function Job360WorkspacePage() {
               <Box sx={{ p: 3 }}>
                 {!isCheckedIn && (
                   <Alert severity="warning" sx={{ mb: 3 }}>
-                    Technician OTP Check-In is mandatory before diagnosing this unit. Please complete on-site
-                    OTP verification first.
+                    Technician Arrival Happy Code Check-In is mandatory before diagnosing this unit. Please complete on-site
+                    Happy Code verification first.
                   </Alert>
                 )}
 

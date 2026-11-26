@@ -4,6 +4,8 @@ import oracledb from 'oracledb';
 import { getOracleConnection } from '../database/oraclePool.js';
 import { sendError, sendSuccess } from '../middleware/errorHandler.js';
 import { inventoryService } from '../services/inventoryService.js';
+import { replacementService } from '../services/replacementService.js';
+import { allocateReplacementStockSchema, dispatchReplacementStockSchema } from '../validation/asfSchemas.js';
 import { AuthenticatedUser } from '../types/auth.js';
 
 // Zod Validation Schemas
@@ -683,6 +685,72 @@ export class WarehouseController {
       sendError(res, err.message, err.statusCode || 500, err.code || 'INTERNAL_ERROR');
     } finally {
       await conn.close();
+    }
+  }
+
+  // ============================================================================
+  // Replacement Fulfillment Operations
+  // ============================================================================
+
+  async listReplacements(req: Request, res: Response): Promise<void> {
+    try {
+      const actor = req.user as AuthenticatedUser;
+      const status = req.query['status'] as any;
+      const locationId = req.query['locationId'] as string;
+      const search = req.query['search'] as string;
+      const page = req.query['page'] ? Number(req.query['page']) : 1;
+      const limit = req.query['limit'] ? Number(req.query['limit']) : 20;
+
+      const result = await replacementService.listReplacements(
+        { status, locationId, search, page, limit },
+        actor
+      );
+      sendSuccess(res, result);
+    } catch (err: any) {
+      sendError(res, err.message, err.statusCode || 500, err.code || 'INTERNAL_ERROR');
+    }
+  }
+
+  async allocateReplacement(req: Request, res: Response): Promise<void> {
+    try {
+      const actor = req.user as AuthenticatedUser;
+      const parsed = allocateReplacementStockSchema.safeParse(req.body);
+      if (!parsed.success) {
+        sendError(res, 'Validation failed for stock allocation', 400, 'VALIDATION_ERROR', parsed.error.format());
+        return;
+      }
+      const replacementId = req.params['id']!;
+      const result = await replacementService.allocateStock(replacementId, parsed.data.warehouseId, actor);
+      sendSuccess(res, result);
+    } catch (err: any) {
+      sendError(res, err.message, err.statusCode || 500, err.code || 'INTERNAL_ERROR');
+    }
+  }
+
+  async dispatchReplacement(req: Request, res: Response): Promise<void> {
+    try {
+      const actor = req.user as AuthenticatedUser;
+      const parsed = dispatchReplacementStockSchema.safeParse(req.body);
+      if (!parsed.success) {
+        sendError(res, 'Validation failed for stock dispatch', 400, 'VALIDATION_ERROR', parsed.error.format());
+        return;
+      }
+      const replacementId = req.params['id']!;
+      const result = await replacementService.dispatchStockToAsf(replacementId, parsed.data, actor);
+      sendSuccess(res, result, 201);
+    } catch (err: any) {
+      sendError(res, err.message, err.statusCode || 500, err.code || 'INTERNAL_ERROR');
+    }
+  }
+
+  async closeReplacement(req: Request, res: Response): Promise<void> {
+    try {
+      const actor = req.user as AuthenticatedUser;
+      const replacementId = req.params['id']!;
+      const result = await replacementService.closeReplacement(replacementId, actor);
+      sendSuccess(res, result);
+    } catch (err: any) {
+      sendError(res, err.message, err.statusCode || 500, err.code || 'INTERNAL_ERROR');
     }
   }
 }

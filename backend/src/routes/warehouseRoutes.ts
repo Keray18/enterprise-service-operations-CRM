@@ -32,6 +32,12 @@ warehouseRouter.get(
 );
 
 warehouseRouter.get(
+  '/inventory',
+  requirePermission('inventory:read'),
+  warehouseController.getStockBalances.bind(warehouseController)
+);
+
+warehouseRouter.get(
   '/stock/:locationId/:partId',
   requirePermission('inventory:read'),
   warehouseController.getStockBalance.bind(warehouseController)
@@ -163,4 +169,34 @@ warehouseRouter.get(
   '/movements',
   requirePermission('inventory:read'),
   warehouseController.listMovements.bind(warehouseController)
+);
+
+/**
+ * Replacement Fulfillment Queue & Operations
+ */
+warehouseRouter.get(
+  '/replacements',
+  requirePermission('inventory:read'),
+  warehouseController.listReplacements.bind(warehouseController)
+);
+
+warehouseRouter.post(
+  '/replacements/:id/allocate',
+  requireCsrf,
+  requireAnyPermission('inventory:dispatch', 'inventory:manage'),
+  warehouseController.allocateReplacement.bind(warehouseController)
+);
+
+warehouseRouter.post(
+  '/replacements/:id/dispatch',
+  requireCsrf,
+  requirePermission('inventory:dispatch'),
+  warehouseController.dispatchReplacement.bind(warehouseController)
+);
+
+warehouseRouter.post(
+  '/replacements/:id/close',
+  requireCsrf,
+  requireAnyPermission('inventory:dispatch', 'inventory:manage'),
+  warehouseController.closeReplacement.bind(warehouseController)
 );

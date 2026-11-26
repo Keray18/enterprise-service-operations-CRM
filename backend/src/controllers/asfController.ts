@@ -1,16 +1,23 @@
 import { NextFunction, Request, Response } from 'express';
 import { logger } from '../logging/logger.js';
 import { asfService } from '../services/asfService.js';
+import { custodyService } from '../services/custodyService.js';
+import { replacementService } from '../services/replacementService.js';
 import { slaMonitoringService } from '../services/slaMonitoringService.js';
 import {
+  acceptEscalationSchema,
   acknowledgeComplaintSchema,
   asfQueueQuerySchema,
   checkInComplaintSchema,
+  custodyHandoverSchema,
   dispatchComplaintSchema,
   engineerJobsQuerySchema,
+  prepareQuotationSchema,
+  quotationDecisionSchema,
   reassignComplaintSchema,
   regenerateOtpSchema,
   rejectAssignmentSchema,
+  scheduleInstallationSchema,
 } from '../validation/asfSchemas.js';
 
 export class AsfController {
@@ -206,6 +213,96 @@ export class AsfController {
           timestamp: result.timestamp,
         },
         message: `SLA evaluation complete: ${result.ack48h.newBreachesCount} new 48h breach(es), ${result.closure168h.newBreachesCount} new 168h breach(es) flagged.`,
+      });
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  async acceptEscalation(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const parsed = acceptEscalationSchema.parse(req.body);
+      const result = await asfService.acceptEscalation(req.params.id!, parsed, req.user!);
+      res.status(200).json({
+        success: true,
+        data: result.replacement,
+        message: result.message,
+        alreadyAccepted: result.alreadyAccepted,
+      });
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  async prepareQuotation(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const parsed = prepareQuotationSchema.parse(req.body);
+      const result = await replacementService.prepareQuotation(req.params.id!, parsed, req.user!);
+      res.status(200).json({
+        success: true,
+        data: result,
+        message: 'Out-of-warranty replacement quotation prepared successfully',
+      });
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  async quotationDecision(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const parsed = quotationDecisionSchema.parse(req.body);
+      const result = await replacementService.recordQuotationDecision(req.params.id!, parsed, req.user!);
+      res.status(200).json({
+        success: true,
+        data: result,
+        message: `Quotation ${parsed.decision} recorded successfully`,
+      });
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  async createCustodyHandover(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const parsed = custodyHandoverSchema.parse(req.body);
+      const result = await custodyService.createHandover(
+        {
+          replacementId: req.params.id!,
+          ...parsed,
+        },
+        req.user!
+      );
+      res.status(201).json({
+        success: true,
+        data: result,
+        message: 'Physical custody handover initiated (pending engineer collection acknowledgement)',
+      });
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  async acknowledgeReceipt(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const result = await replacementService.acknowledgeAsfReceipt(req.params.id!, req.user!);
+      res.status(200).json({
+        success: true,
+        data: result,
+        message: 'Replacement shipment receipt successfully acknowledged at service center',
+      });
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  async scheduleInstallation(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const parsed = scheduleInstallationSchema.parse(req.body);
+      const result = await replacementService.scheduleInstallation(req.params.id!, parsed, req.user!);
+      res.status(200).json({
+        success: true,
+        data: result,
+        message: 'Replacement installation visit scheduled successfully (Arrival Happy Code queued)',
       });
     } catch (err) {
       next(err);
