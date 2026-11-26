@@ -245,7 +245,9 @@ describe('P1/P0 Operational Workflow Fix - Service Center, Warehouse Tab 4, Repo
       }
     });
 
-    it('enforces location boundary: Service Center sees their complaints, foreign ASF center does not', async () => {
+    // Superseded by the centralized Service Center queue and technician directory (V022): visibility is
+    // network-wide, while the location boundary is enforced on mutations (dispatch / assignment).
+    it('enforces location boundary on mutations: foreign ASF centre can view but cannot dispatch the complaint', async () => {
       const asfRes = await request(app)
         .get(`/api/v1/asf/queue?q=${testJobNumber}`)
         .set('Cookie', asfCookie);
@@ -254,22 +256,34 @@ describe('P1/P0 Operational Workflow Fix - Service Center, Warehouse Tab 4, Repo
       const match = asfRes.body.data.items.find((i: any) => i.requestId === testRequestId);
       expect(match).toBeDefined();
 
-      // Foreign center (ASF_MUM_01) must NOT see ASF_8441 complaint
+      // Centralized oversight: the foreign centre can locate the complaint
       const foreignRes = await request(app)
         .get(`/api/v1/asf/queue?q=${testJobNumber}`)
         .set('Cookie', foreignAsfCookie);
-
       expect(foreignRes.status).toBe(200);
-      const foreignMatch = foreignRes.body.data.items.find((i: any) => i.requestId === testRequestId);
-      expect(foreignMatch).toBeUndefined();
+      expect(foreignRes.body.data.items.find((i: any) => i.requestId === testRequestId)).toBeDefined();
+
+      // ...but cannot dispatch work owned by another franchise centre
+      const foreignDispatch = await request(app)
+        .post(`/api/v1/asf/requests/${testRequestId}/dispatch`)
+        .set('Cookie', foreignAsfCookie)
+        .set('x-csrf-token', foreignAsfCsrf)
+        .send({
+          engineerId: users.asf.id,
+          appointmentDate: new Date(Date.now() + 3 * 3600 * 1000).toISOString(),
+          appointmentSlot: '10:00 - 13:00',
+        });
+      expect(foreignDispatch.status).toBe(403);
+      expect(foreignDispatch.body.error.code).toBe('FORBIDDEN_LOCATION');
     });
 
-    it('denies foreign ASF center access to technicians outside their location', async () => {
+    it('allows a foreign ASF centre to browse the centralized technician directory', async () => {
       const res = await request(app)
         .get(`/api/v1/asf/engineers/${users.asf.locationId}`)
         .set('Cookie', foreignAsfCookie);
 
-      expect(res.status).toBe(403);
+      expect(res.status).toBe(200);
+      expect(Array.isArray(res.body.data)).toBe(true);
     });
   });
 

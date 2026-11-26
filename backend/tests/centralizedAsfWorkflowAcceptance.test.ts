@@ -1,5 +1,6 @@
 import crypto from 'crypto';
 import request from 'supertest';
+import { Persona, PersonaKey, provisionPersonas } from './helpers/isolatedPersonas.js';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createApp } from '../src/app.js';
 import { getOracleConnection } from '../src/database/oraclePool.js';
@@ -14,14 +15,11 @@ import { decryptNotificationPayload } from '../src/utils/cryptoUtils.js';
 describe('P0 Centralized Service Center Assignment & End-to-End Operational Workflow Acceptance Suite', () => {
   const app = createApp();
 
-  // Seeded invariant dev credentials
-  const credentials = {
-    admin: { username: 'admin', password: 'Admin@123', role: 'ADMIN' },
-    callcenter: { username: 'callcenter', password: 'callCenter@123', role: 'CALL_CENTER' },
-    serviceCenter: { username: 'service_center', password: 'serviceCenter@123', role: 'ASF' },
-    warehouse: { username: 'warehouse', password: 'wareHouse@123', role: 'WAREHOUSE' },
-    engineer: { username: 'mumbai_tech_1', password: 'fieldEng@123', role: 'ENGINEER' },
-  };
+  // Isolated per-suite personas (pinned shared dev credentials were removed in Phase 3)
+  let personas: Record<PersonaKey, Persona>;
+  let routedAsfLocId = '';
+  let originalDefaultLocIds: string[] = [];
+  let unmappedPincode: { PINCODE: string; CITY_ID: string; STATE_ID: string } | undefined;
 
   const sessions = {
     admin: { cookie: '', csrf: '' },
@@ -69,35 +67,56 @@ describe('P0 Centralized Service Center Assignment & End-to-End Operational Work
   let rejectRequestId = '';
   let rejectJobNumber = '';
 
+  async function restoreOriginalDefaults(conn: any) {
+    await conn.execute(`UPDATE LOCATIONS SET IS_DEFAULT = 'N' WHERE IS_DEFAULT = 'Y'`);
+    for (const id of originalDefaultLocIds) {
+      await conn.execute(`UPDATE LOCATIONS SET IS_DEFAULT = 'Y' WHERE LOCATION_ID = :id`, { id });
+    }
+  }
+
   beforeAll(async () => {
     // 1. Authenticate all 5 invariant personas
-    for (const [key, cred] of Object.entries(credentials)) {
-      const loginRes = await request(app)
-        .post('/api/v1/auth/login')
-        .send({ username: cred.username, password: cred.password });
-
-      expect(loginRes.status).toBe(200);
-      expect(loginRes.body.success).toBe(true);
-
-      const cookieHeader = loginRes.headers['set-cookie'];
-      const cookie = Array.isArray(cookieHeader) ? cookieHeader.join('; ') : cookieHeader || '';
-      const csrf = loginRes.body?.data?.csrfToken || '';
-
-      (sessions as any)[key] = { cookie, csrf };
+    // Approved routing (V025): complaints route to the pincode's mapped Service Center first.
+    // Place the Service Center manager and engineer at the centre that serves pincode 400001.
+    const routeConn = await getOracleConnection();
+    try {
+      const routed: any = await routeConn.execute(
+        `SELECT DEFAULT_ASF_ID FROM PINCODES WHERE PINCODE = '400001'`, {}, { outFormat: 4002 }
+      );
+      routedAsfLocId = routed.rows?.[0]?.DEFAULT_ASF_ID;
+      const defaults: any = await routeConn.execute(
+        `SELECT LOCATION_ID FROM LOCATIONS WHERE IS_DEFAULT = 'Y'`, {}, { outFormat: 4002 }
+      );
+      originalDefaultLocIds = (defaults.rows || []).map((r: any) => r.LOCATION_ID);
+      const unmapped: any = await routeConn.execute(
+        `SELECT PINCODE, CITY_ID, STATE_ID FROM PINCODES
+          WHERE DEFAULT_ASF_ID IS NULL AND IS_SERVICEABLE = 'Y' AND CITY_ID IS NOT NULL AND STATE_ID IS NOT NULL
+          FETCH FIRST 1 ROWS ONLY`, {}, { outFormat: 4002 }
+      );
+      unmappedPincode = unmapped.rows?.[0];
+    } finally {
+      await routeConn.close();
+    }
+    personas = await provisionPersonas(app, {
+      tag: 'cent_asf',
+      locations: { serviceCenter: routedAsfLocId, engineer: routedAsfLocId },
+    });
+    for (const key of Object.keys(sessions) as PersonaKey[]) {
+      (sessions as any)[key] = { cookie: personas[key].cookie, csrf: personas[key].csrf };
     }
 
     // 2. Query Oracle DB for foreign keys & locations
     const conn = await getOracleConnection();
     try {
       const userRes: any = await conn.execute(
-        `SELECT USER_ID, USERNAME, LOCATION_ID FROM APP_USERS WHERE USERNAME IN ('service_center', 'warehouse', 'mumbai_tech_1', 'callcenter')`,
-        {},
+        `SELECT USER_ID, USERNAME, LOCATION_ID FROM APP_USERS WHERE USERNAME IN (:u1, :u2, :u3, :u4, :u5)`,
+        { u1: personas.admin.username, u2: personas.callcenter.username, u3: personas.serviceCenter.username, u4: personas.warehouse.username, u5: personas.engineer.username },
         { outFormat: 4002 }
       );
-      const scUser = (userRes.rows || []).find((r: any) => r.USERNAME === 'service_center');
-      const whUser = (userRes.rows || []).find((r: any) => r.USERNAME === 'warehouse');
-      const engUser = (userRes.rows || []).find((r: any) => r.USERNAME === 'mumbai_tech_1');
-      const ccUser = (userRes.rows || []).find((r: any) => r.USERNAME === 'callcenter');
+      const scUser = (userRes.rows || []).find((r: any) => r.USERNAME === personas.serviceCenter.username);
+      const whUser = (userRes.rows || []).find((r: any) => r.USERNAME === personas.warehouse.username);
+      const engUser = (userRes.rows || []).find((r: any) => r.USERNAME === personas.engineer.username);
+      const ccUser = (userRes.rows || []).find((r: any) => r.USERNAME === personas.callcenter.username);
 
       defaultAsfLocId = scUser?.LOCATION_ID;
       whLocId = whUser?.LOCATION_ID;
@@ -112,16 +131,6 @@ describe('P0 Centralized Service Center Assignment & End-to-End Operational Work
       );
       alternateAsfLocId = altAsfRes.rows?.[0]?.LOCATION_ID || defaultAsfLocId;
 
-      // Ensure default ASF has IS_DEFAULT = 'Y'
-      await conn.execute(
-        `UPDATE LOCATIONS SET IS_DEFAULT = 'Y' WHERE LOCATION_ID = :defId`,
-        { defId: defaultAsfLocId }
-      );
-      // Ensure all other ASFs have IS_DEFAULT = 'N' initially
-      await conn.execute(
-        `UPDATE LOCATIONS SET IS_DEFAULT = 'N' WHERE LOCATION_ID <> :defId`,
-        { defId: defaultAsfLocId }
-      );
       // Ensure engineer is assigned to default ASF
       await conn.execute(
         `UPDATE APP_USERS SET LOCATION_ID = :locId WHERE USER_ID = :engId`,
@@ -188,14 +197,7 @@ describe('P0 Centralized Service Center Assignment & End-to-End Operational Work
     // Restore default ASF setup
     const conn = await getOracleConnection();
     try {
-      await conn.execute(
-        `UPDATE LOCATIONS SET IS_DEFAULT = 'Y' WHERE LOCATION_ID = :defId`,
-        { defId: defaultAsfLocId }
-      );
-      await conn.execute(
-        `UPDATE LOCATIONS SET IS_DEFAULT = 'N' WHERE LOCATION_ID <> :defId`,
-        { defId: defaultAsfLocId }
-      );
+      await restoreOriginalDefaults(conn);
       await conn.commit();
     } finally {
       await conn.close();
@@ -206,7 +208,7 @@ describe('P0 Centralized Service Center Assignment & End-to-End Operational Work
   // SCENARIO A: Happy Path End-to-End Operational Journey
   // ==============================================================================
   describe('Scenario A: Happy Path End-to-End Operational Journey', () => {
-    it('A1. Call Center registers complaint; verifies automatic default ASF assignment without engineer', async () => {
+    it('A1. Call Center registers complaint; verifies pincode-routed Service Center assignment without engineer', async () => {
       happySerial = makeSerial('HP', serialLength);
 
       const regRes = await request(app)
@@ -241,10 +243,10 @@ describe('P0 Centralized Service Center Assignment & End-to-End Operational Work
 
       expect(happyJobNumber).toMatch(/^TT/);
       expect(sr.status).toBe('ASSIGNED_TO_ASF');
-      expect(sr.assignedLocationId).toBe(defaultAsfLocId);
+      expect(sr.assignedLocationId).toBe(routedAsfLocId);
       expect(sr.assignedLocationName).toBeDefined();
       expect(sr.assignedEngineerId).toBeUndefined();
-      expect(sr.assignmentSource).toBe('AUTOMATIC_DEFAULT_ASF');
+      expect(sr.assignmentSource).toBe('GEOGRAPHIC_PINCODE');
       expect(sr.acknowledgedAt).toBeUndefined();
 
       // Verify Oracle DB lifecycle events
@@ -273,7 +275,7 @@ describe('P0 Centralized Service Center Assignment & End-to-End Operational Work
       expect(ackRes.status).toBe(200);
       expect(ackRes.body.success).toBe(true);
       expect(ackRes.body.data.acknowledgedAt).toBeDefined();
-      expect(ackRes.body.data.acknowledgedBy).toBe('service_center');
+      expect(ackRes.body.data.acknowledgedBy).toBe(personas.serviceCenter.username);
       expect(ackRes.body.data.serviceRequest.status).toBe('ACKNOWLEDGED');
 
       // Idempotency check: acknowledging an already acknowledged ticket returns 200 cleanly
@@ -322,7 +324,9 @@ describe('P0 Centralized Service Center Assignment & End-to-End Operational Work
           }
         }
         const outbox = await notificationRepository.listByRequestId(happyRequestId);
-        const notif = outbox.find((n) => n.templateCode === 'SMS_02_APPOINTMENT');
+        // Arrival Happy Code SMS is scheduled for appointment - 60 min (approved); read the queued, encrypted outbox record
+        const listedSms2 = outbox.find((n: any) => n.templateCode === 'SMS_02_APPOINTMENT');
+        const notif = listedSms2 ? await notificationRepository.findById(listedSms2.notificationId) : undefined;
         if (notif?.encryptedPayload) {
           const dec = decryptNotificationPayload({
             encryptedPayload: notif.encryptedPayload,
@@ -528,6 +532,9 @@ describe('P0 Centralized Service Center Assignment & End-to-End Operational Work
   // ==============================================================================
   describe('Scenario B: Missing / Ambiguous Default ASF Handling', () => {
     it('B1. Ambiguous default ASF: complaint remains in REGISTERED with assignmentFailedReason and appears in assignment_required queue', async () => {
+      expect(unmappedPincode).toBeDefined();
+      const prevFallback = process.env['ALLOW_GLOBAL_DEFAULT_FALLBACK'];
+      process.env['ALLOW_GLOBAL_DEFAULT_FALLBACK'] = 'true';
       const conn = await getOracleConnection();
       try {
         // Set two default ASFs to trigger ambiguous configuration
@@ -555,13 +562,14 @@ describe('P0 Centralized Service Center Assignment & End-to-End Operational Work
           purchaseDate: '2026-02-01',
           callType: 'REPAIR',
           serviceType: 'ON_SITE',
-          pincode: '400001',
-          stateId,
-          cityId,
+          pincode: unmappedPincode!.PINCODE,
+          stateId: unmappedPincode!.STATE_ID,
+          cityId: unmappedPincode!.CITY_ID,
           addressLine: 'Flat 4B, Nariman Point, Mumbai',
           problemDescription: 'Unit power fluctuating; requires technician',
         });
 
+      process.env['ALLOW_GLOBAL_DEFAULT_FALLBACK'] = prevFallback;
       if (regRes.status !== 201) {
         console.error('B1 REGISTRATION ERROR:', regRes.status, JSON.stringify(regRes.body));
       }
@@ -593,10 +601,7 @@ describe('P0 Centralized Service Center Assignment & End-to-End Operational Work
       // Clean up: reset alternate ASF to 'N'
       const cleanupConn = await getOracleConnection();
       try {
-        await cleanupConn.execute(
-          `UPDATE LOCATIONS SET IS_DEFAULT = 'N' WHERE LOCATION_ID = :id`,
-          { id: alternateAsfLocId }
-        );
+        await restoreOriginalDefaults(cleanupConn);
         await cleanupConn.commit();
       } finally {
         await cleanupConn.close();

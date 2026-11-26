@@ -1,5 +1,6 @@
 import crypto from 'crypto';
 import request from 'supertest';
+import { Persona, PersonaKey, provisionPersonas } from './helpers/isolatedPersonas.js';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createApp } from '../src/app.js';
 import { getOracleConnection } from '../src/database/oraclePool.js';
@@ -12,14 +13,8 @@ import { decryptNotificationPayload } from '../src/utils/cryptoUtils.js';
 describe('P0 Operational Workflow Activation — End-to-End Persona Verification & Supply Chain Closure', () => {
   const app = createApp();
 
-  // Active seeded credentials
-  const credentials = {
-    admin: { username: 'admin', password: 'Admin@123', role: 'ADMIN' },
-    callcenter: { username: 'callcenter', password: 'callCenter@123', role: 'CALL_CENTER' },
-    serviceCenter: { username: 'service_center', password: 'serviceCenter@123', role: 'ASF' },
-    warehouse: { username: 'warehouse', password: 'wareHouse@123', role: 'WAREHOUSE' },
-    engineer: { username: 'mumbai_tech_1', password: 'fieldEng@123', role: 'ENGINEER' },
-  };
+  // Isolated per-suite personas (pinned shared dev credentials were removed in Phase 3)
+  let personas: Record<PersonaKey, Persona>;
 
   const sessions = {
     admin: { cookie: '', csrf: '' },
@@ -54,32 +49,22 @@ describe('P0 Operational Workflow Activation — End-to-End Persona Verification
 
   beforeAll(async () => {
     // 1. Authenticate all 5 seeded personas using actual Argon2id hashes in Oracle
-    for (const [key, cred] of Object.entries(credentials)) {
-      const loginRes = await request(app)
-        .post('/api/v1/auth/login')
-        .send({ username: cred.username, password: cred.password });
-
-      expect(loginRes.status).toBe(200);
-      expect(loginRes.body.success).toBe(true);
-
-      const cookieHeader = loginRes.headers['set-cookie'];
-      const cookie = Array.isArray(cookieHeader) ? cookieHeader.join('; ') : cookieHeader || '';
-      const csrf = loginRes.body?.data?.csrfToken || '';
-
-      (sessions as any)[key] = { cookie, csrf };
+    personas = await provisionPersonas(app, { tag: 'p0_ops' });
+    for (const key of Object.keys(sessions) as PersonaKey[]) {
+      (sessions as any)[key] = { cookie: personas[key].cookie, csrf: personas[key].csrf };
     }
 
     // 2. Query Oracle DB for foreign keys & locations
     const conn = await getOracleConnection();
     try {
       const userRes: any = await conn.execute(
-        `SELECT USER_ID, USERNAME, LOCATION_ID FROM APP_USERS WHERE USERNAME IN ('service_center', 'warehouse', 'mumbai_tech_1')`,
-        {},
+        `SELECT USER_ID, USERNAME, LOCATION_ID FROM APP_USERS WHERE USERNAME IN (:u1, :u2, :u3, :u4, :u5)`,
+        { u1: personas.admin.username, u2: personas.callcenter.username, u3: personas.serviceCenter.username, u4: personas.warehouse.username, u5: personas.engineer.username },
         { outFormat: 4002 }
       );
-      const scUser = (userRes.rows || []).find((r: any) => r.USERNAME === 'service_center');
-      const whUser = (userRes.rows || []).find((r: any) => r.USERNAME === 'warehouse');
-      const engUser = (userRes.rows || []).find((r: any) => r.USERNAME === 'mumbai_tech_1');
+      const scUser = (userRes.rows || []).find((r: any) => r.USERNAME === personas.serviceCenter.username);
+      const whUser = (userRes.rows || []).find((r: any) => r.USERNAME === personas.warehouse.username);
+      const engUser = (userRes.rows || []).find((r: any) => r.USERNAME === personas.engineer.username);
 
       asfLocId = scUser?.LOCATION_ID;
       whLocId = whUser?.LOCATION_ID;
@@ -380,7 +365,7 @@ describe('P0 Operational Workflow Activation — End-to-End Persona Verification
         .set('X-CSRF-Token', sessions.serviceCenter.csrf)
         .send({
           engineerId: engineerUserId,
-          appointmentDate: new Date().toISOString(),
+          appointmentDate: new Date(Date.now() + 2 * 3600 * 1000).toISOString(),
           appointmentSlot: '10:00 - 13:00',
           travelDistanceKm: 15,
           areaType: 'LOCAL',
@@ -411,7 +396,9 @@ describe('P0 Operational Workflow Activation — End-to-End Persona Verification
           }
         }
         const outbox = await notificationRepository.listByRequestId(createdRequestId);
-        const notif = outbox.find((n) => n.templateCode === 'SMS_02_APPOINTMENT');
+        // Arrival Happy Code SMS is scheduled for appointment - 60 min (approved); read the queued, encrypted outbox record
+        const listedSms2 = outbox.find((n: any) => n.templateCode === 'SMS_02_APPOINTMENT');
+        const notif = listedSms2 ? await notificationRepository.findById(listedSms2.notificationId) : undefined;
         if (notif?.encryptedPayload) {
           const dec = decryptNotificationPayload({
             encryptedPayload: notif.encryptedPayload,

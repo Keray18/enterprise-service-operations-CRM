@@ -98,6 +98,8 @@ export const verifyHappyCodeSchema = z
     happyCode: z.string().regex(/^\d{6}$/, 'Happy Code must be a 6-digit numerical code').optional(),
     isSupervisorOverride: z.boolean().optional().default(false),
     overrideReason: z.string().max(1000).optional(),
+    outcome: z.enum(['COMPLETED', 'ESCALATED']).optional().default('COMPLETED'),
+    escalationReason: z.string().max(500).optional(),
     feedback: z
       .object({
         rating: z.coerce.number().int().min(1, 'Rating must be between 1 and 5').max(5, 'Rating must be between 1 and 5'),
@@ -108,13 +110,19 @@ export const verifyHappyCodeSchema = z
   })
   .refine(
     (data) => {
+      if (data.outcome === 'ESCALATED') {
+        // Escalation requires customer Happy Code (no supervisor override) and escalation reason
+        if (data.isSupervisorOverride) return false;
+        if (!data.escalationReason || data.escalationReason.trim().length < 5) return false;
+        return Boolean(data.happyCode && data.happyCode.trim().length === 6);
+      }
       if (data.isSupervisorOverride) {
         return Boolean(data.overrideReason && data.overrideReason.trim().length >= 10);
       }
       return Boolean(data.happyCode && data.happyCode.trim().length === 6);
     },
     {
-      message: 'Either a valid 6-digit Happy Code or a written Supervisor Override Reason (min 10 chars) is required',
+      message: 'Valid Happy Code is required (and escalationReason for escalation; min 10 chars overrideReason for supervisor override)',
       path: ['happyCode'],
     }
   );

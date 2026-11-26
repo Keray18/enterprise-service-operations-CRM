@@ -3,7 +3,15 @@ import { rbacRepository } from '../database/repositories/rbacRepository.js';
 import { sessionRepository } from '../database/repositories/sessionRepository.js';
 import { userRepository } from '../database/repositories/userRepository.js';
 import { hashToken } from '../services/authService.js';
+import { systemConfigService } from '../services/systemConfigService.js';
 import { AppError } from './errorHandler.js';
+
+/** Endpoints reachable while an account still holds a temporary credential. */
+const PASSWORD_CHANGE_EXEMPT_PATHS = new Set([
+  '/api/v1/auth/me',
+  '/api/v1/auth/change-password',
+  '/api/v1/auth/logout',
+]);
 
 export async function requireAuth(req: Request, _res: Response, next: NextFunction): Promise<void> {
   try {
@@ -50,12 +58,32 @@ export async function requireAuth(req: Request, _res: Response, next: NextFuncti
       locationId: user.locationId,
       roles,
       permissions,
+      mustChangePassword: user.mustChangePassword === 'Y',
     };
 
     req.sessionContext = {
       sessionId: session.sessionId,
       csrfToken: session.csrfToken,
     };
+
+    const path = (req.originalUrl || req.url || '').split('?')[0] || '';
+
+    // Provider maintenance mode: client users are blocked; the provider keeps access.
+    if (!roles.includes('SUPER_ADMIN') && (await systemConfigService.isMaintenanceMode())) {
+      if (!PASSWORD_CHANGE_EXEMPT_PATHS.has(path)) {
+        throw new AppError('The application is under scheduled maintenance. Please try again later.', 503, 'MAINTENANCE_MODE');
+      }
+    }
+
+    // Temporary credentials: nothing but the password change (and session introspection/logout)
+    // is reachable until the account owner sets their own password.
+    if (user.mustChangePassword === 'Y' && !PASSWORD_CHANGE_EXEMPT_PATHS.has(path)) {
+      throw new AppError(
+        'You must change your temporary password before using the application.',
+        403,
+        'PASSWORD_CHANGE_REQUIRED'
+      );
+    }
 
     next();
   } catch (err) {

@@ -67,7 +67,10 @@ export type ServiceRequestStatus =
   | 'CALL_CLOSURE_SUBMITTED'
   | 'CLOSED'
   | 'CANCELLED'
-  | 'REPLACED';
+  | 'REPLACED'
+  | 'ESCALATED_TO_REPLACEMENT'
+  | 'REPAIR_COMPLETED'
+  | 'REPAIR_ESCALATED';
 
 export interface VOCRecord {
   vocId: string;
@@ -158,6 +161,9 @@ export interface ServiceRequestRecord {
   cancelledAt?: Date;
   cancelledBy?: string;
   supervisorOverrideReason?: string;
+  escalationReason?: string;
+  escalatedAt?: Date;
+  escalatedBy?: string;
   idempotencyKey?: string;
   versionNo: number;
   createdAt: Date;
@@ -215,10 +221,13 @@ export interface NotificationOutboxRecord {
   encryptionIv?: string;
   authTag?: string;
   keyVersion?: string;
-  status: 'QUEUED' | 'PROCESSING' | 'SENT' | 'FAILED' | 'DEAD_LETTER';
+  status: 'QUEUED' | 'PROCESSING' | 'SENT' | 'FAILED' | 'DEAD_LETTER' | 'SUPERSEDED' | 'CANCELLED';
   providerMessageId?: string;
   errorMessage?: string;
   retryCount: number;
+  scheduledFor?: Date;
+  replacementId?: string;
+  appointmentVersion?: number;
   nextRetryAt?: Date;
   updatedAt?: Date;
   sentAt?: Date;

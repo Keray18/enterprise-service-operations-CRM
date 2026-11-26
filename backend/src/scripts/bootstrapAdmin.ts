@@ -3,7 +3,7 @@ import { closeOraclePool } from '../database/oraclePool.js';
 import { rbacRepository } from '../database/repositories/rbacRepository.js';
 import { userRepository } from '../database/repositories/userRepository.js';
 import { logger } from '../logging/logger.js';
-import { hashPassword, validatePasswordComplexity } from '../services/passwordService.js';
+import { generateTemporaryPassword, hashPassword, validatePasswordComplexity } from '../services/passwordService.js';
 
 export async function bootstrapAdmin(options?: {
   username?: string;
@@ -38,11 +38,11 @@ export async function bootstrapAdmin(options?: {
     return { created: false, username: existing?.username || username };
   }
 
-  // If no password provided via option or environment, generate a strong random secret
+  // If no password provided via option or environment, generate a CSPRNG temporary credential
+  const generated = !password;
   if (!password) {
-    const randomSecret = crypto.randomBytes(18).toString('base64url');
-    password = `Adm#${randomSecret}9!`;
-    console.log(`[NOTICE] No password supplied via BOOTSTRAP_ADMIN_PASSWORD. Generated strong unique password.`);
+    password = generateTemporaryPassword();
+    console.log(`[NOTICE] No password supplied via BOOTSTRAP_ADMIN_PASSWORD. Generated a one-time temporary password.`);
   }
 
   validatePasswordComplexity(password);
@@ -64,6 +64,8 @@ export async function bootstrapAdmin(options?: {
     email,
     fullName: options?.fullName || process.env['BOOTSTRAP_ADMIN_NAME'] || 'System Operations Lead',
     passwordHash,
+    // Bootstrap credentials are always temporary: the administrator must set their own at first sign-in
+    mustChangePassword: 'Y',
   });
 
   // Assign ADMIN role
@@ -73,6 +75,11 @@ export async function bootstrapAdmin(options?: {
   console.log(`          User ID : ${userId}`);
   console.log(`          Role    : ADMIN (All capabilities assigned)`);
   console.log(`          Hash    : Argon2id`);
+  if (generated) {
+    console.log(`          Temporary password (shown once, change required at first sign-in): ${password}`);
+  } else {
+    console.log(`          Password: as supplied via BOOTSTRAP_ADMIN_PASSWORD (change required at first sign-in)`);
+  }
   console.log(`========================================================================================\n`);
 
   logger.info(`Administrator account created: ${username} (${userId})`);

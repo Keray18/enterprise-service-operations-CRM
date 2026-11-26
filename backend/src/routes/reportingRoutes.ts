@@ -8,65 +8,65 @@ const router = Router();
 router.use(requireAuth);
 
 // 1. Universal Call / Job / Complaint Register
-// Authorized: ADMIN, CALL_CENTER, ASF (scoped), BRAND (scoped), FINANCE
+// Authorized: ADMIN, CALL_CENTER, ASF (scoped)
 router.get(
   '/calls',
-  requireRole('ADMIN', 'CALL_CENTER', 'ASF', 'BRAND', 'FINANCE'),
+  requireRole('ADMIN', 'CALL_CENTER', 'ASF'),
   reportingController.getCallRegister.bind(reportingController)
 );
 router.get(
   '/calls/export',
-  requireRole('ADMIN', 'CALL_CENTER', 'ASF', 'BRAND', 'FINANCE'),
+  requireRole('ADMIN', 'CALL_CENTER', 'ASF'),
   reportingController.exportCallRegisterCsv.bind(reportingController)
 );
 
 // 2. Part Consumption & Defect Trend Report
-// Authorized: ADMIN, WAREHOUSE, FINANCE, ASF (scoped), BRAND (scoped)
+// Authorized: ADMIN, WAREHOUSE, ASF (scoped)
 // Denied: CALL_CENTER (no parts costing operational need)
 router.get(
   '/parts-consumption',
-  requireRole('ADMIN', 'WAREHOUSE', 'FINANCE', 'ASF', 'BRAND'),
+  requireRole('ADMIN', 'WAREHOUSE', 'ASF'),
   reportingController.getPartConsumption.bind(reportingController)
 );
 router.get(
   '/parts-consumption/export',
-  requireRole('ADMIN', 'WAREHOUSE', 'FINANCE', 'ASF', 'BRAND'),
+  requireRole('ADMIN', 'WAREHOUSE', 'ASF'),
   reportingController.exportPartConsumptionCsv.bind(reportingController)
 );
 
 // 3. Warranty Claims & Settlement Audit Report
-// Authorized: ADMIN, FINANCE, BRAND (scoped), ASF (scoped)
+// Authorized: ADMIN, ASF (scoped)
 // Denied: CALL_CENTER (financial claims segregation), WAREHOUSE
 router.get(
   '/warranty-claims',
-  requireRole('ADMIN', 'FINANCE', 'BRAND', 'ASF'),
+  requireRole('ADMIN', 'ASF'),
   reportingController.getWarrantyClaims.bind(reportingController)
 );
 router.get(
   '/warranty-claims/export',
-  requireRole('ADMIN', 'FINANCE', 'BRAND', 'ASF'),
+  requireRole('ADMIN', 'ASF'),
   reportingController.exportWarrantyClaimsCsv.bind(reportingController)
 );
 
 // 4. Inventory Stock Valuation Report
-// Authorized: ADMIN, FINANCE, WAREHOUSE (scoped)
-// Denied: CALL_CENTER, ASF, BRAND
+// Authorized: ADMIN, WAREHOUSE (scoped)
+// Denied: CALL_CENTER, ASF
 router.get(
   '/stock-valuation',
-  requireRole('ADMIN', 'FINANCE', 'WAREHOUSE'),
+  requireRole('ADMIN', 'WAREHOUSE'),
   reportingController.getStockValuation.bind(reportingController)
 );
 router.get(
   '/stock-valuation/export',
-  requireRole('ADMIN', 'FINANCE', 'WAREHOUSE'),
+  requireRole('ADMIN', 'WAREHOUSE'),
   reportingController.exportStockValuationCsv.bind(reportingController)
 );
 
 // 5. Operational Queues Summary
-// Authorized: ADMIN, CALL_CENTER, ASF, BRAND, FINANCE, WAREHOUSE (each scoped)
+// Authorized: ADMIN, CALL_CENTER, ASF, WAREHOUSE (each scoped)
 router.get(
   '/operational-queues',
-  requireRole('ADMIN', 'CALL_CENTER', 'ASF', 'BRAND', 'FINANCE', 'WAREHOUSE'),
+  requireRole('ADMIN', 'CALL_CENTER', 'ASF', 'WAREHOUSE'),
   reportingController.getOperationalQueues.bind(reportingController)
 );
 

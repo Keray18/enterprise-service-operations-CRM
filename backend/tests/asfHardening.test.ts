@@ -3,6 +3,7 @@ import oracledb from 'oracledb';
 import request from 'supertest';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createApp } from '../src/app.js';
+import { deliverScheduledNotification } from './helpers/scheduledNotifications.js';
 import { closeOraclePool, getOracleConnection } from '../src/database/oraclePool.js';
 import { brandRepository } from '../src/database/repositories/brandRepository.js';
 import { customerRepository } from '../src/database/repositories/customerRepository.js';
@@ -57,6 +58,7 @@ describe('Phase 2A.1 — OTP Secret Protection, Outbox Hardening & SLA Authoriza
       locationCode: `SEC_${Date.now().toString(36).toUpperCase()}`,
       locationName: 'Security Validation Center',
       partyType: 'ASF',
+      isTestFixture: 'Y',
     });
     asfLocationId = loc.locationId;
 
@@ -359,8 +361,10 @@ describe('Phase 2A.1 — OTP Secret Protection, Outbox Hardening & SLA Authoriza
       expect(res.status).toBe(200);
       expect(res.body.success).toBe(true);
 
-      // Wait for background notification processor to deliver SMS
-      await new Promise((r) => setTimeout(r, 150));
+      // Arrival Happy Code SMS is scheduled for appointment - 60 min; deliver it when due
+      await deliverScheduledNotification(ticket.requestId, 'SMS_02_APPOINTMENT', {
+        expectedAppointment: new Date(appointmentDate),
+      });
 
       // 1. Inspect SERVICE_REQUEST_VERIFICATIONS in Oracle
       const verification = await verificationRepository.findByRequestId(ticket.requestId);
@@ -408,7 +412,7 @@ describe('Phase 2A.1 — OTP Secret Protection, Outbox Hardening & SLA Authoriza
       );
       expect(appointmentSms).toBeDefined();
       expect(appointmentSms!.messageBody).toContain('Service Request #');
-      const otpMatch = appointmentSms!.messageBody.match(/OTP (\d{6})/);
+      const otpMatch = appointmentSms!.messageBody.match(/(?:OTP|Arrival Happy Code) (\d{6})/);
       expect(otpMatch).not.toBeNull();
       const checkInOtp = otpMatch![1];
 
@@ -527,11 +531,14 @@ describe('Phase 2A.1 — OTP Secret Protection, Outbox Hardening & SLA Authoriza
           areaType: 'LOCAL',
         });
 
+      // Scheduled Arrival Happy Code SMS reaches its due time and is delivered
+      await deliverScheduledNotification(ticket.requestId, 'SMS_02_APPOINTMENT');
+
       // Get original OTP from SMS 2
       const firstSms = mockSmsAdapter
         .getSentMessages()
         .find((m) => m.templateCode === 'SMS_02_APPOINTMENT');
-      const oldOtp = firstSms!.messageBody.match(/OTP (\d{6})/)?.[1];
+      const oldOtp = firstSms!.messageBody.match(/(?:OTP|Arrival Happy Code) (\d{6})/)?.[1];
       expect(oldOtp).toBeDefined();
 
       // Regenerate OTP
@@ -549,7 +556,7 @@ describe('Phase 2A.1 — OTP Secret Protection, Outbox Hardening & SLA Authoriza
         .getSentMessages()
         .find((m) => m.templateCode === 'SMS_06_OTP_REGEN');
       expect(regenSms).toBeDefined();
-      const newOtp = regenSms!.messageBody.match(/OTP (\d{6})/)?.[1];
+      const newOtp = regenSms!.messageBody.match(/(?:OTP|Arrival Happy Code) (\d{6})/)?.[1];
       expect(newOtp).toBeDefined();
       expect(newOtp).not.toBe(oldOtp);
 
@@ -596,8 +603,8 @@ describe('Phase 2A.1 — OTP Secret Protection, Outbox Hardening & SLA Authoriza
 
       expect(res.status).toBe(200);
 
-      // Give worker brief moment to complete async failure handling
-      await new Promise((r) => setTimeout(r, 100));
+      // Scheduled SMS reaches its due time; the (simulated) gateway failure is recorded
+      await deliverScheduledNotification(ticket.requestId, 'SMS_02_APPOINTMENT');
 
       // Inspect NOTIFICATIONS_OUTBOX in DB
       const conn = await getOracleConnection();

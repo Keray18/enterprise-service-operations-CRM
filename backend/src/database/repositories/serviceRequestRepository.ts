@@ -96,6 +96,9 @@ function mapRowToServiceRequest(row: any): ServiceRequestWithRelationsRecord {
     cancelledAt: row.CANCELLED_AT ? new Date(row.CANCELLED_AT) : undefined,
     cancelledBy: row.CANCELLED_BY || undefined,
     supervisorOverrideReason: row.SUPERVISOR_OVERRIDE_REASON || undefined,
+    escalationReason: row.ESCALATION_REASON || undefined,
+    escalatedAt: row.ESCALATED_AT ? new Date(row.ESCALATED_AT) : undefined,
+    escalatedBy: row.ESCALATED_BY || undefined,
     idempotencyKey: row.IDEMPOTENCY_KEY || undefined,
     versionNo: Number(row.VERSION_NO || 1),
     createdAt: new Date(row.CREATED_AT),
@@ -203,6 +206,9 @@ const BASE_SELECT_SQL = `
     sr.CANCELLED_AT,
     sr.CANCELLED_BY,
     sr.SUPERVISOR_OVERRIDE_REASON,
+    sr.ESCALATION_REASON,
+    sr.ESCALATED_AT,
+    sr.ESCALATED_BY,
     sr.IDEMPOTENCY_KEY,
     sr.VERSION_NO,
     sr.CREATED_AT,
@@ -1147,6 +1153,61 @@ export class ServiceRequestRepository {
       requestId: params.requestId,
       closedBy: params.closedBy,
       supervisorOverrideReason: params.supervisorOverrideReason || null,
+    });
+  }
+
+  /**
+   * Records engineer repair escalation with Happy Code verification metadata.
+   */
+  async recordRepairEscalation(
+    params: {
+      requestId: string;
+      escalationReason: string;
+      escalatedBy: string;
+    },
+    conn: oracledb.Connection
+  ): Promise<void> {
+    const sql = `
+      UPDATE SERVICE_REQUESTS
+      SET 
+        STATUS = 'REPAIR_ESCALATED',
+        ESCALATION_REASON = :escalationReason,
+        ESCALATED_AT = SYSTIMESTAMP,
+        ESCALATED_BY = :escalatedBy,
+        VERSION_NO = VERSION_NO + 1,
+        UPDATED_AT = SYSTIMESTAMP
+      WHERE REQUEST_ID = :requestId
+    `;
+    await conn.execute(sql, {
+      requestId: params.requestId,
+      escalationReason: params.escalationReason,
+      escalatedBy: params.escalatedBy,
+    });
+  }
+
+  /**
+   * Atomically closes original service request as ESCALATED_TO_REPLACEMENT.
+   */
+  async closeEscalatedToReplacement(
+    params: {
+      requestId: string;
+      closedBy: string;
+    },
+    conn: oracledb.Connection
+  ): Promise<void> {
+    const sql = `
+      UPDATE SERVICE_REQUESTS
+      SET 
+        STATUS = 'ESCALATED_TO_REPLACEMENT',
+        CLOSED_AT = SYSTIMESTAMP,
+        CLOSED_BY = :closedBy,
+        VERSION_NO = VERSION_NO + 1,
+        UPDATED_AT = SYSTIMESTAMP
+      WHERE REQUEST_ID = :requestId
+    `;
+    await conn.execute(sql, {
+      requestId: params.requestId,
+      closedBy: params.closedBy,
     });
   }
 

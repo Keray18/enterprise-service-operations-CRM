@@ -10,6 +10,8 @@ export interface UserRecord {
   failedLoginAttempts: number;
   lockedUntil?: Date;
   lastLoginAt?: Date;
+  mustChangePassword: 'Y' | 'N';
+  passwordChangedAt?: Date;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -36,6 +38,7 @@ export interface AuthenticatedUser {
   brandId?: string;
   roles: string[];
   permissions: string[];
+  mustChangePassword?: boolean;
 }
 
 export interface AuthSessionContext {

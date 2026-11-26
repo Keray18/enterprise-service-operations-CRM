@@ -114,8 +114,8 @@ export class SessionRepository {
     }
   }
 
-  async revokeAllUserSessions(userId: string): Promise<void> {
-    const conn = await getOracleConnection();
+  async revokeAllUserSessions(userId: string, externalConn?: oracledb.Connection): Promise<number> {
+    const conn = externalConn || (await getOracleConnection());
     try {
       const sql = `
         UPDATE USER_SESSIONS
@@ -123,9 +123,32 @@ export class SessionRepository {
         WHERE USER_ID = :userId
           AND REVOKED_AT IS NULL
       `;
-      await conn.execute(sql, { userId }, { autoCommit: true });
+      const res = await conn.execute(sql, { userId }, { autoCommit: !externalConn });
+      return res.rowsAffected || 0;
     } finally {
-      await conn.close();
+      if (!externalConn) {
+        await conn.close();
+      }
+    }
+  }
+
+  /**
+   * Revokes every active session of a user except the given one (used after self-service password change).
+   */
+  async revokeOtherUserSessions(userId: string, keepSessionId: string, externalConn?: oracledb.Connection): Promise<number> {
+    const conn = externalConn || (await getOracleConnection());
+    try {
+      const res = await conn.execute(
+        `UPDATE USER_SESSIONS SET REVOKED_AT = SYSTIMESTAMP
+          WHERE USER_ID = :userId AND SESSION_ID <> :keepSessionId AND REVOKED_AT IS NULL`,
+        { userId, keepSessionId },
+        { autoCommit: !externalConn }
+      );
+      return res.rowsAffected || 0;
+    } finally {
+      if (!externalConn) {
+        await conn.close();
+      }
     }
   }
 }

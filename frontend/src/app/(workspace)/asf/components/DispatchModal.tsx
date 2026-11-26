@@ -175,7 +175,7 @@ export function DispatchModal({ open, onClose, request, onSuccess }: DispatchMod
               <strong>{successResult.appointmentDate}</strong> ({successResult.appointmentSlot}).
             </Typography>
             <Alert severity="info" sx={{ textAlign: 'left', maxWidth: 500, mx: 'auto' }}>
-              A 6-digit Check-In OTP was cryptographically generated and queued in the transactional outbox (SMS 2)
+              A 6-digit Arrival Happy Code was cryptographically generated and queued in the transactional outbox (SMS 2)
               for immediate delivery to the customer.
             </Alert>
 
@@ -192,7 +192,7 @@ export function DispatchModal({ open, onClose, request, onSuccess }: DispatchMod
                 }}
               >
                 <Chip
-                  label="Development Only Test OTP"
+                  label="Development Only Test Happy Code"
                   color="warning"
                   size="small"
                   sx={{ fontWeight: 700, mb: 1 }}
@@ -227,7 +227,7 @@ export function DispatchModal({ open, onClose, request, onSuccess }: DispatchMod
                       setTimeout(() => setCopiedOtp(false), 3000);
                     }}
                   >
-                    {copiedOtp ? 'Copied!' : 'Copy Test OTP'}
+                    {copiedOtp ? 'Copied!' : 'Copy Test Happy Code'}
                   </Button>
                 </Box>
               </Box>
@@ -563,7 +563,7 @@ export function DispatchModal({ open, onClose, request, onSuccess }: DispatchMod
             >
               <Typography variant="caption" color="info.dark" sx={{ display: 'block', fontWeight: 500 }}>
                 <strong>Single-Commit Atomic Dispatch:</strong> Submitting will atomically acknowledge the complaint,
-                schedule the appointment, bind the technician, generate a salted SHA-256 customer Check-In OTP, append an immutable
+                schedule the appointment, bind the technician, generate a salted SHA-256 customer Arrival Happy Code, append an immutable
                 lifecycle audit event, and queue SMS 2 in the database outbox.
               </Typography>
             </Box>

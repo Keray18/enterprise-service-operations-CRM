@@ -302,3 +302,47 @@ pnpm db:rotate-admin
 - **Route Guard (`ProtectedRoute.tsx`)**: Reusable wrapper verifying `useAuth()`. Unauthenticated requests redirect to `/login`; authenticated users lacking permissions receive a dedicated `403 Forbidden` card.
 - **Dynamic Sidebar**: `AppSidebar.tsx` dynamically filters workspace links according to server-confirmed permissions (`user.permissions`).
 
+---
+
+## 12. Phase 1: Role Simplification & Happy Code Standardization
+
+### Five Active Application Roles
+The application strictly enforces **exactly five active and assignable application roles**:
+
+| Role Code | Name | Primary Workspace | Responsibility & Capabilities |
+| :--- | :--- | :--- | :--- |
+| `ADMIN` | Client Administrator | `/admin` | Operational oversight, master taxonomy management (`masters:manage`, `masters:import`), user role governance, system telemetry. |
+| `CALL_CENTER` | Call Center Representative | `/call-center` | Fast customer search, pincode serviceability resolution, complaint intake and registration (`calls:create`, `calls:read`). |
+| `ASF` | Service Center Manager | `/service-center` (or `/asf`) | Operational queue triage, 48h SLA acknowledgment, technician dispatch, part requisitions (`asf:manage`, `asf:read`). |
+| `ENGINEER` | Field Service Engineer | `/engineer` | Field visits, on-site arrival verification via Arrival Happy Code, repair execution, part consumption, call completion. |
+| `WAREHOUSE` | Central Warehouse Logistics | `/warehouse` | Inventory stock management, GRN inward receipts, part reservations, and dispatch challans (`inventory:manage`, `inventory:dispatch`). |
+
+### Removed Roles & Historical Data Preservation
+The following legacy/prototype roles have been removed from active authorization, user provisioning, and navigation:
+- `SUPER_ADMIN`
+- `INFRA_OPS`
+- `FINANCE`
+- `BRAND`
+- `DISTRIBUTOR`
+
+**Historical Record Integrity:**
+- Role definitions in `ROLES` have `IS_ACTIVE = 'N'`.
+- Existing accounts assigned to removed roles (`super`, `infra_ops`, `brand_manager`, `finance_officer`) have `IS_ACTIVE = 'N'` and active sessions revoked.
+- Foreign-key audit trails on historical records (51 financial journal entries, 44 brand wallet ledger records, 8 brand master records) remain intact. No historical data was deleted or silently reassigned to `ADMIN`.
+- Attempts to newly provision or assign removed roles are rejected by `rbacRepository.assignRoleToUser`.
+
+### Happy Code Standardization (Dual-Code Architecture)
+All customer-facing and employee-facing verification terminology has been standardized to **Happy Code**:
+1. **Arrival Happy Code:** 6-digit cryptographic code sent via SMS to the customer upon engineer dispatch. Entered by the engineer or ASF manager to authorize and timestamp on-site arrival (`CHECK_IN`).
+2. **Completion Happy Code:** 6-digit cryptographic code sent via SMS to the customer for call closure. Entered by the technician upon satisfactory repair to authorize call closure (`CLOSURE`).
+- **Cryptographic Independence:** Arrival and Completion codes are salted and hashed separately with distinct verification purposes (`CHECK_IN` vs `CLOSURE`). They are strictly non-interchangeable.
+- **Internal Compatibility:** Database columns (`CHECK_IN_OTP_*` and `HAPPY_CODE_*`) and internal API payload parameters are preserved for zero-downtime database backward compatibility.
+
+### Database Migration: `V029__standardize_five_roles.sql`
+- Adds `IS_ACTIVE CHAR(1 CHAR) DEFAULT 'Y' NOT NULL CHECK (IS_ACTIVE IN ('Y', 'N'))` to `ROLES`.
+- Activates the 5 approved roles and deactivates the 5 removed roles.
+- Restores `masters:manage`, `masters:import`, `audit:read`, `audit:export`, and `system:config` to the `ADMIN` role.
+- Clears permission assignments from deactivated roles.
+- Revokes sessions and marks user records inactive for deprecated accounts.
+
+

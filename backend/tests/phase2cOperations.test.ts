@@ -61,6 +61,7 @@ describe('Phase 2C — Happy Code Closure, Customer Feedback, Replacement & Canc
       locationCode: `ASF_2C_${Date.now().toString(36).toUpperCase()}`,
       locationName: 'Powai Authorized Service Facility',
       partyType: 'ASF',
+      isTestFixture: 'Y',
     });
     asfLocationId = loc1.locationId;
 
@@ -68,6 +69,7 @@ describe('Phase 2C — Happy Code Closure, Customer Feedback, Replacement & Canc
       locationCode: `ASF_OTH_${Date.now().toString(36).toUpperCase()}`,
       locationName: 'Thane Authorized Service Facility',
       partyType: 'ASF',
+      isTestFixture: 'Y',
     });
     otherLocationId = loc2.locationId;
 
@@ -793,83 +795,91 @@ describe('Phase 2C — Happy Code Closure, Customer Feedback, Replacement & Canc
   /* ==========================================================================
      7. REPLACEMENT REQUEST WORKFLOW & HEAD OFFICE APPROVAL (SMS 8)
      ========================================================================== */
-  describe('Replacement Request Workflow', () => {
-    it('validates all 6 documented replacement reasons', async () => {
-      const validReasons = [
-        'REASON_1',
-        'REASON_2',
-        'REASON_3',
-        'REASON_4',
-        'REASON_5',
-        'REASON_6',
-      ];
 
+  /**
+   * Approved Phase 2 model: engineers escalate, and only the responsible ASF's acceptance creates a
+   * replacement request. Legacy Head Office review remains for historical PENDING replacement records,
+   * which are staged here directly (they can no longer be created through the API).
+   */
+  async function stageHistoricalPendingReplacement(requestedBy: string, reasonCode = 'REASON_5') {
+    const sr = await createStagedServiceRequest({ status: 'IN_PROGRESS_REPAIR', checkedIn: true, repairOutcome: true });
+    const conn = await getOracleConnection();
+    try {
+      const replacementId = crypto.randomUUID();
+      await replacementRequestRepository.createRequest(
+        {
+          replacementId,
+          requestId: sr.requestId,
+          reasonCode: reasonCode as any,
+          reasonDescription: 'Historical replacement request awaiting Head Office review',
+          technicianRemarks: 'Staged historical record',
+          requestedBy,
+        },
+        conn
+      );
+      await conn.execute(`UPDATE SERVICE_REQUESTS SET STATUS = 'REQUEST_FOR_REPLACEMENT' WHERE REQUEST_ID = :id`, { id: sr.requestId });
+      await conn.commit();
+      return { sr, replacementId };
+    } finally {
+      await conn.close();
+    }
+  }
+
+  describe('Replacement Request Workflow', () => {
+    it('blocks direct engineer replacement requests and validates all 6 documented reasons at ASF escalation acceptance', async () => {
+      // Approved decision: engineer escalation does not create a replacement request
+      const direct = await createStagedServiceRequest({ status: 'IN_PROGRESS_REPAIR', checkedIn: true, repairOutcome: true });
+      const directRes = await request(app)
+        .post(`/api/v1/asf/jobs/${direct.requestId}/replacement`)
+        .set('Cookie', eng1Cookie)
+        .set('x-csrf-token', eng1Csrf)
+        .send({ reasonCode: 'REASON_1', technicianRemarks: 'Attempted direct request' });
+      expect(directRes.status).toBe(400);
+      expect(directRes.body.error.code).toBe('USE_ESCALATION_WORKFLOW');
+      expect((await serviceRequestRepository.findById(direct.requestId))?.status).toBe('IN_PROGRESS_REPAIR');
+      expect(await replacementRequestRepository.findByRequestId(direct.requestId)).toBeNull();
+
+      const validReasons = ['REASON_1', 'REASON_2', 'REASON_3', 'REASON_4', 'REASON_5', 'REASON_6'];
       for (const reasonCode of validReasons) {
-        const sr = await createStagedServiceRequest({
-          status: 'IN_PROGRESS_REPAIR',
-          checkedIn: true,
-          repairOutcome: true,
-        });
+        const sr = await createStagedServiceRequest({ status: 'REPAIR_ESCALATED', checkedIn: true, repairOutcome: true });
 
         const res = await request(app)
-          .post(`/api/v1/asf/jobs/${sr.requestId}/replacement`)
-          .set('Cookie', eng1Cookie)
-          .set('x-csrf-token', eng1Csrf)
-          .send({
-            reasonCode,
-            technicianRemarks: `Verified replacement reason: ${reasonCode} during diagnosis.`,
-          });
+          .post(`/api/v1/asf/jobs/${sr.requestId}/accept-escalation`)
+          .set('Cookie', asfCookie)
+          .set('x-csrf-token', asfCsrf)
+          .send({ reasonCode, technicianRemarks: `Verified replacement reason: ${reasonCode} during diagnosis.` });
 
-        expect(res.status).toBe(201);
+        expect(res.status).toBe(200);
         expect(res.body.success).toBe(true);
-        expect(res.body.data.status).toBe('REQUEST_FOR_REPLACEMENT');
+        expect(res.body.data.status).toBe('OPEN');
         expect(res.body.data.replacementId).toBeDefined();
 
-        // Verify request state transitioned
+        // Original complaint closed as ESCALATED_TO_REPLACEMENT; independent linked replacement exists
         const updatedSr = await serviceRequestRepository.findById(sr.requestId);
-        expect(updatedSr?.status).toBe('REQUEST_FOR_REPLACEMENT');
+        expect(updatedSr?.status).toBe('ESCALATED_TO_REPLACEMENT');
+        const rep = await replacementRequestRepository.findByRequestId(sr.requestId);
+        expect(rep?.reasonCode).toBe(reasonCode);
       }
     });
 
-    it('rejects invalid replacement reason', async () => {
-      const sr = await createStagedServiceRequest({
-        status: 'IN_PROGRESS_REPAIR',
-        checkedIn: true,
-        repairOutcome: true,
-      });
+    it('rejects invalid replacement reason at escalation acceptance', async () => {
+      const sr = await createStagedServiceRequest({ status: 'REPAIR_ESCALATED', checkedIn: true, repairOutcome: true });
 
       const res = await request(app)
-        .post(`/api/v1/asf/jobs/${sr.requestId}/replacement`)
-        .set('Cookie', eng1Cookie)
-        .set('x-csrf-token', eng1Csrf)
-        .send({
-          reasonCode: 'CUSTOMER_WANTS_NEW_MODEL',
-          technicianRemarks: 'Customer prefers newer color.',
-        });
+        .post(`/api/v1/asf/jobs/${sr.requestId}/accept-escalation`)
+        .set('Cookie', asfCookie)
+        .set('x-csrf-token', asfCsrf)
+        .send({ reasonCode: 'CUSTOMER_WANTS_NEW_MODEL', technicianRemarks: 'Customer prefers newer color.' });
 
       expect(res.status).toBe(400);
       expect(res.body.success).toBe(false);
+      // Complaint remains open until a valid acceptance
+      expect((await serviceRequestRepository.findById(sr.requestId))?.status).toBe('REPAIR_ESCALATED');
     });
 
     it('enforces segregation of duties: requester cannot approve their own replacement request', async () => {
-      // Create request submitted by adminUserId
-      const sr = await createStagedServiceRequest({
-        status: 'IN_PROGRESS_REPAIR',
-        checkedIn: true,
-        repairOutcome: true,
-      });
-
-      const reqRes = await request(app)
-        .post(`/api/v1/asf/jobs/${sr.requestId}/replacement`)
-        .set('Cookie', adminCookie)
-        .set('x-csrf-token', adminCsrf)
-        .send({
-          reasonCode: 'REASON_5',
-          technicianRemarks: 'Cabinet structural failure rendering appliance unserviceable.',
-        });
-
-      expect(reqRes.status).toBe(201);
-      const replacementId = reqRes.body.data.replacementId;
+      // Historical request submitted by the same administrator who now attempts to review it
+      const { replacementId } = await stageHistoricalPendingReplacement(adminUserId, 'REASON_5');
 
       // Admin attempts to self-approve
       const selfApproveRes = await request(app)
@@ -886,23 +896,8 @@ describe('Phase 2C — Happy Code Closure, Customer Feedback, Replacement & Canc
     });
 
     it('processes Head Office replacement rejection: returns request to IN_PROGRESS_REPAIR without SMS 8', async () => {
-      const sr = await createStagedServiceRequest({
-        status: 'IN_PROGRESS_REPAIR',
-        checkedIn: true,
-        repairOutcome: true,
-      });
-
-      const reqRes = await request(app)
-        .post(`/api/v1/asf/jobs/${sr.requestId}/replacement`)
-        .set('Cookie', eng1Cookie)
-        .set('x-csrf-token', eng1Csrf)
-        .send({
-          reasonCode: 'REASON_1',
-          technicianRemarks: 'Vendor ETA exceeds 168 hours SLA limit.',
-        });
-
-      expect(reqRes.status).toBe(201);
-      const replacementId = reqRes.body.data.replacementId;
+      // Historical PENDING record raised by the field engineer before the Phase 2 escalation model
+      const { sr, replacementId } = await stageHistoricalPendingReplacement(engineerUserId1, 'REASON_1');
 
       // Admin rejects
       const reviewRes = await request(app)
@@ -929,23 +924,8 @@ describe('Phase 2C — Happy Code Closure, Customer Feedback, Replacement & Canc
     });
 
     it('processes Head Office replacement approval: generates unique REP-YYYYMMDD-XXXX approval number, transitions to REPLACEMENT_APPROVED, and queues SMS 8', async () => {
-      const sr = await createStagedServiceRequest({
-        status: 'IN_PROGRESS_REPAIR',
-        checkedIn: true,
-        repairOutcome: true,
-      });
-
-      const reqRes = await request(app)
-        .post(`/api/v1/asf/jobs/${sr.requestId}/replacement`)
-        .set('Cookie', eng1Cookie)
-        .set('x-csrf-token', eng1Csrf)
-        .send({
-          reasonCode: 'REASON_5',
-          technicianRemarks: 'Severe internal chassis deformation; cannot be restored to safety standard.',
-        });
-
-      expect(reqRes.status).toBe(201);
-      const replacementId = reqRes.body.data.replacementId;
+      // Historical PENDING record raised by the field engineer before the Phase 2 escalation model
+      const { sr, replacementId } = await stageHistoricalPendingReplacement(engineerUserId1, 'REASON_5');
 
       // Admin approves
       const reviewRes = await request(app)

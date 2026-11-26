@@ -110,6 +110,7 @@ describe('Part Codes, HSN/Tax, Geography & Serviceability (Phase 1B.2)', () => {
       locationCode: `ASF_${suffix}`,
       locationName: `Regional Service Center ${suffix}`,
       partyType: 'ASF',
+      isTestFixture: 'Y',
       createdBy: 'SETUP',
     });
     testLocationId = location.locationId;

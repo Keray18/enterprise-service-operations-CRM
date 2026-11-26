@@ -1,3 +1,4 @@
+import { randomInt } from 'crypto';
 import { Algorithm, hash, verify } from '@node-rs/argon2';
 import bcrypt from 'bcryptjs';
 
@@ -74,4 +75,33 @@ export async function verifyPassword(passwordPlain: string, storedHash: string):
   }
 
   return { valid: false, needsRehash: false };
+}
+
+/**
+ * Generates a cryptographically random temporary password (CSPRNG via crypto.randomInt)
+ * that satisfies the complexity policy. Character positions are shuffled so the
+ * guaranteed character classes are not at predictable offsets.
+ */
+export function generateTemporaryPassword(length = 16): string {
+  const lowers = 'abcdefghjkmnpqrstuvwxyz';
+  const uppers = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
+  const digits = '23456789';
+  const symbols = '!@#$%&*-_=+?';
+  const all = lowers + uppers + digits + symbols;
+  const chars: string[] = [
+    uppers[randomInt(uppers.length)]!,
+    lowers[randomInt(lowers.length)]!,
+    digits[randomInt(digits.length)]!,
+    symbols[randomInt(symbols.length)]!,
+  ];
+  while (chars.length < Math.max(12, length)) {
+    chars.push(all[randomInt(all.length)]!);
+  }
+  for (let i = chars.length - 1; i > 0; i--) {
+    const j = randomInt(i + 1);
+    [chars[i], chars[j]] = [chars[j]!, chars[i]!];
+  }
+  const password = chars.join('');
+  validatePasswordComplexity(password);
+  return password;
 }

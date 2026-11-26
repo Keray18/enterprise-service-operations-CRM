@@ -62,7 +62,7 @@ export default function FieldEngineerWorkspacePage() {
   const [page, setPage] = useState(0);
   const [rowsPerPage, setRowsPerPage] = useState(20);
 
-  // Selected complaint for OTP check-in dialog
+  // Selected complaint for Happy Code check-in dialog
   const [checkInRequest, setCheckInRequest] = useState<AsfQueueItem | null>(null);
 
   // TanStack Query Hooks
@@ -108,7 +108,7 @@ export default function FieldEngineerWorkspacePage() {
             onClick={() => setCheckInRequest(job)}
             sx={{ fontWeight: 600, textTransform: 'none' }}
           >
-            Check-In (OTP)
+            Check-In (Happy Code)
           </Button>
         );
       case 'TECHNICIAN_CHECKED_IN':
@@ -258,7 +258,7 @@ export default function FieldEngineerWorkspacePage() {
                   {isKpisLoading ? <CircularProgress size={24} /> : kpis?.awaitingCheckIn || 0}
                 </Typography>
                 <Typography variant="caption" color="text.secondary">
-                  Requires customer OTP
+                  Requires Arrival Happy Code
                 </Typography>
               </CardContent>
             </Card>
@@ -611,7 +611,7 @@ export default function FieldEngineerWorkspacePage() {
           />
         </Paper>
 
-        {/* Modal: Customer OTP Check-In */}
+        {/* Modal: Customer Arrival Happy Code Check-In */}
         {checkInRequest && (
           <TechnicianCheckInDialog
             open={Boolean(checkInRequest)}

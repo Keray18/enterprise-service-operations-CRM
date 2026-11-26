@@ -25,6 +25,8 @@ function mapRowToNotification(row: any, sanitizeForApi = false): NotificationOut
   return {
     notificationId: row.NOTIFICATION_ID,
     requestId: row.REQUEST_ID || undefined,
+    replacementId: row.REPLACEMENT_ID || undefined,
+    appointmentVersion: row.APPOINTMENT_VERSION != null ? Number(row.APPOINTMENT_VERSION) : undefined,
     channel: row.CHANNEL,
     recipient: row.RECIPIENT,
     templateCode: row.TEMPLATE_CODE,
@@ -38,6 +40,7 @@ function mapRowToNotification(row: any, sanitizeForApi = false): NotificationOut
     providerMessageId: row.PROVIDER_MESSAGE_ID || undefined,
     errorMessage: row.ERROR_MESSAGE || undefined,
     retryCount: Number(row.RETRY_COUNT || 0),
+    scheduledFor: row.SCHEDULED_FOR ? new Date(row.SCHEDULED_FOR) : undefined,
     nextRetryAt: row.NEXT_RETRY_AT ? new Date(row.NEXT_RETRY_AT) : undefined,
     updatedAt: row.UPDATED_AT ? new Date(row.UPDATED_AT) : undefined,
     sentAt: row.SENT_AT ? new Date(row.SENT_AT) : undefined,
@@ -53,6 +56,8 @@ export class NotificationRepository {
   async enqueueNotification(
     input: {
       requestId?: string;
+      replacementId?: string;
+      appointmentVersion?: number;
       channel?: 'SMS' | 'EMAIL' | 'WHATSAPP';
       recipient: string;
       templateCode: string;
@@ -62,6 +67,8 @@ export class NotificationRepository {
       encryptionIv?: string;
       authTag?: string;
       keyVersion?: string;
+      scheduledFor?: Date;
+      nextRetryAt?: Date;
     },
     conn?: oracledb.Connection
   ): Promise<NotificationOutboxRecord> {
@@ -74,6 +81,8 @@ export class NotificationRepository {
       INSERT INTO NOTIFICATIONS_OUTBOX (
         NOTIFICATION_ID,
         REQUEST_ID,
+        REPLACEMENT_ID,
+        APPOINTMENT_VERSION,
         CHANNEL,
         RECIPIENT,
         TEMPLATE_CODE,
@@ -85,10 +94,14 @@ export class NotificationRepository {
         KEY_VERSION,
         STATUS,
         RETRY_COUNT,
+        SCHEDULED_FOR,
+        NEXT_RETRY_AT,
         UPDATED_AT
       ) VALUES (
         :notificationId,
         :requestId,
+        :replacementId,
+        :appointmentVersion,
         :channel,
         :recipient,
         :templateCode,
@@ -100,6 +113,8 @@ export class NotificationRepository {
         :keyVersion,
         :status,
         0,
+        :scheduledFor,
+        :nextRetryAt,
         SYSTIMESTAMP
       )
     `;
@@ -107,6 +122,8 @@ export class NotificationRepository {
     const binds = {
       notificationId,
       requestId: input.requestId || null,
+      replacementId: input.replacementId || null,
+      appointmentVersion: input.appointmentVersion || null,
       channel,
       recipient: input.recipient,
       templateCode: input.templateCode,
@@ -117,6 +134,8 @@ export class NotificationRepository {
       authTag: input.authTag || null,
       keyVersion: input.keyVersion || null,
       status,
+      scheduledFor: input.scheduledFor || null,
+      nextRetryAt: input.nextRetryAt || null,
     };
 
     if (conn) {
@@ -156,10 +175,11 @@ export class NotificationRepository {
     try {
       const sql = `
         SELECT 
-          NOTIFICATION_ID, REQUEST_ID, CHANNEL, RECIPIENT, TEMPLATE_CODE,
+          NOTIFICATION_ID, REQUEST_ID, REPLACEMENT_ID, APPOINTMENT_VERSION,
+          CHANNEL, RECIPIENT, TEMPLATE_CODE,
           MESSAGE_BODY, IS_ENCRYPTED, ENCRYPTED_PAYLOAD, ENCRYPTION_IV,
           AUTH_TAG, KEY_VERSION, STATUS, PROVIDER_MESSAGE_ID, ERROR_MESSAGE,
-          RETRY_COUNT, NEXT_RETRY_AT, UPDATED_AT, SENT_AT, CREATED_AT
+          RETRY_COUNT, SCHEDULED_FOR, NEXT_RETRY_AT, UPDATED_AT, SENT_AT, CREATED_AT
         FROM NOTIFICATIONS_OUTBOX
         WHERE NOTIFICATION_ID = :notificationId
       `;
@@ -284,24 +304,31 @@ export class NotificationRepository {
     try {
       const selectSql = `
         SELECT 
-          NOTIFICATION_ID, REQUEST_ID, CHANNEL, RECIPIENT, TEMPLATE_CODE,
+          NOTIFICATION_ID, REQUEST_ID, REPLACEMENT_ID, APPOINTMENT_VERSION,
+          CHANNEL, RECIPIENT, TEMPLATE_CODE,
           MESSAGE_BODY, IS_ENCRYPTED, ENCRYPTED_PAYLOAD, ENCRYPTION_IV,
           AUTH_TAG, KEY_VERSION, STATUS, PROVIDER_MESSAGE_ID, ERROR_MESSAGE,
-          RETRY_COUNT, NEXT_RETRY_AT, UPDATED_AT, SENT_AT, CREATED_AT
+          RETRY_COUNT, SCHEDULED_FOR, NEXT_RETRY_AT, UPDATED_AT, SENT_AT, CREATED_AT
         FROM NOTIFICATIONS_OUTBOX
         WHERE STATUS IN ('QUEUED', 'FAILED')
           AND RETRY_COUNT < :maxRetries
+          AND (SCHEDULED_FOR IS NULL OR SCHEDULED_FOR <= SYSTIMESTAMP)
           AND (NEXT_RETRY_AT IS NULL OR NEXT_RETRY_AT <= SYSTIMESTAMP)
-          AND ROWNUM <= :limit
+        ORDER BY NVL(SCHEDULED_FOR, CREATED_AT) ASC
         FOR UPDATE SKIP LOCKED
       `;
 
+      // Oldest-due first so a backlog cannot starve individual messages. Rows are locked as they are
+      // fetched, so bounding the fetch to `limit` claims at most `limit` rows per worker cycle.
       const result = await conn.execute<any>(
         selectSql,
-        { maxRetries, limit },
+        { maxRetries },
         {
           outFormat: oracledb.OUT_FORMAT_OBJECT,
           fetchInfo: { ENCRYPTED_PAYLOAD: { type: oracledb.STRING } },
+          maxRows: limit,
+          prefetchRows: limit,
+          fetchArraySize: limit,
         }
       );
 
@@ -544,6 +571,45 @@ export class NotificationRepository {
         deadLetter: Number(row.DEAD_LETTER_COUNT || 0),
         total: Number(row.TOTAL_COUNT || 0),
       };
+    } finally {
+      await conn.close();
+    }
+  }
+
+  /**
+   * Supersedes any previously queued notifications for a request or replacement.
+   */
+  async supersedePending(targetId: string, templateCode: string, conn?: oracledb.Connection): Promise<number> {
+    const connection = conn || (await getOracleConnection());
+    try {
+      const sql = `
+        UPDATE NOTIFICATIONS_OUTBOX
+        SET STATUS = 'SUPERSEDED', UPDATED_AT = SYSTIMESTAMP
+        WHERE (REQUEST_ID = :targetId OR REPLACEMENT_ID = :targetId)
+          AND TEMPLATE_CODE = :templateCode
+          AND STATUS = 'QUEUED'
+      `;
+      const res = await connection.execute(sql, { targetId, templateCode }, { autoCommit: !conn });
+      return res.rowsAffected || 0;
+    } finally {
+      if (!conn) await connection.close();
+    }
+  }
+
+  /**
+   * Checks whether a stock shortage SMS was already enqueued or sent for a replacement.
+   */
+  async hasShortageNotification(replacementId: string): Promise<boolean> {
+    const conn = await getOracleConnection();
+    try {
+      const sql = `
+        SELECT 1 FROM NOTIFICATIONS_OUTBOX
+        WHERE REPLACEMENT_ID = :replacementId
+          AND TEMPLATE_CODE = 'SMS_STOCK_SHORTAGE'
+          AND STATUS IN ('QUEUED', 'PROCESSING', 'SENT')
+      `;
+      const res = await conn.execute(sql, { replacementId });
+      return Boolean(res.rows && res.rows.length > 0);
     } finally {
       await conn.close();
     }

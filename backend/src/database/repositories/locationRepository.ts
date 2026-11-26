@@ -3,6 +3,26 @@ import oracledb from 'oracledb';
 import { LocationRecord, PaginatedResult } from '../../types/catalog.js';
 import { getOracleConnection } from '../oraclePool.js';
 
+/**
+ * Test-fixture location code rules. Mirrors the classification established by
+ * V023__location_master_data_hygiene_and_classification.sql so that rows created after
+ * that migration are classified identically.
+ */
+export function isTestFixtureLocationCode(codeUpper: string): boolean {
+  return (
+    codeUpper.includes('TEST') ||
+    codeUpper.startsWith('SEC_') ||
+    codeUpper.startsWith('ASF_360_') ||
+    codeUpper.startsWith('ASF_OTH_') ||
+    codeUpper.startsWith('ASF_2C_') ||
+    codeUpper.startsWith('ASF_UAT_') ||
+    codeUpper.startsWith('WH_UAT_') ||
+    codeUpper.startsWith('ASF1_') ||
+    codeUpper.startsWith('ASF2_') ||
+    /_M[V-Z][0-9A-Z]{6,}/.test(codeUpper) // base36 Date.now() suffixes used by test fixtures
+  );
+}
+
 function mapRowToLocation(row: any): LocationRecord {
   const isFixture = row.IS_TEST_FIXTURE === 'Y';
   return {
@@ -296,16 +316,7 @@ export class LocationRepository {
     try {
       const locationId = crypto.randomUUID();
       const codeUpper = data.locationCode.trim().toUpperCase();
-      const isFixture =
-        data.isTestFixture ||
-        (codeUpper.includes('TEST') ||
-        codeUpper.startsWith('SEC_') ||
-        codeUpper.startsWith('ASF_360_') ||
-        codeUpper.startsWith('ASF_OTH_') ||
-        codeUpper.startsWith('ASF_2C_') ||
-        data.createdBy === 'TEST_SETUP'
-          ? 'Y'
-          : 'N');
+      const isFixture = data.isTestFixture || (isTestFixtureLocationCode(codeUpper) || data.createdBy === 'TEST_SETUP' ? 'Y' : 'N');
       const origin = data.dataOrigin || (isFixture === 'Y' ? 'TEST_FIXTURE' : 'OPERATIONAL');
 
       const sql = `

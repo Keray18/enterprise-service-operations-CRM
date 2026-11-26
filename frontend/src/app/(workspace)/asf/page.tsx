@@ -270,8 +270,8 @@ export default function AsfFranchisePage() {
         title={isEngineerOnly ? 'Technician Field Service Console' : 'Service Center Operations Dashboard'}
         subtitle={
           isEngineerOnly
-            ? 'Personal assigned customer service visits, OTP check-in, defect diagnosis, and closure.'
-            : 'Operational queues, 48-hour SLA acknowledgement, technician assignment, OTP check-in & parts lifecycle.'
+            ? 'Personal assigned customer service visits, Arrival Happy Code check-in, defect diagnosis, and closure.'
+            : 'Operational queues, 48-hour SLA acknowledgement, technician assignment, Arrival Happy Code check-in & parts lifecycle.'
         }
         badge={<StatusBadge status="ACTIVE" label={isEngineerOnly ? 'Field Active' : 'Operations Active'} />}
         actions={
@@ -860,7 +860,7 @@ export default function AsfFranchisePage() {
                               startIcon={<VerifiedUserIcon sx={{ fontSize: 14 }} />}
                               sx={{ textTransform: 'none', fontWeight: 600 }}
                             >
-                              Check-In (OTP)
+                              Check-In (Happy Code)
                             </Button>
                           )}
 

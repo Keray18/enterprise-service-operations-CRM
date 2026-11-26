@@ -5,6 +5,7 @@ import { env } from '../config/env.js';
 import { requireAuth, requireCsrf } from '../middleware/authMiddleware.js';
 import { sendSuccess } from '../middleware/errorHandler.js';
 import { authService } from '../services/authService.js';
+import { getCorrelationId } from '../middleware/correlationId.js';
 
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
@@ -80,6 +81,42 @@ authRouter.post('/logout', requireAuth, requireCsrf, async (req: Request, res: R
     res.clearCookie('crm_csrf', { path: '/' });
 
     sendSuccess(res, { message: 'Logged out successfully' });
+  } catch (err) {
+    next(err);
+  }
+});
+
+const changePasswordLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    error: { code: 'RATE_LIMIT_EXCEEDED', message: 'Too many password change attempts. Please try again later.' },
+  },
+});
+
+const changePasswordSchema = z.object({
+  currentPassword: z.string().min(1, 'Current password is required').max(128),
+  newPassword: z.string().min(10, 'New password must be at least 10 characters').max(128),
+});
+
+/**
+ * POST /api/v1/auth/change-password
+ * Account owner changes their password. Completes the mandatory first-login change for
+ * provisioned/reset accounts. All other sessions of the account are revoked.
+ */
+authRouter.post('/change-password', changePasswordLimiter, requireAuth, requireCsrf, async (req: Request, res: Response, next) => {
+  try {
+    const body = changePasswordSchema.parse(req.body);
+    await authService.changePassword(req.user!, req.sessionContext!.sessionId, body.currentPassword, body.newPassword, {
+      ipAddress: req.ip,
+      userAgent: req.headers['user-agent'],
+      correlationId: getCorrelationId(),
+    });
+    const me = await authService.getMe(req.cookies?.['crm_session'] || req.headers.authorization?.slice(7));
+    sendSuccess(res, { message: 'Password changed successfully.', user: me.user, csrfToken: me.csrfToken });
   } catch (err) {
     next(err);
   }

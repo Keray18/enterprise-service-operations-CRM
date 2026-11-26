@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { replacementService } from '../services/replacementService.js';
 import { warehouseController } from '../controllers/warehouseController.js';
 import { requireAnyPermission, requireAuth, requireCsrf, requirePermission } from '../middleware/authMiddleware.js';
 
@@ -27,6 +28,12 @@ warehouseRouter.get(
  */
 warehouseRouter.get(
   '/stock',
+  requirePermission('inventory:read'),
+  warehouseController.getStockBalances.bind(warehouseController)
+);
+
+warehouseRouter.get(
+  '/inventory',
   requirePermission('inventory:read'),
   warehouseController.getStockBalances.bind(warehouseController)
 );
@@ -163,4 +170,51 @@ warehouseRouter.get(
   '/movements',
   requirePermission('inventory:read'),
   warehouseController.listMovements.bind(warehouseController)
+);
+
+/**
+ * Replacement Fulfillment Queue & Operations
+ */
+warehouseRouter.get(
+  '/replacements',
+  requirePermission('inventory:read'),
+  warehouseController.listReplacements.bind(warehouseController)
+);
+
+warehouseRouter.post(
+  '/replacements/:id/allocate',
+  requireCsrf,
+  requireAnyPermission('inventory:dispatch', 'inventory:manage'),
+  warehouseController.allocateReplacement.bind(warehouseController)
+);
+
+warehouseRouter.post(
+  '/replacements/:id/dispatch',
+  requireCsrf,
+  requirePermission('inventory:dispatch'),
+  warehouseController.dispatchReplacement.bind(warehouseController)
+);
+
+warehouseRouter.post(
+  '/replacements/:id/close',
+  requireCsrf,
+  requireAnyPermission('inventory:dispatch', 'inventory:manage'),
+  warehouseController.closeReplacement.bind(warehouseController)
+);
+
+/**
+ * GET /api/v1/warehouse/replacements/:id/custody
+ * Chain-of-custody timeline for warehouse closure review.
+ */
+warehouseRouter.get(
+  '/replacements/:id/custody',
+  requireAnyPermission('inventory:read', 'inventory:dispatch', 'inventory:manage'),
+  async (req, res, next) => {
+    try {
+      const data = await replacementService.getCustodyTimeline(String(req.params['id']));
+      res.status(200).json({ success: true, data });
+    } catch (err) {
+      next(err);
+    }
+  }
 );

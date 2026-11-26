@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createApp } from '../src/app.js';
+import { deliverScheduledNotification } from './helpers/scheduledNotifications.js';
 import { closeOraclePool, getOracleConnection } from '../src/database/oraclePool.js';
 import { brandRepository } from '../src/database/repositories/brandRepository.js';
 import { customerRepository } from '../src/database/repositories/customerRepository.js';
@@ -60,6 +61,7 @@ describe('ASF Operations, SLA Monitoring, Dispatch & OTP Check-In (Phase 2A)', (
       locationCode: `ASF1_${Date.now().toString(36).toUpperCase()}`,
       locationName: 'Mumbai Central Franchise Center',
       partyType: 'ASF',
+      isTestFixture: 'Y',
     });
     asfLocation1Id = loc1.locationId;
 
@@ -67,6 +69,7 @@ describe('ASF Operations, SLA Monitoring, Dispatch & OTP Check-In (Phase 2A)', (
       locationCode: `ASF2_${Date.now().toString(36).toUpperCase()}`,
       locationName: 'Delhi North Franchise Center',
       partyType: 'ASF',
+      isTestFixture: 'Y',
     });
     asfLocation2Id = loc2.locationId;
 
@@ -293,7 +296,9 @@ describe('ASF Operations, SLA Monitoring, Dispatch & OTP Check-In (Phase 2A)', (
       expect(res.status).toBe(403);
     });
 
-    it('scopes ASF manager view to their own franchise location tickets', async () => {
+    // Superseded by the centralized Service Center queue (V022): ASF managers have network-wide
+    // visibility while field engineers stay strictly isolated to their own assignments.
+    it('gives ASF managers the centralized network-wide queue while engineers stay isolated', async () => {
       // Create ticket in Location 1
       const ticket1 = await createTestServiceRequest({ locationId: asfLocation1Id });
       // Create ticket in Location 2
@@ -307,12 +312,6 @@ describe('ASF Operations, SLA Monitoring, Dispatch & OTP Check-In (Phase 2A)', (
       expect(res1.status).toBe(200);
       expect(res1.body.success).toBe(true);
 
-      const items1 = res1.body.data.items;
-      const foundT1 = items1.some((i: any) => i.requestId === ticket1.requestId);
-      const foundT2 = items1.some((i: any) => i.requestId === ticket2.requestId);
-
-      expect(foundT1).toBe(true);
-      expect(foundT2).toBe(false); // Location 2 must NOT be visible to Location 1 manager
 
       // ASF Manager 2 queries queue
       const res2 = await request(app)
@@ -320,9 +319,18 @@ describe('ASF Operations, SLA Monitoring, Dispatch & OTP Check-In (Phase 2A)', (
         .set('Cookie', asf2Cookie);
 
       expect(res2.status).toBe(200);
-      const items2 = res2.body.data.items;
-      expect(items2.some((i: any) => i.requestId === ticket2.requestId)).toBe(true);
-      expect(items2.some((i: any) => i.requestId === ticket1.requestId)).toBe(false);
+
+      // Both managers can locate either franchise's ticket in the centralized queue
+      for (const [cookie, t] of [[asf1Cookie, ticket2], [asf2Cookie, ticket1]] as const) {
+        const r = await request(app).get(`/api/v1/asf/queue?view=all&q=${t.jobNumber}`).set('Cookie', cookie);
+        expect(r.status).toBe(200);
+        expect(r.body.data.items.some((i: any) => i.requestId === t.requestId)).toBe(true);
+      }
+
+      // Engineers never see unassigned tickets of any franchise
+      const engRes = await request(app).get(`/api/v1/asf/queue?view=all&q=${ticket1.jobNumber}`).set('Cookie', eng1Cookie);
+      expect(engRes.status).toBe(200);
+      expect(engRes.body.data.items.some((i: any) => i.requestId === ticket1.requestId)).toBe(false);
     });
 
     it('allows Admin to view tickets across all locations and filter by locationId', async () => {
@@ -366,14 +374,20 @@ describe('ASF Operations, SLA Monitoring, Dispatch & OTP Check-In (Phase 2A)', (
       const eng = engineers.find((e: any) => e.userId === engineerUserId1);
       expect(eng).toBeDefined();
       expect(eng.fullName).toBe('Rajesh Kumar (Field Tech)');
-      expect(eng.locationId).toBe(asfLocation1Id);
+      expect(eng.homeLocationId).toBe(asfLocation1Id);
     });
 
-    it('prevents ASF manager from accessing engineers of another franchise location', async () => {
+    // Superseded by the centralized technician directory: managers may browse other centres'
+    // technicians; field engineers remain forbidden from the roster.
+    it('lets ASF managers browse another centre in the centralized directory but forbids engineers', async () => {
       const res = await request(app)
         .get(`/api/v1/asf/engineers/${asfLocation2Id}`)
-        .set('Cookie', asf1Cookie); // ASF 1 accessing Location 2
-      expect(res.status).toBe(403);
+        .set('Cookie', asf1Cookie);
+      expect(res.status).toBe(200);
+      expect(res.body.data.some((e: any) => e.userId === engineerUserId2)).toBe(true);
+
+      const engRes = await request(app).get(`/api/v1/asf/engineers/${asfLocation2Id}`).set('Cookie', eng1Cookie);
+      expect(engRes.status).toBe(403);
     });
   });
 
@@ -442,6 +456,11 @@ describe('ASF Operations, SLA Monitoring, Dispatch & OTP Check-In (Phase 2A)', (
       expect(sms2?.recipient).toBe(customerPhone);
       expect(sms2?.messageBody).toBe('[PROTECTED_OTP_NOTIFICATION]');
 
+      // Arrival Happy Code SMS is scheduled for appointment - 60 min; deliver it when due
+      await deliverScheduledNotification(ticket.requestId, 'SMS_02_APPOINTMENT', {
+        expectedAppointment: new Date(appointmentDate),
+      });
+
       // Verify delivered SMS via adapter contains the rendered appointment and OTP
       const sentMsgs = mockSmsAdapter.getSentMessages();
       const deliveredSms = sentMsgs.find((m) => m.templateCode === 'SMS_02_APPOINTMENT');
@@ -449,10 +468,12 @@ describe('ASF Operations, SLA Monitoring, Dispatch & OTP Check-In (Phase 2A)', (
       expect(deliveredSms?.messageBody).toContain(`Service Request #${ticket.jobNumber}`);
       expect(deliveredSms?.messageBody).toContain('Rajesh Kumar (Field Tech)');
       expect(deliveredSms?.messageBody).toContain('Please keep the required documents ready');
-      expect(deliveredSms?.messageBody).toMatch(/share the OTP \d{6}/);
+      expect(deliveredSms?.messageBody).toMatch(/share the Arrival Happy Code \d{6}/);
     });
 
-    it('rejects dispatch to an engineer from a mismatched franchise location', async () => {
+    // Superseded by the centralized technician directory: cross-location assignment is permitted
+    // and recorded with an auditable CROSS_LOCATION_ASSIGNMENT event.
+    it('permits cross-location engineer assignment and records an auditable event', async () => {
       const ticket = await createTestServiceRequest({ locationId: asfLocation1Id });
 
       // Try assigning engineer from Location 2 to Location 1 ticket
@@ -468,8 +489,9 @@ describe('ASF Operations, SLA Monitoring, Dispatch & OTP Check-In (Phase 2A)', (
         .set('x-csrf-token', asf1Csrf)
         .send(payload);
 
-      expect(res.status).toBe(400);
-      expect(res.body.error.code).toBe('ENGINEER_LOCATION_MISMATCH');
+      expect(res.status).toBe(200);
+      const events = await serviceRequestEventRepository.findByRequestId(ticket.requestId);
+      expect(events.some((e) => e.eventType === 'CROSS_LOCATION_ASSIGNMENT')).toBe(true);
     });
 
     it('rejects dispatch when ticket belongs to another franchise location', async () => {
@@ -531,10 +553,12 @@ describe('ASF Operations, SLA Monitoring, Dispatch & OTP Check-In (Phase 2A)', (
           engineerId: engineerUserId1,
         });
 
-      // Extract the OTP delivered to the customer via SMS 2
+      // Scheduled Arrival Happy Code SMS reaches its due time and is delivered to the customer
+      await deliverScheduledNotification(checkInTicketId, 'SMS_02_APPOINTMENT');
       const sentSms = mockSmsAdapter.getSentMessages();
-      const match = sentSms[0]?.messageBody.match(/share the OTP (\d{6})/);
-      expectedOtp = match ? match[1]! : '123456';
+      const match = sentSms.find((m) => m.templateCode === 'SMS_02_APPOINTMENT')?.messageBody.match(/share the Arrival Happy Code (\d{6})/);
+      expect(match).toBeTruthy();
+      expectedOtp = match![1]!;
     });
 
     it('rejects an unauthorized technician trying to check in to another engineer ticket with 403', async () => {
@@ -612,10 +636,10 @@ describe('ASF Operations, SLA Monitoring, Dispatch & OTP Check-In (Phase 2A)', (
       const sentSms = mockSmsAdapter.getSentMessages();
       expect(sentSms.length).toBe(1);
       expect(sentSms[0]?.templateCode).toBe('SMS_06_OTP_REGEN');
-      expect(sentSms[0]?.messageBody).toContain('Please share OTP');
+      expect(sentSms[0]?.messageBody).toMatch(/Please share (?:Arrival Happy Code|OTP)/);
 
-      // Extract new OTP
-      const match = sentSms[0]?.messageBody.match(/share OTP (\d{6})/);
+      // Extract new Happy Code
+      const match = sentSms[0]?.messageBody.match(/share (?:Arrival Happy Code|OTP) (\d{6})/);
       expectedOtp = match ? match[1]! : '';
       expect(expectedOtp).toHaveLength(6);
     });

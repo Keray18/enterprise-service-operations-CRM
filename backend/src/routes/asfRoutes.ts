@@ -2,6 +2,8 @@ import { Router } from 'express';
 import multer from 'multer';
 import { asfController } from '../controllers/asfController.js';
 import { job360Controller } from '../controllers/job360Controller.js';
+import { sendSuccess } from '../middleware/errorHandler.js';
+import { replacementService } from '../services/replacementService.js';
 import { requireAnyPermission, requireAuth, requireCsrf, requirePermission } from '../middleware/authMiddleware.js';
 
 export const asfRoutes = Router();
@@ -359,3 +361,129 @@ asfRoutes.post(
   job360Controller.reviewCancellation.bind(job360Controller)
 );
 
+/* ==========================================================================
+   PHASE 2 STAGE B.2: ATOMIC ESCALATION ACCEPTANCE, QUOTATION & CUSTODY
+   ========================================================================== */
+
+/**
+ * POST /api/v1/asf/jobs/:id/accept-escalation
+ * Atomically accepts an engineer's repair escalation:
+ * Closes the original complaint as ESCALATED_TO_REPLACEMENT and creates the linked
+ * replacement request in OPEN state. Single Oracle transaction.
+ */
+asfRoutes.post(
+  '/jobs/:id/accept-escalation',
+  requireCsrf,
+  requireAnyPermission('asf:manage', 'asf:read', 'calls:close', 'replacement:request'),
+  asfController.acceptEscalation.bind(asfController)
+);
+
+/**
+ * POST /api/v1/asf/replacements/:id/quotation
+ * Prepares out-of-warranty replacement quotation (increments version, invalidates prior approval).
+ */
+asfRoutes.post(
+  '/replacements/:id/quotation',
+  requireCsrf,
+  requireAnyPermission('asf:manage', 'asf:read', 'calls:update'),
+  asfController.prepareQuotation.bind(asfController)
+);
+
+/**
+ * POST /api/v1/asf/replacements/:id/quotation/decision
+ * Records customer quotation approval or rejection (customer decline permanently blocks dispatch).
+ */
+asfRoutes.post(
+  '/replacements/:id/quotation/decision',
+  requireCsrf,
+  requireAnyPermission('asf:manage', 'asf:read', 'calls:update'),
+  asfController.quotationDecision.bind(asfController)
+);
+
+/**
+ * POST /api/v1/asf/replacements/:id/handover
+ * ASF initiates physical spare part handover to field engineer (status PENDING_COLLECTION).
+ */
+asfRoutes.post(
+  '/replacements/:id/handover',
+  requireCsrf,
+  requireAnyPermission('asf:manage', 'asf:read'),
+  asfController.createCustodyHandover.bind(asfController)
+);
+
+/**
+ * POST /api/v1/asf/replacements/:id/acknowledge-receipt
+ * Responsible ASF center acknowledges receipt of replacement part from central warehouse.
+ */
+asfRoutes.post(
+  '/replacements/:id/acknowledge-receipt',
+  requireCsrf,
+  requireAnyPermission('asf:manage', 'asf:read'),
+  asfController.acknowledgeReceipt.bind(asfController)
+);
+
+/**
+ * POST /api/v1/asf/replacements/:id/schedule
+ * ASF schedules customer appointment for replacement installation.
+ */
+asfRoutes.post(
+  '/replacements/:id/schedule',
+  requireCsrf,
+  requireAnyPermission('asf:manage', 'asf:read', 'calls:update'),
+  asfController.scheduleInstallation.bind(asfController)
+);
+
+
+
+/**
+ * GET /api/v1/asf/replacements/:id/custody
+ * Chain-of-custody timeline (handovers, barcode-verified movements, installation evidence).
+ */
+asfRoutes.get(
+  '/replacements/:id/custody',
+  requireAnyPermission('asf:manage', 'asf:read'),
+  asfController.getReplacementCustody.bind(asfController)
+);
+
+/**
+ * POST /api/v1/asf/replacements/:id/regenerate-arrival-code
+ * Resends the Arrival Happy Code for the current replacement appointment (cap: 5).
+ */
+asfRoutes.post(
+  '/replacements/:id/regenerate-arrival-code',
+  requireCsrf,
+  requireAnyPermission('asf:manage', 'asf:read'),
+  asfController.regenerateReplacementArrivalCode.bind(asfController)
+);
+
+/**
+ * GET /api/v1/asf/replacements
+ * Replacement requests of the caller's Service Center (Admins may filter by location).
+ */
+asfRoutes.get('/replacements', requireAnyPermission('asf:manage', 'asf:read'), async (req, res, next) => {
+  try {
+    const result = await replacementService.listReplacements(
+      {
+        status: (req.query['status'] as any) || undefined,
+        locationId: (req.query['locationId'] as string) || undefined,
+        search: (req.query['search'] as string) || undefined,
+        page: req.query['page'] ? Number(req.query['page']) : 1,
+        limit: req.query['limit'] ? Math.min(100, Number(req.query['limit'])) : 25,
+      },
+      req.user!
+    );
+    sendSuccess(res, result);
+  } catch (err) {
+    next(err);
+  }
+});
+
+asfRoutes.get('/replacements/:id/photos', requireAnyPermission('asf:manage', 'asf:read'), async (req, res, next) => {
+  try {
+    const rep = await replacementService.getReplacementById(String(req.params['id']));
+    if (!req.user!.roles.includes('ADMIN')) replacementService.assertAsfOwnership(req.user!, rep, 'view installation photos');
+    sendSuccess(res, { items: await replacementService.listInstallationPhotos(rep.replacementId) });
+  } catch (err) {
+    next(err);
+  }
+});

@@ -1,14 +1,18 @@
+import crypto from 'crypto';
+import oracledb from 'oracledb';
 import { env } from '../config/env.js';
 import { getOracleConnection } from '../database/oraclePool.js';
 import { locationRepository } from '../database/repositories/locationRepository.js';
 import { notificationRepository } from '../database/repositories/notificationRepository.js';
 import { rbacRepository } from '../database/repositories/rbacRepository.js';
+import { replacementRequestRepository } from '../database/repositories/replacementRequestRepository.js';
 import { serviceRequestEventRepository } from '../database/repositories/serviceRequestEventRepository.js';
 import { serviceRequestRepository } from '../database/repositories/serviceRequestRepository.js';
 import { userRepository } from '../database/repositories/userRepository.js';
 import { verificationRepository } from '../database/repositories/verificationRepository.js';
 import { AppError } from '../middleware/errorHandler.js';
 import { AuthenticatedUser } from '../types/auth.js';
+import { ReplacementReasonCode } from '../types/job360.js';
 import {
   AcknowledgeComplaintInput,
   AcknowledgeComplaintResponse,
@@ -30,6 +34,7 @@ import { ServiceRequestStatus, ServiceRequestWithRelationsRecord } from '../type
 import {
   encryptNotificationPayload,
   generateCheckInOtp,
+  generateHappyCode,
   generateSalt,
   hashOtp,
   verifyOtp,
@@ -445,6 +450,19 @@ export class AsfService {
         throw new AppError('Invalid appointment date format', 400, 'INVALID_APPOINTMENT_DATE');
       }
 
+      const isRescheduled = existing.status === 'APPOINTMENT_SCHEDULED';
+
+      // Enforce: appointmentTime >= authoritativeServerTime + 60 minutes (allowing 5s clock tolerance)
+      const minAllowed = Date.now() + 60 * 60 * 1000 - 5000;
+      if (appointmentDate.getTime() < minAllowed) {
+        throw new AppError('Appointment must be scheduled at least 60 minutes in the future', 400, 'INVALID_APPOINTMENT_TIME');
+      }
+
+      // If rescheduled, supersede previous queued appointment notifications in outbox
+      if (isRescheduled) {
+        await notificationRepository.supersedePending(existing.requestId, 'SMS_02_APPOINTMENT', conn);
+      }
+
       // Step F: Execute single-commit update on SERVICE_REQUESTS
       await serviceRequestRepository.dispatchServiceRequest(
         {
@@ -545,6 +563,10 @@ export class AsfService {
         checkinOtp: checkInOtp,
       });
 
+      // Scheduled for: appointmentTime - 60 minutes
+      const scheduledArrivalSms = new Date(appointmentDate.getTime() - 60 * 60 * 1000);
+      const isDueImmediately = scheduledArrivalSms.getTime() <= Date.now();
+
       // Encrypt sensitive OTP-bearing payload (AES-256-GCM)
       const encrypted = encryptNotificationPayload(smsBody);
 
@@ -563,6 +585,7 @@ export class AsfService {
             encryptionIv: encrypted.iv,
             authTag: encrypted.authTag,
             keyVersion: encrypted.keyVersion,
+            scheduledFor: isDueImmediately ? undefined : scheduledArrivalSms,
           },
           conn
         );
@@ -571,8 +594,8 @@ export class AsfService {
       // Commit the complete dispatch transaction
       await conn.commit();
 
-      // Step K: Asynchronously dispatch notification post-commit
-      if (outboxItem) {
+      // Step K: Asynchronously dispatch notification post-commit if due immediately
+      if (outboxItem && isDueImmediately) {
         notificationService.processNotification(outboxItem).catch(() => {});
       }
 
@@ -620,22 +643,22 @@ export class AsfService {
 
       if (!isAdmin && !isAsf) {
         if (!isEngineer || existing.assignedEngineerId !== actor.userId) {
-          throw new AppError('Unauthorized: Field engineers can only regenerate OTP for their own assigned service calls.', 403, 'FORBIDDEN_ROLE');
+          throw new AppError('Unauthorized: Field engineers can only regenerate Arrival Happy Code for their own assigned service calls.', 403, 'FORBIDDEN_ROLE');
         }
       }
 
       if (!isAdmin && actor.locationId && existing.assignedLocationId && existing.assignedLocationId !== actor.locationId) {
-        throw new AppError('Cannot regenerate OTP for request assigned to another franchise center', 403, 'FORBIDDEN_LOCATION');
+        throw new AppError('Cannot regenerate Arrival Happy Code for request assigned to another franchise center', 403, 'FORBIDDEN_LOCATION');
       }
 
       if (existing.status !== 'APPOINTMENT_SCHEDULED') {
-        throw new AppError('OTP regeneration is only permitted while in APPOINTMENT_SCHEDULED status', 400, 'INVALID_STATUS');
+        throw new AppError('Arrival Happy Code regeneration is only permitted while in APPOINTMENT_SCHEDULED status', 400, 'INVALID_STATUS');
       }
 
       // Check verification record
       const verification = await verificationRepository.findByRequestId(input.requestId, conn);
       if (verification && verification.checkInRegeneratedCount >= 5) {
-        throw new AppError('Maximum OTP regeneration limit (5) reached for this service request', 429, 'RATE_LIMIT_EXCEEDED');
+        throw new AppError('Maximum Arrival Happy Code regeneration limit (5) reached for this service request', 429, 'RATE_LIMIT_EXCEEDED');
       }
 
       // Generate new cryptographically secure OTP
@@ -660,6 +683,9 @@ export class AsfService {
         conn
       );
 
+      // The previously scheduled Arrival Happy Code SMS now carries an invalid code: never deliver it
+      await notificationRepository.supersedePending(input.requestId, 'SMS_02_APPOINTMENT', conn);
+
       // Append lifecycle event
       await serviceRequestEventRepository.createEvent(
         {
@@ -670,7 +696,7 @@ export class AsfService {
           triggeredByUserId: actor.userId,
           triggeredByUsername: actor.username,
           triggeredByRole: actor.roles[0] || 'ASF',
-          remarks: input.reason || 'Check-In OTP regenerated upon technician or customer request',
+          remarks: input.reason || 'Arrival Happy Code regenerated upon technician or customer request',
           metadataJson: {
             regeneratedCount: (verification?.checkInRegeneratedCount || 0) + 1,
             reason: input.reason,
@@ -721,7 +747,7 @@ export class AsfService {
       return {
         success: true,
         smsQueued: Boolean(outboxItem),
-        message: 'New Check-In OTP generated and SMS acknowledgement sent to customer.',
+        message: 'New Arrival Happy Code generated and SMS acknowledgement sent to customer.',
         devOtpPreview: allowDevOtp ? newOtp : undefined,
       };
     } catch (err) {
@@ -771,7 +797,7 @@ export class AsfService {
       // Verification secret check
       const verification = await verificationRepository.findByRequestId(input.requestId, conn);
       if (!verification || !verification.checkInOtpHash || !verification.checkInOtpSalt) {
-        throw new AppError('Check-In OTP has not been initialized for this service request', 400, 'OTP_NOT_INITIALIZED');
+        throw new AppError('Arrival Happy Code has not been initialized for this service request', 400, 'OTP_NOT_INITIALIZED');
       }
 
       if (verification.checkInVerifiedAt) {
@@ -781,7 +807,7 @@ export class AsfService {
       // Lockout check: 5 attempts
       if (verification.checkInOtpAttempts >= 5) {
         throw new AppError(
-          'Maximum Check-In OTP attempts (5) exceeded. Please regenerate a new OTP before checking in.',
+          'Maximum Arrival Happy Code attempts (5) exceeded. Please regenerate a new Happy Code before checking in.',
           400,
           'OTP_LOCKED'
         );
@@ -789,7 +815,7 @@ export class AsfService {
 
       // Expiry check
       if (verification.checkInOtpExpiresAt && new Date() > verification.checkInOtpExpiresAt) {
-        throw new AppError('Check-In OTP has expired. Please regenerate a new OTP.', 400, 'OTP_EXPIRED');
+        throw new AppError('Arrival Happy Code has expired. Please regenerate a new Happy Code.', 400, 'OTP_EXPIRED');
       }
 
       // Constant-time HMAC-SHA-256 verification binding requestId and pepper
@@ -809,16 +835,62 @@ export class AsfService {
         // Commit increment immediately
         throw new AppError(
           remaining > 0
-            ? `Invalid Check-In OTP. ${remaining} attempt(s) remaining.`
-            : 'Invalid Check-In OTP. Maximum attempts exceeded. Please regenerate a new OTP.',
+            ? `Invalid Arrival Happy Code. ${remaining} attempt(s) remaining.`
+            : 'Invalid Arrival Happy Code. Maximum attempts exceeded. Please regenerate a new Happy Code.',
           400,
           'INVALID_OTP'
         );
       }
 
-      // OTP is valid! Mark consumed and update service request
+      // Arrival Happy Code is valid! Mark consumed and update service request
       await verificationRepository.markCheckInVerified(input.requestId, conn);
       await serviceRequestRepository.updateCheckIn(input.requestId, conn);
+
+      // Generate separate Completion Happy Code immediately upon Arrival verification
+      const completionCode = generateHappyCode();
+      const completionSalt = generateSalt(16);
+      const completionHash = hashOtp({
+        otp: completionCode,
+        salt: completionSalt,
+        requestId: input.requestId,
+        purpose: 'HAPPY_CODE',
+      });
+      const completionExpiresAt = new Date(Date.now() + 24 * 3600 * 1000);
+
+      await verificationRepository.upsertHappyCode(
+        {
+          requestId: input.requestId,
+          happyCodeHash: completionHash,
+          salt: completionSalt,
+          expiresAt: completionExpiresAt,
+        },
+        conn
+      );
+
+      // Queue separate Customer SMS 4 for immediate delivery
+      const sms4Body = notificationService.buildSms4Message({
+        jobNumber: existing.jobNumber,
+        happyCode: completionCode,
+      });
+      const encryptedSms4 = encryptNotificationPayload(sms4Body);
+      let outboxCompletion;
+      if (existing.customerPhone) {
+        outboxCompletion = await notificationRepository.enqueueNotification(
+          {
+            requestId: existing.requestId,
+            channel: 'SMS',
+            recipient: existing.customerPhone,
+            templateCode: 'SMS_4_CALL_CLOSURE',
+            messageBody: 'Dear Customer, Your service Request is closed. Kindly share the confidential Happy Code sent via SMS with our technician.',
+            isEncrypted: 'Y',
+            encryptedPayload: encryptedSms4.encryptedPayload,
+            encryptionIv: encryptedSms4.iv,
+            authTag: encryptedSms4.authTag,
+            keyVersion: encryptedSms4.keyVersion,
+          },
+          conn
+        );
+      }
 
       // Append immutable lifecycle event
       await serviceRequestEventRepository.createEvent(
@@ -830,7 +902,7 @@ export class AsfService {
           triggeredByUserId: actor.userId,
           triggeredByUsername: actor.username,
           triggeredByRole: actor.roles[0] || 'ENGINEER',
-          remarks: input.remarks || 'On-site technician check-in confirmed via customer OTP',
+          remarks: input.remarks || 'On-site technician check-in confirmed via customer Arrival Happy Code; Completion Happy Code issued to customer',
           metadataJson: {
             geocoordinates: input.geocoordinates,
             verifiedAt: new Date().toISOString(),
@@ -841,12 +913,23 @@ export class AsfService {
 
       await conn.commit();
 
+      if (outboxCompletion) {
+        notificationService.processNotification(outboxCompletion).catch(() => {});
+      }
+
       const updated = await serviceRequestRepository.findById(input.requestId);
+
+      // Same dual guard as the closure dev preview: never outside non-production with explicit opt-in
+      const allowDevPreview =
+        (process.env['NODE_ENV'] || env.NODE_ENV) !== 'production' &&
+        (process.env['ENABLE_DEV_OTP_PREVIEW'] || env.ENABLE_DEV_OTP_PREVIEW) === 'true';
 
       return {
         serviceRequest: updated!,
         checkedInAt: new Date().toISOString(),
         verified: true,
+        completionHappyCodeIssued: true,
+        devHappyCodePreview: allowDevPreview ? completionCode : undefined,
       };
     } catch (err) {
       await conn.rollback();
@@ -861,6 +944,197 @@ export class AsfService {
    */
   async getEngineerJobs(actor: AuthenticatedUser, params: { status?: string; page?: number; limit?: number }) {
     return serviceRequestRepository.findEngineerJobs(actor.userId, params);
+  }
+
+  /**
+   * Atomically accepts an engineer's repair escalation:
+   * 1. Validates ASF authorization and ownership of the complaint.
+   * 2. Locks complaint using SELECT FOR UPDATE.
+   * 3. Validates current complaint state is REPAIR_ESCALATED (handles idempotent retries safely).
+   * 4. Closes the original complaint with outcome ESCALATED_TO_REPLACEMENT.
+   * 5. Creates the linked replacement request in OPEN state.
+   * 6. Appends immutable audit event and commits in a single transaction.
+   */
+  async acceptEscalation(
+    jobId: string,
+    input: {
+      reasonCode: ReplacementReasonCode;
+      reasonDescription?: string;
+      technicianRemarks?: string;
+      requiredPartId?: string;
+      warrantyType?: 'IN_WARRANTY' | 'OUT_OF_WARRANTY';
+      quotationAmount?: number;
+    },
+    actor: AuthenticatedUser
+  ): Promise<{
+    success: boolean;
+    message: string;
+    replacement: any;
+    alreadyAccepted?: boolean;
+  }> {
+    // 1. Role validation: Must have ASF or ADMIN role
+    const isAsf = actor.roles.includes('ASF');
+    const isAdmin = actor.roles.includes('ADMIN');
+    if (!isAsf && !isAdmin) {
+      throw new AppError('Forbidden: Only authorized ASF or ADMIN users can accept escalations', 403, 'FORBIDDEN');
+    }
+
+    // Resolve complaint to obtain request_id
+    const existingComplaint =
+      (await serviceRequestRepository.findById(jobId)) ||
+      (await serviceRequestRepository.findByJobNumber(jobId));
+    if (!existingComplaint) {
+      throw new AppError(`Complaint with id or job number '${jobId}' not found`, 404, 'COMPLAINT_NOT_FOUND');
+    }
+    const requestId = existingComplaint.requestId;
+
+    // 2. Resource ownership: If caller is ASF, their assigned location must match the complaint
+    if (isAsf && !isAdmin) {
+      const userLocation = actor.locationId;
+      if (!userLocation || userLocation !== existingComplaint.assignedLocationId) {
+        throw new AppError(
+          'Forbidden: ASF can only accept escalations for complaints assigned to their service center',
+          403,
+          'FORBIDDEN_LOCATION_MISMATCH'
+        );
+      }
+    }
+
+    // Reason descriptions
+    const REPLACEMENT_REASONS: Record<ReplacementReasonCode, string> = {
+      REASON_1: 'Spare part not received / service not completed within 168 Hours (7 Days)',
+      REASON_2: 'New piece damaged out of the box (Dead on Arrival / DOA)',
+      REASON_3: 'Customer refused repair due to recurring product quality failure',
+      REASON_4: 'Product model discontinued by brand manufacturer and spare parts unavailable',
+      REASON_5: 'Product non-repairable (severe electrical burnout or unserviceable structural damage)',
+      REASON_6: 'Complaint not acknowledged by assigned ASF within 48 hours (debited to ASF)',
+    };
+    const resolvedReasonDesc = input.reasonDescription || REPLACEMENT_REASONS[input.reasonCode];
+    if (!resolvedReasonDesc) {
+      throw new AppError(`Invalid replacement reason code '${input.reasonCode}'`, 400, 'INVALID_REASON_CODE');
+    }
+
+    const warrantyType =
+      input.warrantyType || (existingComplaint.warrantyStatus === 'OUT_OF_WARRANTY' ? 'OUT_OF_WARRANTY' : 'IN_WARRANTY');
+    const quotationAmount = warrantyType === 'OUT_OF_WARRANTY' ? (input.quotationAmount ?? 0) : 0;
+    const quotationStatus = warrantyType === 'OUT_OF_WARRANTY' ? 'PENDING_CUSTOMER_APPROVAL' : 'NOT_REQUIRED';
+
+    const conn = await getOracleConnection();
+    try {
+      // 3. Lock complaint row for update
+      const lockSql = `
+        SELECT REQUEST_ID, JOB_NUMBER, STATUS, ASSIGNED_LOCATION_ID, WARRANTY_STATUS, CLOSED_AT, CLOSED_BY
+        FROM SERVICE_REQUESTS
+        WHERE REQUEST_ID = :requestId
+        FOR UPDATE
+      `;
+      const lockRes = await conn.execute<any>(lockSql, { requestId }, { outFormat: oracledb.OUT_FORMAT_OBJECT });
+      if (!lockRes.rows || lockRes.rows.length === 0) {
+        throw new AppError(`Complaint ${requestId} not found during lock`, 404, 'NOT_FOUND');
+      }
+      const lockedRow = lockRes.rows[0];
+
+      // Re-verify location ownership under row lock
+      if (isAsf && !isAdmin && lockedRow.ASSIGNED_LOCATION_ID !== actor.locationId) {
+        throw new AppError('Forbidden: ASF location mismatch under row lock', 403, 'FORBIDDEN_LOCATION_MISMATCH');
+      }
+
+      // 4. Check for existing linked replacement request (Idempotency & permanent uniqueness)
+      const existingReplacement = await replacementRequestRepository.findByRequestId(requestId, conn);
+      if (existingReplacement) {
+        // If the complaint is already in ESCALATED_TO_REPLACEMENT status:
+        if (lockedRow.STATUS === 'ESCALATED_TO_REPLACEMENT') {
+          // Check if terminal
+          if (existingReplacement.status === 'CLOSED' || existingReplacement.status === 'CUSTOMER_DECLINED') {
+            throw new AppError('Cannot duplicate or reopen replacement request in terminal state', 400, 'REPLACEMENT_TERMINAL');
+          }
+          // Safe idempotent return
+          await conn.rollback();
+          return {
+            success: true,
+            message: 'Escalation was already accepted; returning existing replacement request.',
+            replacement: existingReplacement,
+            alreadyAccepted: true,
+          };
+        }
+        // If replacement request exists but complaint is NOT ESCALATED_TO_REPLACEMENT, conflict
+        throw new AppError('A replacement request already exists for this complaint.', 409, 'DUPLICATE_REPLACEMENT_REQUEST');
+      }
+
+      // 5. Validate current complaint state: Must be REPAIR_ESCALATED
+      if (lockedRow.STATUS !== 'REPAIR_ESCALATED') {
+        throw new AppError(
+          `Cannot accept escalation: Complaint must be in 'REPAIR_ESCALATED' status (current status: '${lockedRow.STATUS}')`,
+          400,
+          'INVALID_COMPLAINT_STATUS'
+        );
+      }
+
+      // 6. Atomically close the original complaint with outcome ESCALATED_TO_REPLACEMENT
+      await serviceRequestRepository.closeEscalatedToReplacement(
+        {
+          requestId,
+          closedBy: actor.userId,
+        },
+        conn
+      );
+
+      // 7. Create linked replacement request in OPEN status
+      const replacementId = crypto.randomUUID();
+      const createdReplacement = await replacementRequestRepository.createPhase2Request(
+        {
+          replacementId,
+          requestId,
+          reasonCode: input.reasonCode,
+          reasonDescription: resolvedReasonDesc,
+          technicianRemarks: input.technicianRemarks,
+          requestedBy: actor.userId,
+          requiredPartId: input.requiredPartId,
+          warrantyType,
+          quotationAmount,
+          quotationStatus,
+          stockStatus: 'PENDING_STOCK',
+          allocatedLocationId: lockedRow.ASSIGNED_LOCATION_ID || actor.locationId,
+        },
+        conn
+      );
+
+      // 8. Record audit event
+      await serviceRequestEventRepository.createEvent(
+        {
+          requestId,
+          fromState: 'REPAIR_ESCALATED',
+          toState: 'ESCALATED_TO_REPLACEMENT',
+          eventType: 'ESCALATION_ACCEPTED',
+          triggeredByUserId: actor.userId,
+          triggeredByUsername: actor.username,
+          triggeredByRole: actor.roles[0] || 'ASF',
+          remarks: input.technicianRemarks || 'ASF accepted repair escalation; replacement request created in OPEN status.',
+          metadataJson: {
+            replacementId,
+            reasonCode: input.reasonCode,
+            warrantyType,
+            quotationAmount,
+          },
+        },
+        conn
+      );
+
+      // 9. Atomic Commit
+      await conn.commit();
+
+      return {
+        success: true,
+        message: 'Escalation accepted atomically: Original complaint closed as ESCALATED_TO_REPLACEMENT and linked replacement request created in OPEN status.',
+        replacement: createdReplacement,
+        alreadyAccepted: false,
+      };
+    } catch (err) {
+      await conn.rollback();
+      throw err;
+    } finally {
+      await conn.close();
+    }
   }
 }
 

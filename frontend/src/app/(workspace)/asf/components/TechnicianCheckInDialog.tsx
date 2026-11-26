@@ -101,9 +101,9 @@ export function TechnicianCheckInDialog({
       if (res.devOtpPreview) {
         setDevOtpPreview(res.devOtpPreview);
       }
-      setRegenSuccessMsg(`New check-in OTP generated & queued via SMS 6. Valid until ${new Date(res.otpExpiresAt).toLocaleTimeString()}.`);
+      setRegenSuccessMsg(`New Arrival Happy Code generated & queued via SMS 6. Valid until ${new Date(res.otpExpiresAt).toLocaleTimeString()}.`);
     } catch (err: any) {
-      setErrorMessage(err?.message || 'Failed to regenerate customer OTP.');
+      setErrorMessage(err?.message || 'Failed to regenerate customer Happy Code.');
     }
   };
 
@@ -113,7 +113,7 @@ export function TechnicianCheckInDialog({
 
     const trimmedOtp = otp.trim();
     if (!/^\d{6}$/.test(trimmedOtp)) {
-      setErrorMessage('Please enter a valid 6-digit numeric OTP.');
+      setErrorMessage('Please enter a valid 6-digit numeric Happy Code.');
       return;
     }
 
@@ -131,7 +131,7 @@ export function TechnicianCheckInDialog({
       setCheckedInSuccess(true);
       onSuccess();
     } catch (err: any) {
-      setErrorMessage(err?.message || 'Check-in OTP verification failed.');
+      setErrorMessage(err?.message || 'Arrival Happy Code verification failed.');
     }
   };
 
@@ -194,7 +194,7 @@ export function TechnicianCheckInDialog({
                 }}
               >
                 <Chip
-                  label="Development Only Test OTP"
+                  label="Development Only Test Happy Code"
                   color="warning"
                   size="small"
                   sx={{ fontWeight: 700, mb: 0.5 }}
@@ -210,7 +210,7 @@ export function TechnicianCheckInDialog({
                       color="warning"
                       onClick={() => setOtp(devOtpPreview)}
                     >
-                      Fill OTP
+                      Fill Happy Code
                     </Button>
                     <Button
                       size="small"
@@ -218,7 +218,7 @@ export function TechnicianCheckInDialog({
                       color="warning"
                       onClick={() => navigator.clipboard.writeText(devOtpPreview)}
                     >
-                      Copy Test OTP
+                      Copy Test Happy Code
                     </Button>
                   </Box>
                 </Box>
@@ -267,14 +267,14 @@ export function TechnicianCheckInDialog({
               </Grid>
             </Box>
 
-            {/* OTP Input Field */}
+            {/* Happy Code Input Field */}
             <Box sx={{ mb: 2.5 }}>
               <Typography variant="subtitle2" sx={{ fontWeight: 700, mb: 0.5, display: 'flex', alignItems: 'center', gap: 1 }}>
                 <KeyIcon fontSize="small" color="primary" />
-                Customer Verification OTP
+                Customer Arrival Happy Code
               </Typography>
               <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1.5 }}>
-                Ask the customer for the 6-digit Check-In code received via SMS 2 or SMS 6 upon technician arrival.
+                Ask the customer for the 6-digit Arrival Happy Code received via SMS 2 or SMS 6 upon technician arrival.
               </Typography>
 
               <TextField
@@ -361,7 +361,7 @@ export function TechnicianCheckInDialog({
                   Customer did not receive SMS?
                 </Typography>
                 <Typography variant="caption" color="text.secondary">
-                  Regenerates a new 6-digit OTP and supersedes the prior code via SMS 6.
+                  Regenerates a new 6-digit Arrival Happy Code and supersedes the prior code via SMS 6.
                 </Typography>
               </Box>
               <Button
@@ -372,7 +372,7 @@ export function TechnicianCheckInDialog({
                 disabled={regenOtpMutation.isPending}
                 startIcon={regenOtpMutation.isPending ? <CircularProgress size={14} /> : <ReplayIcon />}
               >
-                Resend OTP
+                Resend Happy Code
               </Button>
             </Box>
           </DialogContent>
@@ -388,7 +388,7 @@ export function TechnicianCheckInDialog({
               disabled={checkInMutation.isPending || otp.length !== 6}
               startIcon={checkInMutation.isPending ? <CircularProgress size={18} color="inherit" /> : <VerifiedUserIcon />}
             >
-              {checkInMutation.isPending ? 'Verifying OTP...' : 'Verify OTP & Check-In'}
+              {checkInMutation.isPending ? 'Verifying Happy Code...' : 'Verify Happy Code & Check-In'}
             </Button>
           </DialogActions>
         </form>

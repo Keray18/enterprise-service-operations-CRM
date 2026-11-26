@@ -16,8 +16,11 @@ export default function WorkspaceLayout({ children }: { children: React.ReactNod
   useEffect(() => {
     if (!isLoading && !isAuthenticated) {
       router.replace(`/login?redirect=${encodeURIComponent(pathname)}`);
+    } else if (!isLoading && user?.mustChangePassword) {
+      // Temporary credential: nothing else is reachable until the password is changed
+      router.replace('/change-password');
     }
-  }, [isLoading, isAuthenticated, pathname, router]);
+  }, [isLoading, isAuthenticated, user, pathname, router]);
 
   // While restoring session, display clean loading screen without flashing private workspace UI
   if (isLoading) {
@@ -42,7 +45,7 @@ export default function WorkspaceLayout({ children }: { children: React.ReactNod
   }
 
   // If unauthenticated, render nothing while redirect occurs
-  if (!isAuthenticated || !user) {
+  if (!isAuthenticated || !user || user.mustChangePassword) {
     return null;
   }
 

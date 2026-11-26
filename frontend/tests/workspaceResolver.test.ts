@@ -62,19 +62,38 @@ describe('Role-Based Landing Page Resolver (P0 Fix)', () => {
       expect(resolveDefaultWorkspace(user)).toBe('/warehouse');
     });
 
-    it('should route FINANCE officer to /finance', () => {
-      const user = createMockUser(['FINANCE'], ['finance:read', 'finance:approve']);
-      expect(resolveDefaultWorkspace(user)).toBe('/finance');
+    it('should deny landing page to inactive FINANCE, BRAND, INFRA_OPS and DISTRIBUTOR roles', () => {
+      expect(resolveDefaultWorkspace(createMockUser(['FINANCE'], ['finance:read']))).toBeNull();
+      expect(resolveDefaultWorkspace(createMockUser(['BRAND'], ['finance:read']))).toBeNull();
+      expect(resolveDefaultWorkspace(createMockUser(['INFRA_OPS'], ['system:audit']))).toBeNull();
+      expect(resolveDefaultWorkspace(createMockUser(['DISTRIBUTOR'], []))).toBeNull();
     });
 
-    it('should route BRAND partner to /finance', () => {
-      const user = createMockUser(['BRAND'], ['finance:read', 'finance:wallets']);
-      expect(resolveDefaultWorkspace(user)).toBe('/finance');
+    it('routes the provider SUPER_ADMIN to the dedicated provider console', () => {
+      expect(resolveDefaultWorkspace(createMockUser(['SUPER_ADMIN'], ['admins:manage', 'system:config']))).toBe('/super-admin');
     });
 
-    it('should route user with only finance:read to /finance', () => {
+    it('routes any account holding a temporary credential to the mandatory password change', () => {
+      const admin = { ...createMockUser(['ADMIN'], ['users:read']), mustChangePassword: true };
+      expect(resolveDefaultWorkspace(admin)).toBe('/change-password');
+      expect(isAuthorizedForPath(admin, '/admin')).toBe(false);
+      expect(isAuthorizedForPath(admin, '/change-password')).toBe(true);
+    });
+
+    it('keeps the provider console and client workspaces mutually exclusive', () => {
+      const provider = createMockUser(['SUPER_ADMIN'], ['admins:manage', 'system:config', 'audit:read']);
+      const clientAdmin = createMockUser(['ADMIN'], ['users:read', 'users:create']);
+      expect(isAuthorizedForPath(provider, '/super-admin/admins')).toBe(true);
+      expect(isAuthorizedForPath(provider, '/admin')).toBe(false);
+      expect(isAuthorizedForPath(provider, '/call-center')).toBe(false);
+      expect(isAuthorizedForPath(clientAdmin, '/super-admin')).toBe(false);
+      expect(isAuthorizedForPath(clientAdmin, '/admin/staff')).toBe(true);
+      expect(isAuthorizedForPath(createMockUser(['ASF'], ['asf:read']), '/admin/staff')).toBe(false);
+    });
+
+    it('should route user with only finance:read to null', () => {
       const user = createMockUser([], ['finance:read']);
-      expect(resolveDefaultWorkspace(user)).toBe('/finance');
+      expect(resolveDefaultWorkspace(user)).toBeNull();
     });
   });
 
@@ -96,23 +115,17 @@ describe('Role-Based Landing Page Resolver (P0 Fix)', () => {
       expect(isAuthorizedForPath(admin, '/asf')).toBe(true);
       expect(isAuthorizedForPath(admin, '/finance')).toBe(true);
 
-      // Business Admin is strictly denied /admin/diagnostics without system:audit
+      // Infrastructure diagnostics workspace is disabled in Phase 1
       expect(isAuthorizedForPath(admin, '/admin/diagnostics')).toBe(false);
-
-      // Operational auditor with system:audit is authorized
-      const opsAuditor = createMockUser(['ADMIN'], ['users:read', 'system:audit']);
-      expect(isAuthorizedForPath(opsAuditor, '/admin/diagnostics')).toBe(true);
     });
 
-    it('should allow FINANCE user on /finance and deny on unauthorized admin masters', () => {
+    it('should deny deprecated FINANCE and BRAND users access to workspaces', () => {
       const fin = createMockUser(['FINANCE'], ['finance:read', 'finance:approve', 'finance:settle']);
-      expect(isAuthorizedForPath(fin, '/finance')).toBe(true);
+      expect(isAuthorizedForPath(fin, '/finance')).toBe(false);
       expect(isAuthorizedForPath(fin, '/admin/masters')).toBe(false);
-    });
 
-    it('should allow BRAND partner on /finance and deny on admin', () => {
       const brand = createMockUser(['BRAND'], ['finance:read', 'finance:wallets']);
-      expect(isAuthorizedForPath(brand, '/finance')).toBe(true);
+      expect(isAuthorizedForPath(brand, '/finance')).toBe(false);
       expect(isAuthorizedForPath(brand, '/admin')).toBe(false);
     });
 

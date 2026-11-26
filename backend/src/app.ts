@@ -21,6 +21,7 @@ import reportingRouter from './routes/reportingRoutes.js';
 import { engineerRoutes } from './routes/engineerRoutes.js';
 import { adminEngineerRoutes } from './routes/adminEngineerRoutes.js';
 import { feedbackRouter } from './routes/feedbackRoutes.js';
+import { adminStaffRoutes, superAdminRoutes } from './routes/superAdminRoutes.js';
 import { requireAuth } from './middleware/authMiddleware.js';
 import { AuthenticatedUser } from './types/auth.js';
 
@@ -175,6 +176,17 @@ export function createApp(): Express {
     });
   });
 
+  /**
+   * Health & System Telemetry Endpoint
+   */
+  app.get('/api/v1/health', (_req: Request, res: Response) => {
+    sendSuccess(res, {
+      status: 'UP',
+      uptimeSeconds: Math.floor(process.uptime()),
+      timestamp: new Date().toISOString(),
+    });
+  });
+
   // ============================================================================
   // Application Domain Routes
   // ============================================================================
@@ -187,10 +199,13 @@ export function createApp(): Express {
   app.use('/api/v1/warehouse', warehouseRouter);
   app.use('/api/v1/finance', financeRouter);
   app.use('/api/v1/workspace', workspaceRouter);
+  app.use('/api/v1/workspaces', workspaceRouter);
   app.use('/api/v1/reports', reportingRouter);
   app.use('/api/v1/engineer', engineerRoutes);
   app.use('/api/v1/admin/engineers', adminEngineerRoutes);
   app.use('/api/v1/feedback', feedbackRouter);
+  app.use('/api/v1/super-admin', superAdminRoutes);
+  app.use('/api/v1/admin/staff', adminStaffRoutes);
 
   // 404 Route Not Found Handler
   app.use((req: Request, _res: Response, next) => {

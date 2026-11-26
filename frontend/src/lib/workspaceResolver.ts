@@ -20,7 +20,17 @@ export function resolveDefaultWorkspace(user: AuthUser | null): string | null {
   const roles = user.roles || [];
   const permissions = user.permissions || [];
 
-  // 1. Role-based resolution
+  // Temporary credentials: the only reachable screen is the mandatory password change
+  if (user.mustChangePassword) {
+    return '/change-password';
+  }
+
+  // 0. Provider Super Admin (software provider) has a dedicated workspace
+  if (roles.includes('SUPER_ADMIN')) {
+    return '/super-admin';
+  }
+
+  // 1. Role-based resolution for the 5 client roles
   if (roles.includes('ADMIN')) {
     return '/admin';
   }
@@ -36,14 +46,14 @@ export function resolveDefaultWorkspace(user: AuthUser | null): string | null {
   if (roles.includes('WAREHOUSE')) {
     return '/warehouse';
   }
-  if (roles.includes('FINANCE') || roles.includes('BRAND')) {
-    return '/finance';
-  }
-  if (roles.includes('INFRA_OPS') || permissions.includes('system:audit')) {
-    return '/admin/diagnostics';
+
+  // Inactive roles (FINANCE, BRAND, INFRA_OPS, DISTRIBUTOR) are not authorized
+  const DEPRECATED_ROLES = ['FINANCE', 'BRAND', 'INFRA_OPS', 'DISTRIBUTOR'];
+  if (roles.some((r) => DEPRECATED_ROLES.includes(r))) {
+    return null;
   }
 
-  // 2. Permission-based fallback
+  // 2. Permission-based fallback for approved workspaces
   if (permissions.includes('users:read') || permissions.includes('masters:manage')) {
     return '/admin';
   }
@@ -58,9 +68,6 @@ export function resolveDefaultWorkspace(user: AuthUser | null): string | null {
   }
   if (permissions.includes('inventory:read')) {
     return '/warehouse';
-  }
-  if (permissions.includes('finance:read') || permissions.includes('finance:wallets') || permissions.includes('finance:claims')) {
-    return '/finance';
   }
 
   return null;
@@ -77,16 +84,42 @@ export function isAuthorizedForPath(user: AuthUser | null, pathname: string): bo
   const roles = user.roles || [];
   const permissions = user.permissions || [];
 
-  // 1. Technical Infrastructure Diagnostics (/admin/diagnostics)
-  // Strictly requires dedicated system:audit operational permission.
-  // Business ADMIN role without system:audit is denied access to infrastructure telemetry.
-  if (pathname.startsWith('/admin/diagnostics')) {
-    return permissions.includes('system:audit');
+  // Mandatory first-login / reset password change gates every other screen
+  if (pathname.startsWith('/change-password')) {
+    return true;
+  }
+  if (user.mustChangePassword) {
+    return false;
   }
 
-  // 2. Admin Engineer Management (/admin/engineers)
-  // Strictly restricted to System Administrator
-  if (pathname.startsWith('/admin/engineers')) {
+  // Provider Super Admin workspace: provider only. The provider has no client business workspaces.
+  if (pathname.startsWith('/super-admin')) {
+    return roles.includes('SUPER_ADMIN');
+  }
+  if (roles.includes('SUPER_ADMIN') && !roles.some((r) => ['ADMIN', 'CALL_CENTER', 'ASF', 'ENGINEER', 'WAREHOUSE'].includes(r))) {
+    return false;
+  }
+
+  // Deny access if user only possesses deprecated roles without approved roles
+  const APPROVED_ROLES = ['ADMIN', 'CALL_CENTER', 'ASF', 'ENGINEER', 'WAREHOUSE'];
+  const hasApprovedRole = roles.some((r) => APPROVED_ROLES.includes(r));
+  const hasApprovedPerm = permissions.some((p) =>
+    ['users:read', 'masters:manage', 'calls:read', 'calls:create', 'asf:read', 'calls:checkin', 'calls:diagnose', 'calls:repair', 'inventory:read', 'reports:view'].includes(p)
+  );
+
+  if (!hasApprovedRole && !hasApprovedPerm) {
+    return false;
+  }
+
+  // 1. Technical Infrastructure Diagnostics (/admin/diagnostics)
+  // Obsolete role-specific entry point: disabled in Phase 1 five-role architecture
+  if (pathname.startsWith('/admin/diagnostics')) {
+    return false;
+  }
+
+  // 2. Admin Engineer & Staff Management (/admin/engineers, /admin/staff)
+  // Strictly restricted to the client Administrator
+  if (pathname.startsWith('/admin/engineers') || pathname.startsWith('/admin/staff')) {
     return roles.includes('ADMIN');
   }
 
@@ -145,7 +178,7 @@ export function isAuthorizedForPath(user: AuthUser | null, pathname: string): bo
     );
   }
 
-  // 4. Warehouse Workspace (/warehouse)
+  // 7. Warehouse Workspace (/warehouse)
   if (pathname.startsWith('/warehouse')) {
     return (
       roles.includes('ADMIN') ||
@@ -155,17 +188,10 @@ export function isAuthorizedForPath(user: AuthUser | null, pathname: string): bo
     );
   }
 
-  // 5. Finance Workspace (/finance)
+  // 8. Finance Workspace (/finance)
+  // Only ADMIN retains operational access; removed roles (FINANCE, BRAND) are denied
   if (pathname.startsWith('/finance')) {
-    return (
-      roles.includes('ADMIN') ||
-      roles.includes('FINANCE') ||
-      roles.includes('BRAND') ||
-      permissions.includes('finance:read') ||
-      permissions.includes('finance:wallets') ||
-      permissions.includes('finance:claims') ||
-      permissions.includes('finance:settle')
-    );
+    return roles.includes('ADMIN');
   }
 
   return true;
