@@ -1,6 +1,11 @@
 'use client';
 
 import AccountBalanceWalletIcon from '@mui/icons-material/AccountBalanceWallet';
+import AdminPanelSettingsIcon from '@mui/icons-material/AdminPanelSettings';
+import BadgeIcon from '@mui/icons-material/Badge';
+import LockResetIcon from '@mui/icons-material/LockReset';
+import SwapHorizIcon from '@mui/icons-material/SwapHoriz';
+import TuneIcon from '@mui/icons-material/Tune';
 import AssessmentIcon from '@mui/icons-material/Assessment';
 import AssignmentIcon from '@mui/icons-material/Assignment';
 import CategoryIcon from '@mui/icons-material/Category';
@@ -51,6 +56,15 @@ interface NavSection {
 
 const NAV_SECTIONS: NavSection[] = [
   {
+    title: 'PROVIDER CONSOLE',
+    items: [
+      { label: 'Platform Health', href: '/super-admin', icon: <DnsIcon fontSize="small" />, requiredRole: 'SUPER_ADMIN' },
+      { label: 'Client Admins', href: '/super-admin/admins', icon: <AdminPanelSettingsIcon fontSize="small" />, requiredRole: 'SUPER_ADMIN', requiredPermission: 'admins:manage' },
+      { label: 'Audit Log', href: '/super-admin/audit', icon: <VerifiedUserIcon fontSize="small" />, requiredRole: 'SUPER_ADMIN', requiredPermission: 'audit:read' },
+      { label: 'Configuration', href: '/super-admin/config', icon: <TuneIcon fontSize="small" />, requiredRole: 'SUPER_ADMIN', requiredPermission: 'system:config' },
+    ],
+  },
+  {
     title: 'FIELD SERVICE',
     items: [
       {
@@ -58,6 +72,12 @@ const NAV_SECTIONS: NavSection[] = [
         href: '/engineer',
         icon: <EngineeringIcon fontSize="small" />,
         requiredRole: ['ENGINEER', 'ADMIN'],
+      },
+      {
+        label: 'Replacement Jobs',
+        href: '/engineer/replacements',
+        icon: <SwapHorizIcon fontSize="small" />,
+        requiredRole: 'ENGINEER',
       },
     ],
   },
@@ -82,6 +102,13 @@ const NAV_SECTIONS: NavSection[] = [
         icon: <AssignmentIcon fontSize="small" />,
         requiredPermission: 'asf:read',
       },
+      {
+        label: 'Replacements',
+        href: '/service-center/replacements',
+        icon: <SwapHorizIcon fontSize="small" />,
+        requiredRole: ['ASF', 'ADMIN'],
+        requiredPermission: 'asf:read',
+      },
     ],
   },
   {
@@ -93,6 +120,13 @@ const NAV_SECTIONS: NavSection[] = [
         icon: <LocalShippingIcon fontSize="small" />,
         requiredPermission: 'inventory:read',
       },
+      {
+        label: 'Replacement Dispatch',
+        href: '/warehouse/replacements',
+        icon: <SwapHorizIcon fontSize="small" />,
+        requiredRole: ['WAREHOUSE', 'ADMIN'],
+        requiredPermission: 'inventory:read',
+      },
     ],
   },
   {
@@ -102,6 +136,13 @@ const NAV_SECTIONS: NavSection[] = [
         label: 'Admin Console',
         href: '/admin',
         icon: <SettingsIcon fontSize="small" />,
+        requiredRole: 'ADMIN',
+        requiredPermission: 'users:read',
+      },
+      {
+        label: 'Operational Staff',
+        href: '/admin/staff',
+        icon: <BadgeIcon fontSize="small" />,
         requiredRole: 'ADMIN',
         requiredPermission: 'users:read',
       },
@@ -130,6 +171,10 @@ const NAV_SECTIONS: NavSection[] = [
         requiredPermission: 'reports:view',
       },
     ],
+  },
+  {
+    title: 'MY ACCOUNT',
+    items: [{ label: 'Change Password', href: '/change-password', icon: <LockResetIcon fontSize="small" /> }],
   },
 ];
 
@@ -191,8 +236,11 @@ export function AppSidebar({
                 const isActive =
                   item.href === '/'
                     ? pathname === '/'
-                    : item.href === '/service-center'
-                      ? pathname.startsWith('/service-center') || pathname.startsWith('/asf')
+                    : ['/super-admin', '/admin', '/warehouse', '/engineer'].includes(item.href)
+                      ? pathname === item.href
+                      : item.href === '/service-center'
+                      ? (pathname.startsWith('/service-center') || pathname.startsWith('/asf')) &&
+                        !pathname.startsWith('/service-center/replacements')
                       : pathname.startsWith(item.href);
 
                 const button = (

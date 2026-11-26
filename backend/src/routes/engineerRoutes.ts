@@ -1,4 +1,8 @@
 import { Router } from 'express';
+import multer from 'multer';
+import { replacementRequestRepository } from '../database/repositories/replacementRequestRepository.js';
+import { sendSuccess } from '../middleware/errorHandler.js';
+import { replacementService } from '../services/replacementService.js';
 import { requireAuth, requireAnyPermission, requireCsrf } from '../middleware/authMiddleware.js';
 import { engineerController } from '../controllers/engineerController.js';
 
@@ -78,3 +82,47 @@ engineerRoutes.get(
   requireAnyPermission('calls:checkin', 'calls:close', 'calls:read'),
   engineerController.getReplacementCustody.bind(engineerController)
 );
+
+const photoUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024, files: 1 } });
+
+/**
+ * GET /api/v1/engineer/replacements
+ * Replacement installation jobs assigned to (or in custody of) the authenticated engineer.
+ */
+engineerRoutes.get('/replacements', requireAnyPermission('calls:checkin', 'calls:read'), async (req, res, next) => {
+  try {
+    sendSuccess(res, { items: await replacementRequestRepository.listForEngineer(req.user!.userId) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * POST /api/v1/engineer/replacements/:id/photos (multipart field "file")
+ * GET  /api/v1/engineer/replacements/:id/photos
+ * Installation photographs stored through the existing attachment infrastructure.
+ */
+engineerRoutes.post(
+  '/replacements/:id/photos',
+  requireAnyPermission('attachments:upload', 'calls:checkin'),
+  photoUpload.single('file'),
+  async (req, res, next) => {
+    try {
+      if (!req.file) {
+        res.status(400).json({ success: false, error: { code: 'FILE_REQUIRED', message: 'An image file is required.' } });
+        return;
+      }
+      sendSuccess(res, await replacementService.uploadInstallationPhoto(String(req.params['id']), req.file, req.user!), 201);
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+engineerRoutes.get('/replacements/:id/photos', requireAnyPermission('calls:checkin', 'calls:read'), async (req, res, next) => {
+  try {
+    sendSuccess(res, { items: await replacementService.listInstallationPhotos(String(req.params['id'])) });
+  } catch (err) {
+    next(err);
+  }
+});

@@ -20,7 +20,17 @@ export function resolveDefaultWorkspace(user: AuthUser | null): string | null {
   const roles = user.roles || [];
   const permissions = user.permissions || [];
 
-  // 1. Role-based resolution for the 5 approved roles
+  // Temporary credentials: the only reachable screen is the mandatory password change
+  if (user.mustChangePassword) {
+    return '/change-password';
+  }
+
+  // 0. Provider Super Admin (software provider) has a dedicated workspace
+  if (roles.includes('SUPER_ADMIN')) {
+    return '/super-admin';
+  }
+
+  // 1. Role-based resolution for the 5 client roles
   if (roles.includes('ADMIN')) {
     return '/admin';
   }
@@ -37,8 +47,8 @@ export function resolveDefaultWorkspace(user: AuthUser | null): string | null {
     return '/warehouse';
   }
 
-  // Deprecated roles (FINANCE, BRAND, INFRA_OPS, SUPER_ADMIN, DISTRIBUTOR) are not authorized
-  const DEPRECATED_ROLES = ['FINANCE', 'BRAND', 'INFRA_OPS', 'SUPER_ADMIN', 'DISTRIBUTOR'];
+  // Inactive roles (FINANCE, BRAND, INFRA_OPS, DISTRIBUTOR) are not authorized
+  const DEPRECATED_ROLES = ['FINANCE', 'BRAND', 'INFRA_OPS', 'DISTRIBUTOR'];
   if (roles.some((r) => DEPRECATED_ROLES.includes(r))) {
     return null;
   }
@@ -74,6 +84,22 @@ export function isAuthorizedForPath(user: AuthUser | null, pathname: string): bo
   const roles = user.roles || [];
   const permissions = user.permissions || [];
 
+  // Mandatory first-login / reset password change gates every other screen
+  if (pathname.startsWith('/change-password')) {
+    return true;
+  }
+  if (user.mustChangePassword) {
+    return false;
+  }
+
+  // Provider Super Admin workspace: provider only. The provider has no client business workspaces.
+  if (pathname.startsWith('/super-admin')) {
+    return roles.includes('SUPER_ADMIN');
+  }
+  if (roles.includes('SUPER_ADMIN') && !roles.some((r) => ['ADMIN', 'CALL_CENTER', 'ASF', 'ENGINEER', 'WAREHOUSE'].includes(r))) {
+    return false;
+  }
+
   // Deny access if user only possesses deprecated roles without approved roles
   const APPROVED_ROLES = ['ADMIN', 'CALL_CENTER', 'ASF', 'ENGINEER', 'WAREHOUSE'];
   const hasApprovedRole = roles.some((r) => APPROVED_ROLES.includes(r));
@@ -91,9 +117,9 @@ export function isAuthorizedForPath(user: AuthUser | null, pathname: string): bo
     return false;
   }
 
-  // 2. Admin Engineer Management (/admin/engineers)
-  // Strictly restricted to System Administrator
-  if (pathname.startsWith('/admin/engineers')) {
+  // 2. Admin Engineer & Staff Management (/admin/engineers, /admin/staff)
+  // Strictly restricted to the client Administrator
+  if (pathname.startsWith('/admin/engineers') || pathname.startsWith('/admin/staff')) {
     return roles.includes('ADMIN');
   }
 

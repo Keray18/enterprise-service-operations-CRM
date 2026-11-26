@@ -88,6 +88,14 @@ async function request<T>(endpoint: string, options: RequestInit = {}): Promise<
 
     if (!res.ok || payload.success === false) {
       const errPayload = payload as ApiErrorEnvelope;
+      // Temporary credential (provisioned or reset): send the user to the mandatory password change
+      if (
+        errPayload.error?.code === 'PASSWORD_CHANGE_REQUIRED' &&
+        typeof window !== 'undefined' &&
+        !window.location.pathname.startsWith('/change-password')
+      ) {
+        window.location.href = '/change-password';
+      }
       throw new ApiClientError(
         errPayload.error?.message || `HTTP ${res.status}: Request failed`,
         errPayload.error?.code || 'HTTP_ERROR',

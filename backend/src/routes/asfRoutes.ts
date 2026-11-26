@@ -2,6 +2,8 @@ import { Router } from 'express';
 import multer from 'multer';
 import { asfController } from '../controllers/asfController.js';
 import { job360Controller } from '../controllers/job360Controller.js';
+import { sendSuccess } from '../middleware/errorHandler.js';
+import { replacementService } from '../services/replacementService.js';
 import { requireAnyPermission, requireAuth, requireCsrf, requirePermission } from '../middleware/authMiddleware.js';
 
 export const asfRoutes = Router();
@@ -453,3 +455,35 @@ asfRoutes.post(
   requireAnyPermission('asf:manage', 'asf:read'),
   asfController.regenerateReplacementArrivalCode.bind(asfController)
 );
+
+/**
+ * GET /api/v1/asf/replacements
+ * Replacement requests of the caller's Service Center (Admins may filter by location).
+ */
+asfRoutes.get('/replacements', requireAnyPermission('asf:manage', 'asf:read'), async (req, res, next) => {
+  try {
+    const result = await replacementService.listReplacements(
+      {
+        status: (req.query['status'] as any) || undefined,
+        locationId: (req.query['locationId'] as string) || undefined,
+        search: (req.query['search'] as string) || undefined,
+        page: req.query['page'] ? Number(req.query['page']) : 1,
+        limit: req.query['limit'] ? Math.min(100, Number(req.query['limit'])) : 25,
+      },
+      req.user!
+    );
+    sendSuccess(res, result);
+  } catch (err) {
+    next(err);
+  }
+});
+
+asfRoutes.get('/replacements/:id/photos', requireAnyPermission('asf:manage', 'asf:read'), async (req, res, next) => {
+  try {
+    const rep = await replacementService.getReplacementById(String(req.params['id']));
+    if (!req.user!.roles.includes('ADMIN')) replacementService.assertAsfOwnership(req.user!, rep, 'view installation photos');
+    sendSuccess(res, { items: await replacementService.listInstallationPhotos(rep.replacementId) });
+  } catch (err) {
+    next(err);
+  }
+});

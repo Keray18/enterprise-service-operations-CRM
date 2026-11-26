@@ -62,6 +62,7 @@ export interface ServiceRequestPartRecord {
 
 export type AttachmentType =
   | 'SERIAL_NUMBER_PLATE'
+  | 'INSTALLATION_PHOTO'
   | 'PART_FRONT'
   | 'PART_BACK'
   | 'PRODUCT_PHOTO'

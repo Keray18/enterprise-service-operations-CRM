@@ -20,6 +20,8 @@ import { AuthenticatedUser } from '../types/auth.js';
 import { ReplacementRequestRecord, ReplacementRequestStatus } from '../types/job360.js';
 import { encryptNotificationPayload } from '../utils/cryptoUtils.js';
 import { assertBarcodeMatchesPart, BarcodeCapture } from './barcodeVerificationService.js';
+import { attachmentRepository } from '../database/repositories/attachmentRepository.js';
+import { storageService } from './storageService.js';
 import { notificationService } from './notificationService.js';
 import { replacementVerificationService } from './replacementVerificationService.js';
 
@@ -1011,6 +1013,46 @@ export class ReplacementService {
       );
     });
     return (await replacementRequestRepository.findById(replacementId))!;
+  }
+
+  /**
+   * Installation photographs via the existing attachment infrastructure (private storage, MIME
+   * verification, SHA-256) recorded against the linked complaint as INSTALLATION_PHOTO.
+   */
+  async uploadInstallationPhoto(
+    replacementId: string,
+    file: { buffer: Buffer; originalname: string; mimetype: string; size: number },
+    actor: AuthenticatedUser
+  ) {
+    const rep = await this.getReplacementById(replacementId);
+    if (!isRole(actor, 'ENGINEER') || rep.assignedEngineerId !== actor.userId) {
+      throw new AppError('Forbidden: only the assigned installation engineer can attach installation photos.', 403, 'FORBIDDEN_TECHNICIAN');
+    }
+    if (!['TECHNICIAN_CHECKED_IN', 'INSTALLATION_VERIFIED'].includes(rep.status)) {
+      throw new AppError('Installation photos can be added once arrival has been verified at the customer site.', 400, 'INVALID_STATUS');
+    }
+    if (!file.mimetype.startsWith('image/')) {
+      throw new AppError('Installation evidence must be an image.', 400, 'INVALID_FILE_TYPE');
+    }
+    const stored = await storageService.saveFile(file);
+    return attachmentRepository.createAttachment({
+      requestId: rep.requestId,
+      attachmentType: 'INSTALLATION_PHOTO',
+      fileName: stored.fileName,
+      originalName: stored.originalName,
+      storedPath: stored.storedPath,
+      mimeType: stored.mimeType,
+      fileSizeBytes: stored.fileSizeBytes,
+      sha256Checksum: stored.sha256Checksum,
+      uploadedByUserId: actor.userId,
+      uploadedByUsername: actor.username,
+    });
+  }
+
+  async listInstallationPhotos(replacementId: string) {
+    const rep = await this.getReplacementById(replacementId);
+    const all = await attachmentRepository.listByRequestId(rep.requestId);
+    return all.filter((a: any) => a.attachmentType === 'INSTALLATION_PHOTO');
   }
 
   /** Kept for API compatibility: installation is gated by receipt, custody and arrival verification. */

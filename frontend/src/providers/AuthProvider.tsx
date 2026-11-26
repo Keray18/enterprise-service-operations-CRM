@@ -13,6 +13,8 @@ export interface AuthUser {
   permissions: string[];
   locationId?: string;
   brandId?: string;
+  /** True while the account holds a temporary credential that must be changed before any other use. */
+  mustChangePassword?: boolean;
 }
 
 interface MeResponse {
@@ -34,6 +36,7 @@ interface AuthContextType {
   logout: () => Promise<void>;
   hasPermission: (permission: string) => boolean;
   hasRole: (role: string) => boolean;
+  changePassword: (input: { currentPassword: string; newPassword: string }) => Promise<AuthUser>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -69,6 +72,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       queryClient.setQueryData(['auth', 'me'], { user: res.user, csrfToken: res.csrfToken });
     },
   });
+
+  const changePassword = React.useCallback(
+    async (input: { currentPassword: string; newPassword: string }) => {
+      const res = await apiClient.post<{ user: AuthUser; csrfToken?: string }>('/api/v1/auth/change-password', input);
+      if (res.csrfToken) setCsrfToken(res.csrfToken);
+      queryClient.setQueryData(['auth', 'me'], { user: res.user, csrfToken: res.csrfToken });
+      return res.user;
+    },
+    [queryClient]
+  );
 
   const logoutMutation = useMutation<void, Error, void>({
     mutationFn: async () => {
@@ -121,8 +134,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       logout,
       hasPermission,
       hasRole,
+      changePassword,
     }),
-    [user, isLoading, isAuthenticated, login, logout, hasPermission, hasRole]
+    [user, isLoading, isAuthenticated, login, logout, hasPermission, hasRole, changePassword]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

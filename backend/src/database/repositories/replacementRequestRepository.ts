@@ -474,6 +474,34 @@ export class ReplacementRequestRepository {
     }
   }
 
+  /** Replacement jobs relevant to an engineer: assigned installer or designated custodian. */
+  async listForEngineer(engineerId: string): Promise<Array<ReplacementRequestRecord & { handoverId?: string; handoverStatus?: string }>> {
+    const conn = await getOracleConnection();
+    try {
+      const result = await conn.execute<any>(
+        `SELECT q.*, h.HANDOVER_ID, h.STATUS AS HANDOVER_STATUS FROM (
+           ${SELECT_REPLACEMENT_SQL}
+           WHERE (r.ASSIGNED_ENGINEER_ID = :engineerId
+                  OR r.REPLACEMENT_ID IN (SELECT REPLACEMENT_ID FROM PART_CUSTODY_HANDOVERS WHERE ENGINEER_ID = :engineerId))
+             AND r.STATUS IN ('RECEIVED_AT_ASF','APPOINTMENT_SCHEDULED','HANDED_OVER_TO_ENGINEER','TECHNICIAN_CHECKED_IN','INSTALLATION_VERIFIED','CLOSED')
+         ) q
+         LEFT JOIN PART_CUSTODY_HANDOVERS h
+           ON h.REPLACEMENT_ID = q.REPLACEMENT_ID AND h.ENGINEER_ID = :engineerId AND h.STATUS <> 'RETURNED'
+         ORDER BY q.UPDATED_AT DESC NULLS LAST
+         FETCH FIRST 100 ROWS ONLY`,
+        { engineerId },
+        { outFormat: oracledb.OUT_FORMAT_OBJECT }
+      );
+      return (result.rows || []).map((row: any) => ({
+        ...mapRowToReplacement(row),
+        handoverId: row.HANDOVER_ID || undefined,
+        handoverStatus: row.HANDOVER_STATUS || undefined,
+      }));
+    } finally {
+      await conn.close();
+    }
+  }
+
   async closeReplacement(
     replacementId: string,
     closedBy: string,

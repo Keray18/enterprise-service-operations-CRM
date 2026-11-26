@@ -152,6 +152,8 @@ export async function middleware(request: NextRequest): Promise<NextResponse> {
   // 4. Gated operational workspaces: /admin, /call-center, /service-center, /asf, /engineer, /warehouse, /finance, /reports
   const isProtectedWorkspace =
     pathname.startsWith('/admin') ||
+    pathname.startsWith('/super-admin') ||
+    pathname.startsWith('/change-password') ||
     pathname.startsWith('/call-center') ||
     pathname.startsWith('/service-center') ||
     pathname.startsWith('/asf') ||
