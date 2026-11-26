@@ -138,6 +138,9 @@ describe('Phase 1 Acceptance Suite: Role Simplification & Happy Code Standardiza
       const deactivated = await request(app).post('/api/v1/auth/login').send({ username: deactivatedUsername, password: TEST_PASSWORD });
       expect(deactivated.status).toBe(403);
       expect(deactivated.body.error.code).toBe('ACCOUNT_DISABLED');
+
+      // Restore the V029 invariant for the fixture (removed-role accounts stay inactive)
+      await userRepository.setUserActive(legacyUserId, 'N');
     });
 
     it('1.5. Workspace check endpoints strictly grant access to the 5 approved roles and deny unauthorized roles', async () => {
