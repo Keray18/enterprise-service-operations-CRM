@@ -1356,7 +1356,10 @@ export class Job360Service {
 
     // Supervisor Override validation
     if (input.isSupervisorOverride) {
-      const isSupervisor = actor.roles.includes('ADMIN') || actor.permissions.includes('calls:close');
+      // Field engineers hold calls:close for customer-verified closure only; an override without the
+      // customer's Happy Code would be an independent engineer closure and is reserved for ASF / Admin.
+      const isSupervisor =
+        actor.roles.includes('ADMIN') || actor.roles.includes('ASF') || actor.roles.includes('ASF_MANAGER');
       if (!isSupervisor) {
         throw new AppError(
           'Forbidden: Only authorized supervisors or administrators can execute a supervisor override closure.',

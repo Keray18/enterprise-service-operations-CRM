@@ -213,6 +213,14 @@ export type ReplacementRequestStatus =
 export interface ReplacementRequestRecord {
   replacementId: string;
   requestId: string;
+  /** Quotation version (independent of appointment version); bumped on every revision. */
+  quotationVersion?: number;
+  /** Version the customer approved; dispatch requires it to equal quotationVersion. */
+  approvedQuotationVersion?: number;
+  requiredPartCode?: string;
+  requiredPartName?: string;
+  /** Responsible Service Center (the linked complaint's assigned ASF). */
+  assignedLocationId?: string;
   jobNumber?: string;
   customerPhone?: string;
   reasonCode: ReplacementReasonCode;

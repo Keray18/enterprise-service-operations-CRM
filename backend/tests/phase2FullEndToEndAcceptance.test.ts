@@ -58,6 +58,7 @@ describe('Phase 2 — Full Operational Workflow Integration Acceptance Suite (15
   let modelId: string;
   let customerId: string;
   let testPartId: string;
+  let testPartCode: string;
 
   beforeAll(async () => {
     // 1. Locations
@@ -236,6 +237,8 @@ describe('Phase 2 — Full Operational Workflow Integration Acceptance Suite (15
 
       const partRes = await conn.execute<any>('SELECT PART_ID FROM PART_CODES FETCH FIRST 1 ROWS ONLY');
       testPartId = partRes.rows?.[0]?.[0];
+      const codeRes = await conn.execute<any>('SELECT PART_CODE FROM PART_CODES WHERE PART_ID = :id', { id: testPartId });
+      testPartCode = codeRes.rows?.[0]?.[0];
 
       // Pre-seed stock in central warehouse for tests
       await inventoryRepository.upsertBalanceDeltas(
@@ -473,6 +476,8 @@ describe('Phase 2 — Full Operational Workflow Integration Acceptance Suite (15
       .send({
         courierName: 'Express Logistics',
         docketNumber: 'TRK998877',
+        barcode: testPartCode,
+        captureMethod: 'SCANNER',
       });
     expect(dispatchRes.status).toBe(201);
     expect(dispatchRes.body.data.status).toBe('DISPATCHED_TO_ASF');
@@ -482,7 +487,7 @@ describe('Phase 2 — Full Operational Workflow Integration Acceptance Suite (15
       .post(`/api/v1/asf/replacements/${replacementId}/acknowledge-receipt`)
       .set('Cookie', asf1Cookie)
       .set('x-csrf-token', asf1Csrf)
-      .send({ remarks: 'Received replacement unit in undamaged box' });
+      .send({ remarks: 'Received replacement unit in undamaged box', barcode: testPartCode, captureMethod: 'SCANNER' });
     expect(recvRes.status).toBe(200);
     expect(recvRes.body.data.status).toBe('RECEIVED_AT_ASF');
 
@@ -507,7 +512,7 @@ describe('Phase 2 — Full Operational Workflow Integration Acceptance Suite (15
       .post('/api/v1/engineer/custody/acknowledge')
       .set('Cookie', eng1Cookie)
       .set('x-csrf-token', eng1Csrf)
-      .send({ handoverId, remarks: 'Collected unit for customer visit' });
+      .send({ handoverId, remarks: 'Collected unit for customer visit', barcode: testPartCode, captureMethod: 'MANUAL' });
     expect(ackRes.status).toBe(200);
 
     // 9. Schedule installation visit >= 60 min
@@ -570,7 +575,12 @@ describe('Phase 2 — Full Operational Workflow Integration Acceptance Suite (15
       .post(`/api/v1/engineer/replacements/${replacementId}/complete-installation`)
       .set('Cookie', eng1Cookie)
       .set('x-csrf-token', eng1Csrf)
-      .send({ completionCode: completionHappyCode, remarks: 'New unit installed and operational' });
+      .send({
+        completionCode: completionHappyCode,
+        installedPartCode: testPartCode,
+        captureMethod: 'SCANNER',
+        remarks: 'New unit installed and operational',
+      });
     expect(compInstRes.status).toBe(200);
     expect(compInstRes.body.data.status).toBe('INSTALLATION_VERIFIED');
 
@@ -749,12 +759,19 @@ describe('Phase 2 — Full Operational Workflow Integration Acceptance Suite (15
       .send({ reasonCode: 'REASON_5', requiredPartId: testPartId });
     const replacementId = acceptRes.body.data.replacementId;
 
-    // 1. Warehouse allocates with location having 0 stock (asfLocation2Id)
+    // 1. Warehouse allocates from a warehouse holding 0 stock of the part
+    const emptyWh = await locationRepository.createLocation({
+      locationCode: `WH_EMPTY_${Date.now().toString(36).toUpperCase()}`,
+      locationName: 'Empty Regional Warehouse',
+      partyType: 'CENTRAL_WAREHOUSE',
+      isTestFixture: 'Y',
+      isActive: 'Y',
+    });
     const allocRes = await request(app)
       .post(`/api/v1/warehouse/replacements/${replacementId}/allocate`)
       .set('Cookie', whCookie)
       .set('x-csrf-token', whCsrf)
-      .send({ warehouseId: asfLocation2Id });
+      .send({ warehouseId: emptyWh.locationId });
     expect(allocRes.status).toBe(200);
     expect(allocRes.body.data.status).toBe('PENDING_STOCK');
 
@@ -774,7 +791,7 @@ describe('Phase 2 — Full Operational Workflow Integration Acceptance Suite (15
       .post(`/api/v1/warehouse/replacements/${replacementId}/allocate`)
       .set('Cookie', whCookie)
       .set('x-csrf-token', whCsrf)
-      .send({ warehouseId: asfLocation2Id });
+      .send({ warehouseId: emptyWh.locationId });
 
     const conn3 = await getOracleConnection();
     const countAfter = await conn3.execute<any>(
@@ -1241,7 +1258,9 @@ describe('Phase 2 — Full Operational Workflow Integration Acceptance Suite (15
         remarks: 'Added freight charge',
       });
     expect(revRes.status).toBe(200);
-    expect(revRes.body.data.appointmentVersion).toBe(2);
+    // V031/V033: quotation versioning is independent of appointment versioning
+    expect(revRes.body.data.quotationVersion).toBe(2);
+    expect(revRes.body.data.appointmentVersion).toBe(1);
 
     // Stale version approval (v1) fails with 409
     const staleRes = await request(app)

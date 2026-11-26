@@ -18,6 +18,7 @@ import {
   regenerateOtpSchema,
   rejectAssignmentSchema,
   scheduleInstallationSchema,
+  acknowledgeReceiptSchema,
 } from '../validation/asfSchemas.js';
 
 export class AsfController {
@@ -284,7 +285,8 @@ export class AsfController {
 
   async acknowledgeReceipt(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
-      const result = await replacementService.acknowledgeAsfReceipt(req.params.id!, req.user!);
+      const parsed = acknowledgeReceiptSchema.parse(req.body || {});
+      const result = await replacementService.acknowledgeAsfReceipt(req.params.id!, req.user!, parsed);
       res.status(200).json({
         success: true,
         data: result,
@@ -304,6 +306,27 @@ export class AsfController {
         data: result,
         message: 'Replacement installation visit scheduled successfully (Arrival Happy Code queued)',
       });
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  async getReplacementCustody(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const timeline = await replacementService.getCustodyTimeline(req.params.id!);
+      if (!req.user!.roles.includes('ADMIN')) {
+        replacementService.assertAsfOwnership(req.user!, timeline.replacement, 'view this custody record');
+      }
+      res.status(200).json({ success: true, data: timeline });
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  async regenerateReplacementArrivalCode(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const result = await replacementService.regenerateArrivalCode(req.params.id!, req.user!);
+      res.status(200).json({ success: true, data: result, message: 'Arrival Happy Code resent to customer.' });
     } catch (err) {
       next(err);
     }

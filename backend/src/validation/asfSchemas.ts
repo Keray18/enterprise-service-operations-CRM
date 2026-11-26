@@ -126,6 +126,8 @@ export const custodyHandoverSchema = z.object({
 export const acknowledgeCollectionSchema = z.object({
   handoverId: z.string().uuid(),
   remarks: z.string().max(1000).optional(),
+  barcode: z.string().trim().max(100).optional(),
+  captureMethod: z.enum(['SCANNER', 'MANUAL']).optional(),
 });
 
 export const verifyReplacementHappyCodeSchema = z.object({
@@ -143,6 +145,8 @@ export const dispatchReplacementStockSchema = z.object({
   courierName: z.string().trim().min(1, 'Courier name is required').max(100),
   docketNumber: z.string().trim().min(1, 'Docket number is required').max(100),
   remarks: z.string().max(1000).optional(),
+  barcode: z.string().trim().max(100).optional(),
+  captureMethod: z.enum(['SCANNER', 'MANUAL']).optional(),
 });
 
 export const scheduleInstallationSchema = z.object({
@@ -159,4 +163,12 @@ export const completeInstallationSchema = z.object({
   completionCode: z.string().regex(/^\d{6}$/, 'Completion Happy Code must be a 6-digit numeric code'),
   targetSerialNo: z.string().max(100).optional(),
   remarks: z.string().max(1000).optional(),
+  installedPartCode: z.string().trim().max(100).optional(),
+  captureMethod: z.enum(['SCANNER', 'MANUAL']).optional(),
+});
+
+export const acknowledgeReceiptSchema = z.object({
+  remarks: z.string().max(1000).optional(),
+  barcode: z.string().trim().max(100).optional(),
+  captureMethod: z.enum(['SCANNER', 'MANUAL']).optional(),
 });

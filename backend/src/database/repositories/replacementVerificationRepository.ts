@@ -20,6 +20,7 @@ function mapRowToVerification(row: any): ReplacementVerificationRecord {
     isInvalidated: row.IS_INVALIDATED,
     invalidatedAt: row.INVALIDATED_AT ? new Date(row.INVALIDATED_AT) : undefined,
     invalidatedReason: row.INVALIDATED_REASON || undefined,
+    regenerationCount: Number(row.REGENERATION_COUNT || 0),
     createdAt: new Date(row.CREATED_AT),
   };
 }
@@ -41,6 +42,7 @@ const SELECT_VERIF_SQL = `
     v.IS_INVALIDATED,
     v.INVALIDATED_AT,
     v.INVALIDATED_REASON,
+    v.REGENERATION_COUNT,
     v.CREATED_AT
   FROM REPLACEMENT_VERIFICATIONS v
 `;
@@ -173,6 +175,21 @@ export class ReplacementVerificationRepository {
       WHERE VERIFICATION_ID = :verificationId
     `;
     await conn.execute(sql, { verificationId, verifiedBy });
+  }
+
+  /** Replaces the secret of an unverified code (resend / regeneration) and resets its attempt counter. */
+  async regenerateCode(
+    verificationId: string,
+    data: { codeHash: string; codeSalt: string; expiresAt: Date },
+    conn: oracledb.Connection
+  ): Promise<void> {
+    await conn.execute(
+      `UPDATE REPLACEMENT_VERIFICATIONS
+          SET CODE_HASH = :codeHash, CODE_SALT = :codeSalt, EXPIRES_AT = :expiresAt,
+              ATTEMPTS = 0, REGENERATION_COUNT = REGENERATION_COUNT + 1
+        WHERE VERIFICATION_ID = :verificationId AND VERIFIED_AT IS NULL AND IS_INVALIDATED = 'N'`,
+      { verificationId, ...data }
+    );
   }
 
   async invalidatePreviousCodes(

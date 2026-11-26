@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { replacementService } from '../services/replacementService.js';
 import { warehouseController } from '../controllers/warehouseController.js';
 import { requireAnyPermission, requireAuth, requireCsrf, requirePermission } from '../middleware/authMiddleware.js';
 
@@ -199,4 +200,21 @@ warehouseRouter.post(
   requireCsrf,
   requireAnyPermission('inventory:dispatch', 'inventory:manage'),
   warehouseController.closeReplacement.bind(warehouseController)
+);
+
+/**
+ * GET /api/v1/warehouse/replacements/:id/custody
+ * Chain-of-custody timeline for warehouse closure review.
+ */
+warehouseRouter.get(
+  '/replacements/:id/custody',
+  requireAnyPermission('inventory:read', 'inventory:dispatch', 'inventory:manage'),
+  async (req, res, next) => {
+    try {
+      const data = await replacementService.getCustodyTimeline(String(req.params['id']));
+      res.status(200).json({ success: true, data });
+    } catch (err) {
+      next(err);
+    }
+  }
 );

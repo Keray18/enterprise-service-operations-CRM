@@ -53,6 +53,7 @@ describe('Phase 2 Stage B.2 Master Acceptance Test Suite', () => {
   let modelId: string;
   let customerId: string;
   let testPartId: string;
+  let testPartCode: string;
 
   beforeAll(async () => {
     // 1. Provision Locations
@@ -189,8 +190,9 @@ describe('Phase 2 Stage B.2 Master Acceptance Test Suite', () => {
       const custRes = await conn.execute<any>('SELECT CUSTOMER_ID FROM CUSTOMERS FETCH FIRST 1 ROWS ONLY');
       customerId = custRes.rows?.[0]?.[0];
 
-      const partRes = await conn.execute<any>('SELECT PART_ID FROM PART_CODES FETCH FIRST 1 ROWS ONLY');
+      const partRes = await conn.execute<any>('SELECT PART_ID, PART_CODE FROM PART_CODES FETCH FIRST 1 ROWS ONLY');
       testPartId = partRes.rows?.[0]?.[0];
+      testPartCode = partRes.rows?.[0]?.[1];
     } finally {
       await conn.close();
     }
@@ -548,7 +550,9 @@ describe('Phase 2 Stage B.2 Master Acceptance Test Suite', () => {
       expect(res.status).toBe(200);
       expect(res.body.data.quotationAmount).toBe(6200);
       expect(res.body.data.quotationStatus).toBe('PENDING_CUSTOMER_APPROVAL');
-      expect(res.body.data.appointmentVersion).toBe(2);
+      // V031/V033: quotation versioning is independent of appointment versioning
+      expect(res.body.data.quotationVersion).toBe(2);
+      expect(res.body.data.appointmentVersion).toBe(1);
     });
 
     it('2.3 Customer approval of current quotation version succeeds -> transitions to QUOTATION_APPROVED', async () => {
@@ -581,7 +585,8 @@ describe('Phase 2 Stage B.2 Master Acceptance Test Suite', () => {
           remarks: 'Added freight charge',
         });
 
-      expect(modRes.body.data.appointmentVersion).toBe(3);
+      expect(modRes.body.data.quotationVersion).toBe(3);
+      expect(modRes.body.data.appointmentVersion).toBe(1);
       expect(modRes.body.data.quotationStatus).toBe('PENDING_CUSTOMER_APPROVAL');
 
       // Dispatch is blocked again
@@ -654,6 +659,19 @@ describe('Phase 2 Stage B.2 Master Acceptance Test Suite', () => {
         });
 
       repId = res.body.data.replacementId;
+
+      // Stage the approved custody precondition: the unit has been dispatched by the warehouse and its
+      // receipt acknowledged by the responsible ASF, and engineer 1 is the assigned installer (v1).
+      const stageConn = await getOracleConnection();
+      try {
+        await stageConn.execute(
+          `UPDATE REPLACEMENT_REQUESTS SET STATUS = 'RECEIVED_AT_ASF', ASSIGNED_ENGINEER_ID = :eng, APPOINTMENT_VERSION = 1 WHERE REPLACEMENT_ID = :id`,
+          { eng: engineer1Id, id: repId }
+        );
+        await stageConn.commit();
+      } finally {
+        await stageConn.close();
+      }
     });
 
     it('3.1 ASF initiates physical handover -> status PENDING_COLLECTION (not treated as collected)', async () => {
@@ -709,6 +727,8 @@ describe('Phase 2 Stage B.2 Master Acceptance Test Suite', () => {
         .send({
           handoverId,
           remarks: 'Received sealed part in good condition',
+          barcode: testPartCode,
+          captureMethod: 'SCANNER',
         });
 
       expect(res.status).toBe(200);
@@ -747,6 +767,15 @@ describe('Phase 2 Stage B.2 Master Acceptance Test Suite', () => {
     });
 
     it('3.6 Purpose separation: ARRIVAL code cannot be verified as COMPLETION', async () => {
+      const engineer1Actor = { userId: engineer1Id, username: 'eng1', email: '', fullName: '', roles: ['ENGINEER'], permissions: [] };
+      await expect(
+        replacementVerificationService.verifyCode(
+          { replacementId: repId, visitNumber: 1, appointmentVersion: 1, purpose: 'COMPLETION', happyCode: '765432' },
+          engineer1Actor
+        )
+      ).rejects.toMatchObject({ code: 'INVALID_HAPPY_CODE' });
+
+      // Completion can only be recorded through complete-installation (installed part identification)
       const res = await request(app)
         .post(`/api/v1/engineer/replacements/${repId}/verify-code`)
         .set('Cookie', eng1Cookie)
@@ -759,7 +788,7 @@ describe('Phase 2 Stage B.2 Master Acceptance Test Suite', () => {
         });
 
       expect(res.status).toBe(400);
-      expect(res.body.error.code).toBe('INVALID_HAPPY_CODE');
+      expect(res.body.error.code).toBe('USE_COMPLETE_INSTALLATION');
     });
 
     it('3.7 Wrong engineer cannot verify replacement Happy Code -> rejected (403)', async () => {
@@ -815,20 +844,24 @@ describe('Phase 2 Stage B.2 Master Acceptance Test Suite', () => {
       const prereqBefore = await replacementService.checkWarehouseClosurePrerequisites(repId);
       expect(prereqBefore.eligible).toBe(false);
 
-      // Verify completion code
-      const compRes = await request(app)
-        .post(`/api/v1/engineer/replacements/${repId}/verify-code`)
+      // A wrong part is rejected before the Completion Happy Code is consumed
+      const wrongRes = await request(app)
+        .post(`/api/v1/engineer/replacements/${repId}/complete-installation`)
         .set('Cookie', eng1Cookie)
         .set('x-csrf-token', eng1Csrf)
-        .send({
-          visitNumber: 1,
-          appointmentVersion: 1,
-          purpose: 'COMPLETION',
-          happyCode: '123456',
-        });
+        .send({ completionCode: '123456', installedPartCode: 'NOT-THE-REQUIRED-PART', captureMethod: 'MANUAL' });
+      expect(wrongRes.status).toBe(409);
+      expect(wrongRes.body.error.code).toBe('WRONG_PART_INSTALLATION');
+
+      // Correct part + Completion Happy Code records the installation
+      const compRes = await request(app)
+        .post(`/api/v1/engineer/replacements/${repId}/complete-installation`)
+        .set('Cookie', eng1Cookie)
+        .set('x-csrf-token', eng1Csrf)
+        .send({ completionCode: '123456', installedPartCode: testPartCode, captureMethod: 'SCANNER' });
 
       expect(compRes.status).toBe(200);
-      expect(compRes.body.data.replacementStatus).toBe('INSTALLATION_VERIFIED');
+      expect(compRes.body.data.status).toBe('INSTALLATION_VERIFIED');
 
       // Now warehouse closure is eligible
       const prereqAfter = await replacementService.checkWarehouseClosurePrerequisites(repId);

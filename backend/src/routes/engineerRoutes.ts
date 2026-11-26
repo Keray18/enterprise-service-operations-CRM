@@ -1,11 +1,11 @@
 import { Router } from 'express';
-import { requireAuth, requireAnyPermission } from '../middleware/authMiddleware.js';
+import { requireAuth, requireAnyPermission, requireCsrf } from '../middleware/authMiddleware.js';
 import { engineerController } from '../controllers/engineerController.js';
 
 export const engineerRoutes = Router();
 
 // Technician workspace endpoints require authentication and engineer call permissions
-engineerRoutes.use(requireAuth);
+engineerRoutes.use(requireAuth, requireCsrf);
 
 /**
  * GET /api/v1/engineer/dashboard
@@ -68,3 +68,13 @@ engineerRoutes.post(
 );
 
 
+
+/**
+ * GET /api/v1/engineer/replacements/:id/custody
+ * Custody timeline for the assigned engineer's replacement job.
+ */
+engineerRoutes.get(
+  '/replacements/:id/custody',
+  requireAnyPermission('calls:checkin', 'calls:close', 'calls:read'),
+  engineerController.getReplacementCustody.bind(engineerController)
+);

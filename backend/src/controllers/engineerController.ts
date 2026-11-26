@@ -1,8 +1,8 @@
+import { AppError } from '../middleware/errorHandler.js';
 import { NextFunction, Request, Response } from 'express';
 import { custodyService } from '../services/custodyService.js';
 import { engineerService } from '../services/engineerService.js';
 import { replacementService } from '../services/replacementService.js';
-import { replacementVerificationService } from '../services/replacementVerificationService.js';
 import {
   acknowledgeCollectionSchema,
   completeInstallationSchema,
@@ -39,7 +39,10 @@ export class EngineerController {
   async acknowledgeCollection(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const parsed = acknowledgeCollectionSchema.parse(req.body);
-      const result = await custodyService.acknowledgeCollection(parsed.handoverId, parsed.remarks, req.user!);
+      const result = await custodyService.acknowledgeCollection(parsed.handoverId, parsed.remarks, req.user!, {
+        barcode: parsed.barcode,
+        captureMethod: parsed.captureMethod,
+      });
       res.status(200).json({
         success: true,
         data: result,
@@ -53,13 +56,16 @@ export class EngineerController {
   async verifyReplacementHappyCode(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const parsed = verifyReplacementHappyCodeSchema.parse(req.body);
-      const result = await replacementVerificationService.verifyCode(
-        {
-          replacementId: req.params.id!,
-          ...parsed,
-        },
-        req.user!
-      );
+      // Completion must be recorded with installed-part identification (wrong-part prevention)
+      if (parsed.purpose === 'COMPLETION') {
+        throw new AppError(
+          'Completion Happy Codes are verified through complete-installation together with the installed part identifier.',
+          400,
+          'USE_COMPLETE_INSTALLATION'
+        );
+      }
+      // Arrival runs the full workflow: custody check, status transition and Completion Happy Code issuance
+      const result = await replacementService.verifyInstallationArrival(req.params.id!, parsed.happyCode, req.user!);
       res.status(200).json({
         success: true,
         data: result,
@@ -97,7 +103,18 @@ export class EngineerController {
       next(err);
     }
   }
+
+  async getReplacementCustody(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const timeline = await replacementService.getCustodyTimeline(req.params.id!);
+      if (timeline.replacement.assignedEngineerId !== req.user!.userId) {
+        throw new AppError('Forbidden: you are not the engineer assigned to this replacement.', 403, 'FORBIDDEN_TECHNICIAN');
+      }
+      res.status(200).json({ success: true, data: timeline });
+    } catch (err) {
+      next(err);
+    }
+  }
 }
 
 export const engineerController = new EngineerController();
-

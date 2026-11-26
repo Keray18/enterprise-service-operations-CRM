@@ -34,6 +34,11 @@ function mapRowToReplacement(row: any): ReplacementRequestRecord {
     assignedEngineerName: row.ASSIGNED_ENGINEER_NAME || undefined,
     appointmentSlot: row.APPOINTMENT_SLOT || undefined,
     appointmentVersion: row.APPOINTMENT_VERSION != null ? Number(row.APPOINTMENT_VERSION) : undefined,
+    quotationVersion: row.QUOTATION_VERSION != null ? Number(row.QUOTATION_VERSION) : undefined,
+    approvedQuotationVersion: row.APPROVED_QUOTATION_VERSION != null ? Number(row.APPROVED_QUOTATION_VERSION) : undefined,
+    requiredPartCode: row.REQUIRED_PART_CODE || undefined,
+    requiredPartName: row.REQUIRED_PART_NAME || undefined,
+    assignedLocationId: row.SR_ASSIGNED_LOCATION_ID || undefined,
     closedAt: row.CLOSED_AT || undefined,
     closedBy: row.CLOSED_BY || undefined,
     updatedAt: row.UPDATED_AT || undefined,
@@ -72,6 +77,11 @@ const SELECT_REPLACEMENT_SQL = `
     u3.USERNAME AS ASSIGNED_ENGINEER_NAME,
     r.APPOINTMENT_SLOT,
     r.APPOINTMENT_VERSION,
+    r.QUOTATION_VERSION,
+    r.APPROVED_QUOTATION_VERSION,
+    pc.PART_CODE AS REQUIRED_PART_CODE,
+    pc.PART_NAME AS REQUIRED_PART_NAME,
+    sr.ASSIGNED_LOCATION_ID AS SR_ASSIGNED_LOCATION_ID,
     r.CLOSED_AT,
     r.CLOSED_BY,
     r.UPDATED_AT
@@ -81,6 +91,7 @@ const SELECT_REPLACEMENT_SQL = `
   LEFT JOIN APP_USERS u1 ON r.REQUESTED_BY = u1.USER_ID
   LEFT JOIN APP_USERS u2 ON r.REVIEWED_BY = u2.USER_ID
   LEFT JOIN APP_USERS u3 ON r.ASSIGNED_ENGINEER_ID = u3.USER_ID
+  LEFT JOIN PART_CODES pc ON r.REQUIRED_PART_ID = pc.PART_ID
 `;
 
 export class ReplacementRequestRepository {
@@ -103,6 +114,16 @@ export class ReplacementRequestRepository {
         await conn.close();
       }
     }
+  }
+
+  /** Row-locks a replacement request for the duration of the caller's transaction. */
+  async lockById(replacementId: string, conn: oracledb.Connection): Promise<boolean> {
+    const res = await conn.execute<any>(
+      `SELECT REPLACEMENT_ID FROM REPLACEMENT_REQUESTS WHERE REPLACEMENT_ID = :replacementId FOR UPDATE`,
+      { replacementId },
+      { outFormat: oracledb.OUT_FORMAT_OBJECT }
+    );
+    return Boolean(res.rows && res.rows.length > 0);
   }
 
   async findById(replacementId: string, connection?: oracledb.Connection): Promise<ReplacementRequestRecord | null> {
@@ -229,7 +250,8 @@ export class ReplacementRequestRepository {
         QUOTATION_APPROVED_AT = NULL,
         QUOTATION_REJECTED_AT = NULL,
         QUOTATION_REJECTION_REASON = NULL,
-        APPOINTMENT_VERSION = NVL(APPOINTMENT_VERSION, 1) + 1,
+        QUOTATION_VERSION = NVL(QUOTATION_VERSION, 1) + 1,
+        APPROVED_QUOTATION_VERSION = NULL,
         UPDATED_AT = SYSTIMESTAMP
       WHERE REPLACEMENT_ID = :replacementId
     `;
@@ -245,6 +267,8 @@ export class ReplacementRequestRepository {
     data: {
       decision: 'APPROVED' | 'DECLINED';
       reason?: string;
+      /** Status after approval (QUOTATION_APPROVED, or STOCK_RESERVED when stock is already held). */
+      approvedStatus?: ReplacementRequestStatus;
     },
     conn: oracledb.Connection
   ): Promise<void> {
@@ -253,12 +277,13 @@ export class ReplacementRequestRepository {
         UPDATE REPLACEMENT_REQUESTS
         SET 
           QUOTATION_STATUS = 'APPROVED',
-          STATUS = 'QUOTATION_APPROVED',
+          STATUS = :approvedStatus,
           QUOTATION_APPROVED_AT = SYSTIMESTAMP,
+          APPROVED_QUOTATION_VERSION = NVL(QUOTATION_VERSION, 1),
           UPDATED_AT = SYSTIMESTAMP
         WHERE REPLACEMENT_ID = :replacementId
       `;
-      await conn.execute(sql, { replacementId });
+      await conn.execute(sql, { replacementId, approvedStatus: data.approvedStatus || 'QUOTATION_APPROVED' });
     } else {
       const sql = `
         UPDATE REPLACEMENT_REQUESTS

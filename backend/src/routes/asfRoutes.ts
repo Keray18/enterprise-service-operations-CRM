@@ -432,3 +432,24 @@ asfRoutes.post(
 );
 
 
+
+/**
+ * GET /api/v1/asf/replacements/:id/custody
+ * Chain-of-custody timeline (handovers, barcode-verified movements, installation evidence).
+ */
+asfRoutes.get(
+  '/replacements/:id/custody',
+  requireAnyPermission('asf:manage', 'asf:read'),
+  asfController.getReplacementCustody.bind(asfController)
+);
+
+/**
+ * POST /api/v1/asf/replacements/:id/regenerate-arrival-code
+ * Resends the Arrival Happy Code for the current replacement appointment (cap: 5).
+ */
+asfRoutes.post(
+  '/replacements/:id/regenerate-arrival-code',
+  requireCsrf,
+  requireAnyPermission('asf:manage', 'asf:read'),
+  asfController.regenerateReplacementArrivalCode.bind(asfController)
+);

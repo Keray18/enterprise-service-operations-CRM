@@ -16,6 +16,7 @@ export interface ReplacementVerificationRecord {
   isInvalidated: 'Y' | 'N';
   invalidatedAt?: Date;
   invalidatedReason?: string;
+  regenerationCount?: number;
   createdAt: Date;
 }
 
