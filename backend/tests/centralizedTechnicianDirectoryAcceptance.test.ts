@@ -1,5 +1,9 @@
 import crypto from 'crypto';
 import request from 'supertest';
+import { Persona, PersonaKey, provisionPersonas } from './helpers/isolatedPersonas.js';
+import { rbacRepository } from '../src/database/repositories/rbacRepository.js';
+import { userRepository } from '../src/database/repositories/userRepository.js';
+import { generateTemporaryPassword, hashPassword } from '../src/services/passwordService.js';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createApp } from '../src/app.js';
 import { getOracleConnection } from '../src/database/oraclePool.js';
@@ -10,14 +14,10 @@ import { verificationRepository } from '../src/database/repositories/verificatio
 describe('P0 Centralized Technician Directory & Manual Assignment Recovery Acceptance Suite', () => {
   const app = createApp();
 
-  // Invariant dev credentials
-  const credentials = {
-    admin: { username: 'admin', password: 'Admin@123', role: 'ADMIN' },
-    callcenter: { username: 'callcenter', password: 'callCenter@123', role: 'CALL_CENTER' },
-    serviceCenter: { username: 'service_center', password: 'serviceCenter@123', role: 'ASF' },
-    warehouse: { username: 'warehouse', password: 'wareHouse@123', role: 'WAREHOUSE' },
-    engineer: { username: 'mumbai_tech_1', password: 'fieldEng@123', role: 'ENGINEER' },
-  };
+  // Isolated per-suite personas (pinned shared dev credentials were removed in Phase 3)
+  let personas: Record<PersonaKey, Persona>;
+  let secondEngineerUsername = '';
+  let secondEngineerPassword = '';
 
   const sessions = {
     admin: { cookie: '', csrf: '' },
@@ -59,31 +59,21 @@ describe('P0 Centralized Technician Directory & Manual Assignment Recovery Accep
 
   beforeAll(async () => {
     // 1. Authenticate all 5 invariant personas
-    for (const [key, cred] of Object.entries(credentials)) {
-      const loginRes = await request(app)
-        .post('/api/v1/auth/login')
-        .send({ username: cred.username, password: cred.password });
-
-      expect(loginRes.status).toBe(200);
-      expect(loginRes.body.success).toBe(true);
-
-      const cookieHeader = loginRes.headers['set-cookie'];
-      const cookie = Array.isArray(cookieHeader) ? cookieHeader.join('; ') : cookieHeader || '';
-      const csrf = loginRes.body?.data?.csrfToken || '';
-
-      (sessions as any)[key] = { cookie, csrf };
+    personas = await provisionPersonas(app, { tag: 'tech_dir' });
+    for (const key of Object.keys(sessions) as PersonaKey[]) {
+      (sessions as any)[key] = { cookie: personas[key].cookie, csrf: personas[key].csrf };
     }
 
     // 2. Query Oracle DB for foreign keys & locations
     const conn = await getOracleConnection();
     try {
       const userRes: any = await conn.execute(
-        `SELECT USER_ID, USERNAME, LOCATION_ID FROM APP_USERS WHERE USERNAME IN ('service_center', 'mumbai_tech_1')`,
-        {},
+        `SELECT USER_ID, USERNAME, LOCATION_ID FROM APP_USERS WHERE USERNAME IN (:u1, :u2, :u3, :u4, :u5)`,
+        { u1: personas.admin.username, u2: personas.callcenter.username, u3: personas.serviceCenter.username, u4: personas.warehouse.username, u5: personas.engineer.username },
         { outFormat: 4002 }
       );
-      const scUser = (userRes.rows || []).find((r: any) => r.USERNAME === 'service_center');
-      const engUser = (userRes.rows || []).find((r: any) => r.USERNAME === 'mumbai_tech_1');
+      const scUser = (userRes.rows || []).find((r: any) => r.USERNAME === personas.serviceCenter.username);
+      const engUser = (userRes.rows || []).find((r: any) => r.USERNAME === personas.engineer.username);
 
       defaultAsfLocId = scUser?.LOCATION_ID;
       engineerUserId = engUser?.USER_ID;
@@ -100,8 +90,8 @@ describe('P0 Centralized Technician Directory & Manual Assignment Recovery Accep
         // Create an alternate ASF location for cross-center testing
         alternateAsfLocId = crypto.randomUUID();
         await conn.execute(
-          `INSERT INTO LOCATIONS (LOCATION_ID, LOCATION_CODE, LOCATION_NAME, PARTY_TYPE, IS_ACTIVE, IS_DEFAULT, CREATED_BY)
-           VALUES (:locId, 'ASF_ALT_99', 'Pune Alternate Service Center', 'ASF', 'Y', 'N', 'TEST_SETUP')`,
+          `INSERT INTO LOCATIONS (LOCATION_ID, LOCATION_CODE, LOCATION_NAME, PARTY_TYPE, IS_ACTIVE, IS_DEFAULT, IS_TEST_FIXTURE, DATA_ORIGIN, CREATED_BY)
+           VALUES (:locId, 'ASF_ALT_99', 'Pune Alternate Service Center', 'ASF', 'Y', 'N', 'Y', 'TEST_FIXTURE', 'TEST_SETUP')`,
           { locId: alternateAsfLocId }
         );
       }
@@ -143,37 +133,21 @@ describe('P0 Centralized Technician Directory & Manual Assignment Recovery Accep
         );
       }
 
-      // Create or find a second active engineer for Scenario 9
-      const secEngRes: any = await conn.execute(
-        `SELECT u.USER_ID, u.LOCATION_ID FROM APP_USERS u
-         JOIN USER_ROLES ur ON u.USER_ID = ur.USER_ID
-         JOIN ROLES r ON ur.ROLE_ID = r.ROLE_ID
-         WHERE r.CODE = 'ENGINEER' AND u.IS_ACTIVE = 'Y' AND u.USER_ID <> :engId FETCH FIRST 1 ROWS ONLY`,
-        { engId: engineerUserId },
-        { outFormat: 4002 }
-      );
-      if (secEngRes.rows?.[0]?.USER_ID) {
-        secondEngineerUserId = secEngRes.rows[0].USER_ID;
-        secondEngineerLocationId = secEngRes.rows[0].LOCATION_ID || alternateAsfLocId;
-      } else {
-        secondEngineerUserId = crypto.randomUUID();
-        secondEngineerLocationId = alternateAsfLocId;
-        await conn.execute(
-          `INSERT INTO APP_USERS (USER_ID, USERNAME, EMAIL, FULL_NAME, PASSWORD_HASH, PHONE_NUMBER, LOCATION_ID, IS_ACTIVE)
-           VALUES (:userId, 'tech_pune_2', 'tech2@crm.com', 'Field Engineer Pune', 'argon2id_hash', '9999990002', :locId, 'Y')`,
-          { userId: secondEngineerUserId, locId: alternateAsfLocId }
-        );
-        const engRoleRes: any = await conn.execute(
-          `SELECT ROLE_ID FROM ROLES WHERE CODE = 'ENGINEER'`,
-          {},
-          { outFormat: 4002 }
-        );
-        const roleId = engRoleRes.rows[0].ROLE_ID;
-        await conn.execute(
-          `INSERT INTO USER_ROLES (USER_ID, ROLE_ID, ASSIGNED_BY) VALUES (:userId, :roleId, '00000000-0000-0000-0000-000000000001')`,
-          { userId: secondEngineerUserId, roleId }
-        );
-      }
+      // Second active engineer for Scenario 9 (isolated account with its own random credential)
+      secondEngineerUserId = crypto.randomUUID();
+      secondEngineerLocationId = alternateAsfLocId;
+      secondEngineerUsername = `t_eng2_${Date.now().toString(36)}`;
+      secondEngineerPassword = generateTemporaryPassword();
+      await userRepository.createUser({
+        userId: secondEngineerUserId,
+        username: secondEngineerUsername,
+        email: `${secondEngineerUsername}@crm.test`,
+        fullName: 'Field Engineer Pune',
+        passwordHash: await hashPassword(secondEngineerPassword),
+        phoneNumber: '9999990002',
+        locationId: alternateAsfLocId,
+      });
+      await rbacRepository.assignRoleToUser(secondEngineerUserId, 'ENGINEER', 'TEST_PERSONA_SETUP');
 
       // Find active model & product
       const modRes: any = await conn.execute(
@@ -287,7 +261,7 @@ describe('P0 Centralized Technician Directory & Manual Assignment Recovery Accep
     expect(res.body.success).toBe(true);
     expect(Array.isArray(res.body.data)).toBe(true);
 
-    const tech1 = res.body.data.find((e: any) => e.username === 'mumbai_tech_1');
+    const tech1 = res.body.data.find((e: any) => e.username === personas.engineer.username);
     expect(tech1).toBeDefined();
     expect(tech1.userId).toBe(engineerUserId);
     expect(tech1.fullName).toBe('Field Engineer Mumbai');
@@ -502,17 +476,14 @@ describe('P0 Centralized Technician Directory & Manual Assignment Recovery Accep
     // Authenticate as second engineer
     const secLogin = await request(app)
       .post('/api/v1/auth/login')
-      .send({ username: 'tech_pune_2', password: 'fieldEng@123' });
+      .send({ username: secondEngineerUsername, password: secondEngineerPassword });
+    expect(secLogin.status).toBe(200);
 
-    let secCookie = '';
-    let secCsrf = '';
-    if (secLogin.status === 200) {
-      const cookieHeader = secLogin.headers['set-cookie'];
-      secCookie = Array.isArray(cookieHeader) ? cookieHeader.join('; ') : cookieHeader || '';
-      secCsrf = secLogin.body?.data?.csrfToken || '';
-    }
+    const cookieHeader = secLogin.headers['set-cookie'];
+    const secCookie = Array.isArray(cookieHeader) ? cookieHeader.join('; ') : cookieHeader || '';
+    const secCsrf = secLogin.body?.data?.csrfToken || '';
 
-    if (secCookie) {
+    {
       // Query queue as second engineer: req1Id must NOT be visible
       const queueRes = await request(app)
         .get('/api/v1/asf/queue')

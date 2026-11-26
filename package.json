@@ -19,7 +19,9 @@
     "db:rotate-admin": "pnpm --filter backend db:rotate-admin",
     "db:users": "pnpm --filter backend db:users",
     "db:set-password": "pnpm --filter backend db:set-password",
-    "db:seed-dev-accounts": "pnpm --filter backend db:seed-dev-accounts"
+    "db:seed-dev-accounts": "pnpm --filter backend db:seed-dev-accounts",
+    "db:super-admin": "pnpm --filter backend db:super-admin",
+    "db:rotate-compromised": "pnpm --filter backend db:rotate-compromised"
   },
   "devDependencies": {
     "typescript": "^5.8.2"

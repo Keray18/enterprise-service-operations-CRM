@@ -1,5 +1,6 @@
 import crypto from 'crypto';
 import request from 'supertest';
+import { Persona, PersonaKey, provisionPersonas } from './helpers/isolatedPersonas.js';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createApp } from '../src/app.js';
 import { getOracleConnection } from '../src/database/oraclePool.js';
@@ -10,14 +11,8 @@ import { notificationRepository } from '../src/database/repositories/notificatio
 describe('P0 — Dedicated Field Engineer Workspace, Assigned Job Visibility & Admin Management Acceptance', () => {
   const app = createApp();
 
-  // Invariant dev credentials
-  const credentials = {
-    admin: { username: 'admin', password: 'Admin@123', role: 'ADMIN' },
-    callcenter: { username: 'callcenter', password: 'callCenter@123', role: 'CALL_CENTER' },
-    serviceCenter: { username: 'service_center', password: 'serviceCenter@123', role: 'ASF' },
-    warehouse: { username: 'warehouse', password: 'wareHouse@123', role: 'WAREHOUSE' },
-    engineer: { username: 'mumbai_tech_1', password: 'fieldEng@123', role: 'ENGINEER' },
-  };
+  // Isolated per-suite personas (pinned shared dev credentials were removed in Phase 3)
+  let personas: Record<PersonaKey, Persona>;
 
   const sessions = {
     admin: { cookie: '', csrf: '' },
@@ -109,31 +104,21 @@ describe('P0 — Dedicated Field Engineer Workspace, Assigned Job Visibility & A
     mockSmsAdapter.clear();
 
     // 1. Authenticate all 5 invariant personas
-    for (const [key, cred] of Object.entries(credentials)) {
-      const loginRes = await request(app)
-        .post('/api/v1/auth/login')
-        .send({ username: cred.username, password: cred.password });
-
-      expect(loginRes.status).toBe(200);
-      expect(loginRes.body.success).toBe(true);
-
-      const cookieHeader = loginRes.headers['set-cookie'];
-      const cookie = Array.isArray(cookieHeader) ? cookieHeader.join('; ') : cookieHeader || '';
-      const csrf = loginRes.body?.data?.csrfToken || '';
-
-      (sessions as any)[key] = { cookie, csrf };
+    personas = await provisionPersonas(app, { tag: 'eng_ws' });
+    for (const key of Object.keys(sessions) as PersonaKey[]) {
+      (sessions as any)[key] = { cookie: personas[key].cookie, csrf: personas[key].csrf };
     }
 
     // 2. Query Oracle DB for foreign keys & locations
     const conn = await getOracleConnection();
     try {
       const userRes: any = await conn.execute(
-        `SELECT USER_ID, USERNAME, LOCATION_ID FROM APP_USERS WHERE USERNAME IN ('service_center', 'mumbai_tech_1')`,
-        {},
+        `SELECT USER_ID, USERNAME, LOCATION_ID FROM APP_USERS WHERE USERNAME IN (:u1, :u2, :u3, :u4, :u5)`,
+        { u1: personas.admin.username, u2: personas.callcenter.username, u3: personas.serviceCenter.username, u4: personas.warehouse.username, u5: personas.engineer.username },
         { outFormat: 4002 }
       );
-      const scUser = (userRes.rows || []).find((r: any) => r.USERNAME === 'service_center');
-      const engUser = (userRes.rows || []).find((r: any) => r.USERNAME === 'mumbai_tech_1');
+      const scUser = (userRes.rows || []).find((r: any) => r.USERNAME === personas.serviceCenter.username);
+      const engUser = (userRes.rows || []).find((r: any) => r.USERNAME === personas.engineer.username);
 
       defaultAsfLocId = scUser?.LOCATION_ID;
       engineerUserId = engUser?.USER_ID;
@@ -222,7 +207,7 @@ describe('P0 — Dedicated Field Engineer Workspace, Assigned Job Visibility & A
 
     expect(meRes.status).toBe(200);
     expect(meRes.body.success).toBe(true);
-    expect(meRes.body.data.user.username).toBe('mumbai_tech_1');
+    expect(meRes.body.data.user.username).toBe(personas.engineer.username);
     expect(meRes.body.data.user.roles).toContain('ENGINEER');
     expect(meRes.body.data.user.roles).not.toContain('ADMIN');
     expect(meRes.body.data.user.roles).not.toContain('ASF');
@@ -329,7 +314,7 @@ describe('P0 — Dedicated Field Engineer Workspace, Assigned Job Visibility & A
     expect(listRes.body.success).toBe(true);
     expect(Array.isArray(listRes.body.data)).toBe(true);
 
-    const found = listRes.body.data.find((e: any) => e.username === 'mumbai_tech_1');
+    const found = listRes.body.data.find((e: any) => e.username === personas.engineer.username);
     expect(found).toBeDefined();
     expect(found.userId).toBe(engineerUserId);
     expect(found.isActive).toBe('Y');
@@ -355,7 +340,8 @@ describe('P0 — Dedicated Field Engineer Workspace, Assigned Job Visibility & A
     expect(ackRes.status).toBe(200);
 
     // C. Service Center Dispatches to mumbai_tech_1 for TODAY
-    const todayStr = new Date().toISOString().split('T')[0];
+    // Approved rule: appointments must be at least 60 minutes in the future (same calendar day for the 'today' tab)
+    const todayStr = new Date(Date.now() + 75 * 60 * 1000).toISOString();
     const dispatchRes = await request(app)
       .post(`/api/v1/asf/requests/${primaryRequestId}/dispatch`)
       .set('Cookie', sessions.serviceCenter.cookie)
@@ -426,10 +412,24 @@ describe('P0 — Dedicated Field Engineer Workspace, Assigned Job Visibility & A
       .post('/api/v1/auth/login')
       .send({ username: secondEngineerUsername, password: secondEngineerTempPass });
     expect(loginRes.status).toBe(200);
+    // Admin-provisioned accounts hold a temporary credential: the first sign-in must change it
+    expect(loginRes.body.data.user.mustChangePassword).toBe(true);
 
     const secondCookieHeader = loginRes.headers['set-cookie'];
     const secondCookie = Array.isArray(secondCookieHeader) ? secondCookieHeader.join('; ') : secondCookieHeader || '';
     const secondCsrf = loginRes.body?.data?.csrfToken || '';
+
+    const blockedRes = await request(app).get('/api/v1/engineer/jobs?tab=all').set('Cookie', secondCookie);
+    expect(blockedRes.status).toBe(403);
+    expect(blockedRes.body.error.code).toBe('PASSWORD_CHANGE_REQUIRED');
+
+    const changeRes = await request(app)
+      .post('/api/v1/auth/change-password')
+      .set('Cookie', secondCookie)
+      .set('x-csrf-token', secondCsrf)
+      .send({ currentPassword: secondEngineerTempPass, newPassword: `Own#${Date.now().toString(36)}Pw9` });
+    expect(changeRes.status).toBe(200);
+    expect(changeRes.body.data.user.mustChangePassword).toBe(false);
 
     // Query second engineer's jobs: must NOT contain primaryRequestId
     const secondJobsRes = await request(app)
@@ -526,7 +526,9 @@ describe('P0 — Dedicated Field Engineer Workspace, Assigned Job Visibility & A
       }
 
       const outbox = await notificationRepository.listByRequestId(primaryRequestId);
-      const notif = outbox.find((n) => n.templateCode === 'SMS_02_APPOINTMENT');
+      // Arrival Happy Code SMS is scheduled for appointment - 60 min (approved); read the queued, encrypted outbox record
+      const listedSms2 = outbox.find((n: any) => n.templateCode === 'SMS_02_APPOINTMENT');
+      const notif = listedSms2 ? await notificationRepository.findById(listedSms2.notificationId) : undefined;
       if (notif?.encryptedPayload) {
         const dec = decryptNotificationPayload({
           encryptedPayload: notif.encryptedPayload,
@@ -782,7 +784,8 @@ describe('P0 — Dedicated Field Engineer Workspace, Assigned Job Visibility & A
       .set('x-csrf-token', sessions.serviceCenter.csrf)
       .send({ remarks: 'Ack for deactivation test' });
 
-    const todayStr = new Date().toISOString().split('T')[0];
+    // Approved rule: appointments must be at least 60 minutes in the future (same calendar day for the 'today' tab)
+    const todayStr = new Date(Date.now() + 75 * 60 * 1000).toISOString();
     await request(app)
       .post(`/api/v1/asf/requests/${deactRequestId}/dispatch`)
       .set('Cookie', sessions.serviceCenter.cookie)

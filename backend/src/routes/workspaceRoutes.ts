@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { requireAuth, requirePermission } from '../middleware/authMiddleware.js';
+import { requireAuth, requirePermission, requireRole } from '../middleware/authMiddleware.js';
 import { sendSuccess } from '../middleware/errorHandler.js';
 
 export const workspaceRouter = Router();
@@ -15,6 +15,22 @@ workspaceRouter.get(
       accessible: true,
       user: req.user,
       message: 'System Administrator privileges verified.',
+    });
+  }
+);
+
+// Provider Super Admin Workspace Check
+workspaceRouter.get(
+  '/super-admin',
+  requireAuth,
+  requireRole('SUPER_ADMIN'),
+  requirePermission('admins:manage'),
+  (req: Request, res: Response) => {
+    sendSuccess(res, {
+      workspace: 'SUPER_ADMIN',
+      accessible: true,
+      user: req.user,
+      message: 'Provider Super Admin privileges verified.',
     });
   }
 );

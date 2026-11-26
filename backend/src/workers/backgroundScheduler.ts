@@ -1,6 +1,7 @@
 import { logger } from '../logging/logger.js';
 import { notificationService } from '../services/notificationService.js';
 import { slaMonitoringService } from '../services/slaMonitoringService.js';
+import { systemConfigService } from '../services/systemConfigService.js';
 
 interface JobExecutionStats {
   totalRuns: number;
@@ -21,6 +22,10 @@ export class BackgroundScheduler {
   private isRunningNotifRetry = false;
 
   private isStopping = false;
+
+  /** Set when start() has scheduled the workers in this process. */
+  public startedAt?: Date;
+  public activeIntervalsMs: { sla48h: number; sla168h: number; notifRetry: number } | null = null;
 
   // Telemetry metrics
   public stats: {
@@ -76,6 +81,9 @@ export class BackgroundScheduler {
     this.notifRetryTimer = setInterval(async () => {
       await this.runNotificationRetry();
     }, notifMs);
+
+    this.startedAt = new Date();
+    this.activeIntervalsMs = { sla48h: slaMs, sla168h: slaMs, notifRetry: notifMs };
 
     // Unref timers so they do not artificially keep Node process alive if shutdown is triggered
     this.sla48hTimer.unref();
@@ -181,7 +189,7 @@ export class BackgroundScheduler {
     this.stats.notifRetry.lastRunAt = new Date();
 
     try {
-      const result = await notificationService.retryFailedNotifications();
+      const result = await notificationService.retryFailedNotifications(await systemConfigService.getNotificationMaxRetries());
       this.stats.notifRetry.itemsProcessed += result.succeededCount + result.escalatedCount;
       this.stats.notifRetry.lastSuccessAt = new Date();
 

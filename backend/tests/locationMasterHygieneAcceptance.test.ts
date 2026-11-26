@@ -1,19 +1,14 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import request from 'supertest';
+import { Persona, PersonaKey, provisionPersonas } from './helpers/isolatedPersonas.js';
 import { createApp } from '../src/app.js';
 import { getOracleConnection } from '../src/database/oraclePool.js';
 
 describe('P0 — Location Master Data Hygiene & Global Location Selector Remediation Acceptance', () => {
   const app = createApp();
 
-  // Invariant dev credentials
-  const credentials = {
-    admin: { username: 'admin', password: 'Admin@123', role: 'ADMIN' },
-    callcenter: { username: 'callcenter', password: 'callCenter@123', role: 'CALL_CENTER' },
-    serviceCenter: { username: 'service_center', password: 'serviceCenter@123', role: 'ASF' },
-    warehouse: { username: 'warehouse', password: 'wareHouse@123', role: 'WAREHOUSE' },
-    engineer: { username: 'mumbai_tech_1', password: 'fieldEng@123', role: 'ENGINEER' },
-  };
+  // Isolated per-suite personas (pinned shared dev credentials were removed in Phase 3)
+  let personas: Record<PersonaKey, Persona>;
 
   const sessions = {
     admin: { cookie: '', csrf: '' },
@@ -32,19 +27,9 @@ describe('P0 — Location Master Data Hygiene & Global Location Selector Remedia
 
   beforeAll(async () => {
     // 1. Authenticate all 5 invariant personas
-    for (const [key, cred] of Object.entries(credentials)) {
-      const loginRes = await request(app)
-        .post('/api/v1/auth/login')
-        .send({ username: cred.username, password: cred.password });
-
-      expect(loginRes.status).toBe(200);
-      expect(loginRes.body.success).toBe(true);
-
-      const cookieHeader = loginRes.headers['set-cookie'];
-      const cookie = Array.isArray(cookieHeader) ? cookieHeader.join('; ') : cookieHeader || '';
-      const csrf = loginRes.body?.data?.csrfToken || '';
-
-      (sessions as any)[key] = { cookie, csrf };
+    personas = await provisionPersonas(app, { tag: 'loc_hyg' });
+    for (const key of Object.keys(sessions) as PersonaKey[]) {
+      (sessions as any)[key] = { cookie: personas[key].cookie, csrf: personas[key].csrf };
     }
 
     // 2. Query Oracle directly to identify one operational ASF and one test fixture
@@ -417,8 +402,10 @@ describe('P0 — Location Master Data Hygiene & Global Location Selector Remedia
           counts[fixtureFlag] = cnt;
         }
 
+        // Operational master data is an exact invariant
         expect(counts['N']).toBe(67);
-        expect(counts['Y']).toBe(418);
+        // Historical fixtures classified by V023 (418) are preserved; later test runs only add fixtures
+        expect(counts['Y']).toBeGreaterThanOrEqual(418);
       } finally {
         await conn.close();
       }

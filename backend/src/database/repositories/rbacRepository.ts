@@ -1,9 +1,16 @@
 import oracledb from 'oracledb';
 import { getOracleConnection } from '../oraclePool.js';
 
-export const APPROVED_ROLES = ['ADMIN', 'CALL_CENTER', 'ASF', 'ENGINEER', 'WAREHOUSE'] as const;
+/**
+ * Final approved role model (six active roles).
+ * SUPER_ADMIN = software provider; ADMIN = client administrator.
+ * Role grants are policy-checked by the provisioning services; this repository only
+ * refuses roles that are not part of the active model.
+ */
+export const APPROVED_ROLES = ['SUPER_ADMIN', 'ADMIN', 'CALL_CENTER', 'ASF', 'ENGINEER', 'WAREHOUSE'] as const;
 export type ApprovedRole = (typeof APPROVED_ROLES)[number];
-export const DEPRECATED_ROLES = ['SUPER_ADMIN', 'INFRA_OPS', 'FINANCE', 'BRAND', 'DISTRIBUTOR'] as const;
+/** Inactive roles: preserved for historical records only, never assignable. */
+export const DEPRECATED_ROLES = ['INFRA_OPS', 'FINANCE', 'BRAND', 'DISTRIBUTOR'] as const;
 
 export class RbacRepository {
   async getUserRoles(userId: string): Promise<string[]> {

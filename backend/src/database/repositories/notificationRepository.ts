@@ -314,16 +314,21 @@ export class NotificationRepository {
           AND RETRY_COUNT < :maxRetries
           AND (SCHEDULED_FOR IS NULL OR SCHEDULED_FOR <= SYSTIMESTAMP)
           AND (NEXT_RETRY_AT IS NULL OR NEXT_RETRY_AT <= SYSTIMESTAMP)
-          AND ROWNUM <= :limit
+        ORDER BY NVL(SCHEDULED_FOR, CREATED_AT) ASC
         FOR UPDATE SKIP LOCKED
       `;
 
+      // Oldest-due first so a backlog cannot starve individual messages. Rows are locked as they are
+      // fetched, so bounding the fetch to `limit` claims at most `limit` rows per worker cycle.
       const result = await conn.execute<any>(
         selectSql,
-        { maxRetries, limit },
+        { maxRetries },
         {
           outFormat: oracledb.OUT_FORMAT_OBJECT,
           fetchInfo: { ENCRYPTED_PAYLOAD: { type: oracledb.STRING } },
+          maxRows: limit,
+          prefetchRows: limit,
+          fetchArraySize: limit,
         }
       );
 

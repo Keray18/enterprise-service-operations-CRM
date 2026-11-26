@@ -26,11 +26,16 @@ import { AuthenticatedUser } from '../src/types/auth.js';
 import { decryptNotificationPayload } from '../src/utils/cryptoUtils.js';
 
 describe('End-to-End Business UAT: Full CRM Service, Supply Chain & Financial Lifecycle', () => {
+  // Isolated UAT identities (never reuse or reactivate real/historical accounts)
+  const UAT_SUFFIX = Date.now().toString(36);
+  const uatIds: Record<string, string> = {};
+  const uatId = (key: string) => (uatIds[key] ||= crypto.randomUUID());
+
   // Test actors with strict role boundaries
   const callCenterActor: AuthenticatedUser = {
-    userId: '00000000-0000-0000-0000-000000000005',
-    username: 'cc_uat_agent',
-    email: 'callcenter.uat@crm.internal',
+    userId: uatId('cc'),
+    username: `uat_cc_uat_agent_${UAT_SUFFIX}`,
+    email: `callcenter.uat.${UAT_SUFFIX}@crm.internal`,
     roles: ['CALL_CENTER'],
     permissions: ['calls:create', 'calls:read'],
   };
@@ -39,45 +44,47 @@ describe('End-to-End Business UAT: Full CRM Service, Supply Chain & Financial Li
   let delhiWhId: string;
 
   const asfManagerActor: AuthenticatedUser = {
-    userId: '00000000-0000-0000-0000-000000000099',
-    username: 'mumbai_asf_mgr',
-    email: 'mumbai.asf@franchise.local',
+    userId: uatId('asf'),
+    username: `uat_mumbai_asf_mgr_${UAT_SUFFIX}`,
+    email: `mumbai.asf.${UAT_SUFFIX}@franchise.local`,
     fullName: 'Mumbai Service Manager',
     roles: ['ASF'],
     permissions: ['asf:read', 'asf:manage', 'calls:read', 'calls:assign', 'calls:update', 'finance:claims'],
   };
 
   const technicianActor: AuthenticatedUser = {
-    userId: '00000000-0000-0000-0000-000000000002',
-    username: 'mumbai_tech_1',
-    email: 'tech1.mumbai@franchise.local',
+    userId: uatId('eng'),
+    username: `uat_mumbai_tech_1_${UAT_SUFFIX}`,
+    email: `tech1.mumbai.${UAT_SUFFIX}@franchise.local`,
     fullName: 'Field Engineer Mumbai',
     roles: ['ENGINEER'],
     permissions: ['asf:read', 'calls:read', 'calls:checkin', 'calls:diagnose', 'calls:repair', 'calls:close'],
   };
 
   const warehouseActor: AuthenticatedUser = {
-    userId: '00000000-0000-0000-0000-000000000007',
-    username: 'central_wh_operator',
-    email: 'warehouse.delhi@logistics.internal',
+    userId: uatId('wh'),
+    username: `uat_central_wh_operator_${UAT_SUFFIX}`,
+    email: `warehouse.delhi.${UAT_SUFFIX}@logistics.internal`,
     fullName: 'Delhi Central Warehouse Lead',
     roles: ['WAREHOUSE'],
     permissions: ['inventory:read', 'inventory:manage', 'inventory:dispatch'],
   };
 
   const financeAuditorActor: AuthenticatedUser = {
-    userId: '00000000-0000-0000-0000-000000000006',
-    username: 'finance_officer',
-    email: 'finance@enterprise.local',
+    userId: uatId('fin'),
+    username: `uat_finance_officer_${UAT_SUFFIX}`,
+    email: `finance.${UAT_SUFFIX}@enterprise.local`,
     fullName: 'Corporate Finance Officer',
-    roles: ['FINANCE'],
+    // FINANCE is an inactive role in the final six-role model; finance review authority is held by ADMIN.
+    // This is a second, independent ADMIN account so claim review keeps segregation of duties.
+    roles: ['ADMIN'],
     permissions: ['finance:read', 'finance:claims', 'finance:approve', 'finance:post', 'finance:wallets', 'reports:view'],
   };
 
   const adminActor: AuthenticatedUser = {
-    userId: '958d124e-135d-44de-b72c-f7ee96081205',
-    username: 'admin',
-    email: 'admin@enterprise.local',
+    userId: uatId('adm'),
+    username: `uat_admin_${UAT_SUFFIX}`,
+    email: `admin.${UAT_SUFFIX}@enterprise.local`,
     fullName: 'Enterprise Administrator',
     roles: ['ADMIN'],
     permissions: ['users:read', 'masters:manage', 'reports:view', 'sla:manage', 'finance:read', 'finance:approve'],
@@ -115,6 +122,7 @@ describe('End-to-End Business UAT: Full CRM Service, Supply Chain & Financial Li
         locationCode: `ASF_UAT_${Date.now().toString(36).toUpperCase()}`,
         locationName: 'Mumbai Central Franchise Center',
         partyType: 'ASF',
+        isTestFixture: 'Y',
         isActive: 'Y',
       });
       mumbaiAsfId = locAsf.locationId;
@@ -128,6 +136,7 @@ describe('End-to-End Business UAT: Full CRM Service, Supply Chain & Financial Li
         locationCode: `WH_UAT_${Date.now().toString(36).toUpperCase()}`,
         locationName: 'Delhi Central Logistics Hub',
         partyType: 'CENTRAL_WAREHOUSE',
+        isTestFixture: 'Y',
         isActive: 'Y',
       });
       delhiWhId = locWh.locationId;
@@ -237,7 +246,8 @@ describe('End-to-End Business UAT: Full CRM Service, Supply Chain & Financial Li
         { actor: asfManagerActor, role: 'ASF', loc: mumbaiAsfId },
         { actor: technicianActor, role: 'ENGINEER', loc: mumbaiAsfId },
         { actor: warehouseActor, role: 'WAREHOUSE', loc: delhiWhId },
-        { actor: financeAuditorActor, role: 'FINANCE', loc: null },
+        { actor: financeAuditorActor, role: 'ADMIN', loc: null },
+        { actor: adminActor, role: 'ADMIN', loc: null },
       ];
 
       for (const item of allActors) {
@@ -295,6 +305,7 @@ describe('End-to-End Business UAT: Full CRM Service, Supply Chain & Financial Li
         await conn.execute('DELETE FROM CLAIM_LINE_ITEMS WHERE SERVICE_REQUEST_ID = :id', { id: reqId });
         await conn.execute('DELETE FROM SERVICE_REQUEST_PARTS WHERE REQUEST_ID = :id', { id: reqId });
         await conn.execute('DELETE FROM SERVICE_REQUEST_VERIFICATIONS WHERE REQUEST_ID = :id', { id: reqId });
+        await conn.execute('DELETE FROM CUSTOMER_FEEDBACK WHERE REQUEST_ID = :id', { id: reqId });
       }
 
       // 2. Delete dispatches referencing requests
@@ -316,11 +327,8 @@ describe('End-to-End Business UAT: Full CRM Service, Supply Chain & Financial Li
 
       // 5. Restore APP_USERS location references to prevent FK violation on temporary LOCATIONS while preserving dev accounts
       await conn.execute(
-        `UPDATE APP_USERS SET LOCATION_ID = '025a2dc3-dca6-4736-a83e-75fe0615871a' WHERE USER_ID IN (
-          '00000000-0000-0000-0000-000000000099',
-          '00000000-0000-0000-0000-000000000002',
-          '00000000-0000-0000-0000-000000000007'
-        )`
+        `UPDATE APP_USERS SET LOCATION_ID = NULL, IS_ACTIVE = 'N' WHERE USER_ID IN (:a, :b, :c)`,
+        { a: asfManagerActor.userId, b: technicianActor.userId, c: warehouseActor.userId }
       );
 
       // 6. Delete inventory and locations
@@ -401,7 +409,7 @@ describe('End-to-End Business UAT: Full CRM Service, Supply Chain & Financial Li
         {
           requestId: testServiceRequestId,
           engineerId: technicianActor.userId,
-          appointmentDate: new Date(),
+          appointmentDate: new Date(Date.now() + 2 * 3600 * 1000),
           appointmentSlot: '10:00 - 13:00',
         },
         unauthorizedActor
@@ -413,7 +421,7 @@ describe('End-to-End Business UAT: Full CRM Service, Supply Chain & Financial Li
       {
         requestId: testServiceRequestId,
         engineerId: technicianActor.userId,
-        appointmentDate: new Date(),
+        appointmentDate: new Date(Date.now() + 2 * 3600 * 1000),
         appointmentSlot: '10:00 - 13:00',
         travelDistanceKm: 15,
         areaType: 'LOCAL',
@@ -452,7 +460,9 @@ describe('End-to-End Business UAT: Full CRM Service, Supply Chain & Financial Li
         }
       }
       const outbox = await notificationRepository.listByRequestId(testServiceRequestId);
-      const notif = outbox.find((n) => n.templateCode === 'SMS_02_APPOINTMENT');
+      // Arrival Happy Code SMS is scheduled for appointment - 60 min (approved); read the queued, encrypted outbox record
+      const listedSms2 = outbox.find((n: any) => n.templateCode === 'SMS_02_APPOINTMENT');
+      const notif = listedSms2 ? await notificationRepository.findById(listedSms2.notificationId) : undefined;
       if (notif?.encryptedPayload) {
         const dec = decryptNotificationPayload({
           encryptedPayload: notif.encryptedPayload,

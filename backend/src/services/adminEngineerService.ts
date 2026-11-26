@@ -1,5 +1,4 @@
 import { randomUUID } from 'crypto';
-import crypto from 'crypto';
 import { AuthenticatedUser } from '../types/auth.js';
 import {
   AdminEngineerQueryParams,
@@ -12,28 +11,15 @@ import { rbacRepository } from '../database/repositories/rbacRepository.js';
 import { serviceRequestRepository } from '../database/repositories/serviceRequestRepository.js';
 import { locationRepository } from '../database/repositories/locationRepository.js';
 import { getOracleConnection } from '../database/oraclePool.js';
-import { hashPassword, validatePasswordComplexity } from './passwordService.js';
+import { generateTemporaryPassword, hashPassword } from './passwordService.js';
+import { sessionRepository } from '../database/repositories/sessionRepository.js';
+import { systemAuditRepository } from '../database/repositories/systemAuditRepository.js';
 import { AppError } from '../middleware/errorHandler.js';
 import { logger } from '../logging/logger.js';
 
+/** @deprecated use generateTemporaryPassword from passwordService (kept for existing callers). */
 export function generateSecureTemporaryPassword(): string {
-  const chars = 'abcdefghjkmnpqrstuvwxyz';
-  const uppers = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
-  const nums = '23456789';
-  const symbols = '!@#$%&*';
-
-  let pass = '';
-  pass += uppers[crypto.randomInt(uppers.length)];
-  pass += chars[crypto.randomInt(chars.length)];
-  pass += nums[crypto.randomInt(nums.length)];
-  pass += symbols[crypto.randomInt(symbols.length)];
-  const all = chars + uppers + nums + symbols;
-  for (let i = 0; i < 8; i++) {
-    pass += all[crypto.randomInt(all.length)];
-  }
-  // Validate it conforms to our complexity rules
-  validatePasswordComplexity(pass);
-  return pass;
+  return generateTemporaryPassword();
 }
 
 export class AdminEngineerService {
@@ -72,7 +58,7 @@ export class AdminEngineerService {
       throw new AppError(`Assigned location must be an Authorized Service Franchise (ASF).`, 400, 'INVALID_LOCATION_TYPE');
     }
 
-    const temporaryPassword = generateSecureTemporaryPassword();
+    const temporaryPassword = generateTemporaryPassword();
     const passwordHash = await hashPassword(temporaryPassword);
     const userId = randomUUID();
 
@@ -88,11 +74,25 @@ export class AdminEngineerService {
           phoneNumber: input.phoneNumber,
           locationId: input.homeLocationId,
           isActive: input.isActive || 'Y',
+          mustChangePassword: 'Y',
         },
         conn
       );
 
       await rbacRepository.assignRoleToUser(userId, 'ENGINEER', actor.userId, conn);
+      await systemAuditRepository.recordEvent(
+        {
+          actorId: actor.userId,
+          actorRole: 'ADMIN',
+          actorUsername: actor.username,
+          action: 'ACCOUNT_CREATE',
+          resource: 'APP_USERS',
+          recordIdentifier: userId,
+          outcome: 'SUCCESS',
+          changes: { username: input.username, role: 'ENGINEER', locationId: input.homeLocationId, temporaryCredential: true },
+        },
+        conn
+      );
       await conn.commit();
       logger.info(`[ADMIN ENGINEER] Successfully created engineer ${input.username} (${userId}) assigned to ${location.locationCode}`);
     } catch (err) {
@@ -176,6 +176,7 @@ export class AdminEngineerService {
           );
 
           await userRepository.setUserActive(engineerId, 'N', conn);
+          await sessionRepository.revokeAllUserSessions(engineerId, conn);
           await conn.commit();
 
           logger.info(
@@ -197,6 +198,7 @@ export class AdminEngineerService {
       }
 
       await userRepository.setUserActive(engineerId, 'N');
+      await sessionRepository.revokeAllUserSessions(engineerId);
       logger.info(`[ADMIN ENGINEER] Deactivated engineer ${user.username} (0 active jobs)`);
       return {
         success: true,
@@ -227,10 +229,33 @@ export class AdminEngineerService {
       throw new AppError('Target user does not have the ENGINEER role.', 400, 'NOT_AN_ENGINEER');
     }
 
-    const temporaryPassword = generateSecureTemporaryPassword();
+    const temporaryPassword = generateTemporaryPassword();
     const passwordHash = await hashPassword(temporaryPassword);
 
-    await userRepository.updatePassword(engineerId, passwordHash);
+    const conn = await getOracleConnection();
+    try {
+      await userRepository.setCredential(engineerId, passwordHash, 'Y', conn);
+      await sessionRepository.revokeAllUserSessions(engineerId, conn);
+      await systemAuditRepository.recordEvent(
+        {
+          actorId: actor.userId,
+          actorRole: 'ADMIN',
+          actorUsername: actor.username,
+          action: 'CREDENTIAL_RESET',
+          resource: 'APP_USERS',
+          recordIdentifier: engineerId,
+          outcome: 'SUCCESS',
+          changes: { temporaryCredential: true },
+        },
+        conn
+      );
+      await conn.commit();
+    } catch (err) {
+      await conn.rollback();
+      throw err;
+    } finally {
+      await conn.close();
+    }
     logger.info(`[ADMIN ENGINEER] Admin ${actor.username} reset password for technician ${user.username}`);
 
     return { temporaryPassword };

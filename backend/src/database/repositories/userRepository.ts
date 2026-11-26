@@ -2,6 +2,7 @@ import oracledb from 'oracledb';
 import { UserRecord } from '../../types/auth.js';
 import { EligibleEngineerRecord } from '../../types/asf.js';
 import { AdminEngineerRecord, AdminEngineerQueryParams, AdminEngineerListResult } from '../../types/engineer.js';
+import { ManagedAccountRecord } from '../../types/accounts.js';
 import { getOracleConnection } from '../oraclePool.js';
 
 function mapRowToUser(row: any): UserRecord {
@@ -17,6 +18,8 @@ function mapRowToUser(row: any): UserRecord {
     failedLoginAttempts: Number(row.FAILED_LOGIN_ATTEMPTS || 0),
     lockedUntil: row.LOCKED_UNTIL ? new Date(row.LOCKED_UNTIL) : undefined,
     lastLoginAt: row.LAST_LOGIN_AT ? new Date(row.LAST_LOGIN_AT) : undefined,
+    mustChangePassword: row.MUST_CHANGE_PASSWORD === 'Y' ? 'Y' : 'N',
+    passwordChangedAt: row.PASSWORD_CHANGED_AT ? new Date(row.PASSWORD_CHANGED_AT) : undefined,
     createdAt: new Date(row.CREATED_AT),
     updatedAt: new Date(row.UPDATED_AT),
   };
@@ -30,6 +33,7 @@ export class UserRepository {
         SELECT 
           USER_ID, USERNAME, EMAIL, FULL_NAME, PASSWORD_HASH, PHONE_NUMBER, LOCATION_ID,
           IS_ACTIVE, FAILED_LOGIN_ATTEMPTS, LOCKED_UNTIL, LAST_LOGIN_AT,
+          MUST_CHANGE_PASSWORD, PASSWORD_CHANGED_AT,
           CREATED_AT, UPDATED_AT
         FROM APP_USERS
         WHERE LOWER(USERNAME) = LOWER(:identifier) OR LOWER(EMAIL) = LOWER(:identifier)
@@ -57,6 +61,7 @@ export class UserRepository {
         SELECT 
           USER_ID, USERNAME, EMAIL, FULL_NAME, PASSWORD_HASH, PHONE_NUMBER, LOCATION_ID,
           IS_ACTIVE, FAILED_LOGIN_ATTEMPTS, LOCKED_UNTIL, LAST_LOGIN_AT,
+          MUST_CHANGE_PASSWORD, PASSWORD_CHANGED_AT,
           CREATED_AT, UPDATED_AT
         FROM APP_USERS
         WHERE USER_ID = :userId
@@ -86,6 +91,7 @@ export class UserRepository {
     phoneNumber?: string;
     locationId?: string;
     isActive?: 'Y' | 'N';
+    mustChangePassword?: 'Y' | 'N';
   }, conn?: oracledb.Connection): Promise<void> {
     const shouldClose = !conn;
     const connection = conn || (await getOracleConnection());
@@ -93,10 +99,10 @@ export class UserRepository {
       const sql = `
         INSERT INTO APP_USERS (
           USER_ID, USERNAME, EMAIL, FULL_NAME, PASSWORD_HASH, PHONE_NUMBER, LOCATION_ID,
-          IS_ACTIVE, FAILED_LOGIN_ATTEMPTS, CREATED_AT, UPDATED_AT
+          IS_ACTIVE, FAILED_LOGIN_ATTEMPTS, MUST_CHANGE_PASSWORD, CREATED_AT, UPDATED_AT
         ) VALUES (
           :userId, :username, :email, :fullName, :passwordHash, :phoneNumber, :locationId,
-          :isActive, 0, SYSTIMESTAMP, SYSTIMESTAMP
+          :isActive, 0, :mustChangePassword, SYSTIMESTAMP, SYSTIMESTAMP
         )
       `;
       await connection.execute(
@@ -110,7 +116,191 @@ export class UserRepository {
           phoneNumber: data.phoneNumber || null,
           locationId: data.locationId || null,
           isActive: data.isActive || 'Y',
+          mustChangePassword: data.mustChangePassword || 'N',
         },
+        { autoCommit: shouldClose }
+      );
+    } finally {
+      if (shouldClose) {
+        await connection.close();
+      }
+    }
+  }
+
+  /**
+   * Replaces a user's credential hash and sets the mandatory-change flag.
+   * Provisioning and resets pass mustChange = 'Y' (temporary credential);
+   * a completed self-service change passes 'N'. Plaintext is never stored.
+   */
+  async setCredential(
+    userId: string,
+    passwordHash: string,
+    mustChangePassword: 'Y' | 'N',
+    conn?: oracledb.Connection
+  ): Promise<void> {
+    const shouldClose = !conn;
+    const connection = conn || (await getOracleConnection());
+    try {
+      await connection.execute(
+        `UPDATE APP_USERS
+         SET PASSWORD_HASH = :passwordHash,
+             MUST_CHANGE_PASSWORD = :mustChangePassword,
+             PASSWORD_CHANGED_AT = CASE WHEN :mustChangePassword = 'N' THEN SYSTIMESTAMP ELSE PASSWORD_CHANGED_AT END,
+             FAILED_LOGIN_ATTEMPTS = 0,
+             LOCKED_UNTIL = NULL,
+             UPDATED_AT = SYSTIMESTAMP
+         WHERE USER_ID = :userId`,
+        { userId, passwordHash, mustChangePassword },
+        { autoCommit: shouldClose }
+      );
+    } finally {
+      if (shouldClose) {
+        await connection.close();
+      }
+    }
+  }
+
+  /**
+   * Lists accounts holding any of the given roles, with role codes, location and session counts.
+   */
+  async listAccountsByRoles(params: {
+    roleCodes: string[];
+    search?: string;
+    status?: 'Y' | 'N';
+    role?: string;
+    userId?: string;
+    page?: number;
+    limit?: number;
+  }): Promise<{ items: ManagedAccountRecord[]; total: number; page: number; limit: number }> {
+    const conn = await getOracleConnection();
+    try {
+      const page = Math.max(1, params.page || 1);
+      const limit = Math.min(100, Math.max(1, params.limit || 25));
+      const binds: Record<string, any> = {};
+      const roleBinds = params.roleCodes.map((code, i) => {
+        binds[`r${i}`] = code;
+        return `:r${i}`;
+      });
+      const where: string[] = [
+        `u.USER_ID IN (SELECT ur.USER_ID FROM USER_ROLES ur JOIN ROLES r ON r.ROLE_ID = ur.ROLE_ID WHERE r.CODE IN (${roleBinds.join(', ')}))`,
+      ];
+      if (params.role) {
+        binds.roleFilter = params.role;
+        where.push(
+          `u.USER_ID IN (SELECT ur.USER_ID FROM USER_ROLES ur JOIN ROLES r ON r.ROLE_ID = ur.ROLE_ID WHERE r.CODE = :roleFilter)`
+        );
+      }
+      if (params.userId) {
+        binds.userId = params.userId;
+        where.push('u.USER_ID = :userId');
+      }
+      if (params.status) {
+        binds.status = params.status;
+        where.push('u.IS_ACTIVE = :status');
+      }
+      if (params.search) {
+        binds.search = `%${params.search.toLowerCase()}%`;
+        where.push('(LOWER(u.USERNAME) LIKE :search OR LOWER(u.EMAIL) LIKE :search OR LOWER(u.FULL_NAME) LIKE :search)');
+      }
+      const whereSql = where.join(' AND ');
+      const countRes = await conn.execute<any>(`SELECT COUNT(*) AS TOTAL FROM APP_USERS u WHERE ${whereSql}`, binds, {
+        outFormat: oracledb.OUT_FORMAT_OBJECT,
+      });
+      const total = Number(countRes.rows?.[0]?.TOTAL || 0);
+      const listRes = await conn.execute<any>(
+        `SELECT u.USER_ID, u.USERNAME, u.EMAIL, u.FULL_NAME, u.PHONE_NUMBER, u.LOCATION_ID,
+                l.LOCATION_CODE, l.LOCATION_NAME,
+                u.IS_ACTIVE, u.MUST_CHANGE_PASSWORD, u.LAST_LOGIN_AT, u.LOCKED_UNTIL, u.CREATED_AT,
+                (SELECT LISTAGG(r.CODE, ',') WITHIN GROUP (ORDER BY r.CODE)
+                   FROM USER_ROLES ur JOIN ROLES r ON r.ROLE_ID = ur.ROLE_ID
+                  WHERE ur.USER_ID = u.USER_ID) AS ROLE_CODES,
+                (SELECT COUNT(*) FROM USER_SESSIONS s
+                  WHERE s.USER_ID = u.USER_ID AND s.REVOKED_AT IS NULL AND s.EXPIRES_AT > SYSTIMESTAMP) AS ACTIVE_SESSIONS
+           FROM APP_USERS u
+           LEFT JOIN LOCATIONS l ON l.LOCATION_ID = u.LOCATION_ID
+          WHERE ${whereSql}
+          ORDER BY u.CREATED_AT DESC
+          OFFSET :offset ROWS FETCH NEXT :limit ROWS ONLY`,
+        { ...binds, offset: (page - 1) * limit, limit },
+        { outFormat: oracledb.OUT_FORMAT_OBJECT }
+      );
+      const items: ManagedAccountRecord[] = (listRes.rows || []).map((r: any) => ({
+        userId: r.USER_ID,
+        username: r.USERNAME,
+        email: r.EMAIL,
+        fullName: r.FULL_NAME,
+        phoneNumber: r.PHONE_NUMBER || undefined,
+        locationId: r.LOCATION_ID || undefined,
+        locationCode: r.LOCATION_CODE || undefined,
+        locationName: r.LOCATION_NAME || undefined,
+        roles: r.ROLE_CODES ? String(r.ROLE_CODES).split(',') : [],
+        isActive: r.IS_ACTIVE,
+        mustChangePassword: r.MUST_CHANGE_PASSWORD === 'Y' ? 'Y' : 'N',
+        lastLoginAt: r.LAST_LOGIN_AT ? new Date(r.LAST_LOGIN_AT) : undefined,
+        lockedUntil: r.LOCKED_UNTIL ? new Date(r.LOCKED_UNTIL) : undefined,
+        activeSessions: Number(r.ACTIVE_SESSIONS || 0),
+        createdAt: new Date(r.CREATED_AT),
+      }));
+      return { items, total, page, limit };
+    } finally {
+      await conn.close();
+    }
+  }
+
+  /**
+   * Counts active accounts holding a role. Pass a connection to evaluate inside a transaction.
+   */
+  async countActiveUsersWithRole(roleCode: string, conn?: oracledb.Connection): Promise<number> {
+    const shouldClose = !conn;
+    const connection = conn || (await getOracleConnection());
+    try {
+      const res = await connection.execute<any>(
+        `SELECT COUNT(*) AS C
+           FROM APP_USERS u
+           JOIN USER_ROLES ur ON ur.USER_ID = u.USER_ID
+           JOIN ROLES r ON r.ROLE_ID = ur.ROLE_ID
+          WHERE r.CODE = :roleCode AND u.IS_ACTIVE = 'Y'`,
+        { roleCode },
+        { outFormat: oracledb.OUT_FORMAT_OBJECT }
+      );
+      return Number(res.rows?.[0]?.C || 0);
+    } finally {
+      if (shouldClose) {
+        await connection.close();
+      }
+    }
+  }
+
+  async updateProfile(
+    userId: string,
+    data: { fullName?: string; email?: string; phoneNumber?: string | null; locationId?: string | null },
+    conn?: oracledb.Connection
+  ): Promise<void> {
+    const sets: string[] = [];
+    const binds: Record<string, any> = { userId };
+    if (data.fullName !== undefined) {
+      sets.push('FULL_NAME = :fullName');
+      binds.fullName = data.fullName.trim();
+    }
+    if (data.email !== undefined) {
+      sets.push('EMAIL = :email');
+      binds.email = data.email.trim().toLowerCase();
+    }
+    if (data.phoneNumber !== undefined) {
+      sets.push('PHONE_NUMBER = :phoneNumber');
+      binds.phoneNumber = data.phoneNumber || null;
+    }
+    if (data.locationId !== undefined) {
+      sets.push('LOCATION_ID = :locationId');
+      binds.locationId = data.locationId || null;
+    }
+    if (sets.length === 0) return;
+    const shouldClose = !conn;
+    const connection = conn || (await getOracleConnection());
+    try {
+      await connection.execute(
+        `UPDATE APP_USERS SET ${sets.join(', ')}, UPDATED_AT = SYSTIMESTAMP WHERE USER_ID = :userId`,
+        binds,
         { autoCommit: shouldClose }
       );
     } finally {

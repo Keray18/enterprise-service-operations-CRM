@@ -65,6 +65,7 @@ describe('Phase 2 — Full Operational Workflow Integration Acceptance Suite (15
       locationCode: `WH_FULL_${Date.now().toString(36).toUpperCase()}`,
       locationName: 'National Central Distribution Center',
       partyType: 'CENTRAL_WAREHOUSE',
+      isTestFixture: 'Y',
       isActive: 'Y',
     });
     centralWarehouseLocationId = locWh.locationId;
@@ -73,6 +74,7 @@ describe('Phase 2 — Full Operational Workflow Integration Acceptance Suite (15
       locationCode: `ASF_MUM_${Date.now().toString(36).toUpperCase()}`,
       locationName: 'Mumbai Central Service Center',
       partyType: 'ASF',
+      isTestFixture: 'Y',
       isActive: 'Y',
     });
     asfLocation1Id = locAsf1.locationId;
@@ -81,6 +83,7 @@ describe('Phase 2 — Full Operational Workflow Integration Acceptance Suite (15
       locationCode: `ASF_DEL_${Date.now().toString(36).toUpperCase()}`,
       locationName: 'Delhi North Service Center',
       partyType: 'ASF',
+      isTestFixture: 'Y',
       isActive: 'Y',
     });
     asfLocation2Id = locAsf2.locationId;

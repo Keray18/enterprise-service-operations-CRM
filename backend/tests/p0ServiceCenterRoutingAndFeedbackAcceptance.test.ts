@@ -413,6 +413,10 @@ describe('P0 — Service Center Routing Correction, Secure Dev OTP Preview & Pos
 
     expect(checkInRes.status).toBe(200);
     expect(checkInRes.body.data.serviceRequest.status).toBe('TECHNICIAN_CHECKED_IN');
+    // Approved rule: successful arrival verification immediately issues the separate Completion Happy Code
+    expect(checkInRes.body.data.completionHappyCodeIssued).toBe(true);
+    expect(/^\d{6}$/.test(checkInRes.body.data.devHappyCodePreview)).toBe(true);
+    closureHappyCode = checkInRes.body.data.devHappyCodePreview;
 
     // Attempt to initiate closure without repair outcome
     const prematureClosure = await request(app)
@@ -462,9 +466,9 @@ describe('P0 — Service Center Routing Correction, Secure Dev OTP Preview & Pos
 
     expect(closureRes.status).toBe(200);
     expect(closureRes.body.data.status).toBe('CALL_CLOSURE_SUBMITTED');
-    expect(closureRes.body.data.devHappyCodePreview).toBeDefined();
-    expect(/^\d{6}$/.test(closureRes.body.data.devHappyCodePreview)).toBe(true);
-    closureHappyCode = closureRes.body.data.devHappyCodePreview;
+    // The Completion Happy Code was already issued at arrival; closure must not issue a second one
+    expect(closureRes.body.data.devHappyCodePreview).toBeUndefined();
+    expect(closureHappyCode).toMatch(/^\d{6}$/);
   });
 
   // ============================================================================
@@ -496,7 +500,8 @@ describe('P0 — Service Center Routing Correction, Secure Dev OTP Preview & Pos
 
     expect(resubmitRes.status).toBe(200);
     expect(resubmitRes.body.data.status).toBe('CALL_CLOSURE_SUBMITTED');
-    closureHappyCode = resubmitRes.body.data.devHappyCodePreview!;
+    // Still the unused Completion Happy Code issued at arrival
+    expect(resubmitRes.body.data.devHappyCodePreview).toBeUndefined();
   });
 
   // ============================================================================

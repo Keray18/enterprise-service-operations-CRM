@@ -60,6 +60,7 @@ describe('Phase 2 Stage B.2 Master Acceptance Test Suite', () => {
       locationCode: `ASF1_${Date.now().toString(36).toUpperCase()}`,
       locationName: 'Mumbai Central Service Center',
       partyType: 'ASF',
+      isTestFixture: 'Y',
     });
     asfLocation1Id = loc1.locationId;
 
@@ -67,6 +68,7 @@ describe('Phase 2 Stage B.2 Master Acceptance Test Suite', () => {
       locationCode: `ASF2_${Date.now().toString(36).toUpperCase()}`,
       locationName: 'Delhi North Service Center',
       partyType: 'ASF',
+      isTestFixture: 'Y',
     });
     asfLocation2Id = loc2.locationId;
 

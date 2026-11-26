@@ -16,7 +16,8 @@ describe('Admin Operations Dashboard & Reports Runtime Crash Fix Verification', 
   const users = {
     admin: { id: crypto.randomUUID(), username: `dash_admin_${uniqueSuffix}`, role: 'ADMIN', cookie: '' },
     callCenter: { id: crypto.randomUUID(), username: `dash_cc_${uniqueSuffix}`, role: 'CALL_CENTER', cookie: '' },
-    opsAuditor: { id: crypto.randomUUID(), username: `dash_ops_${uniqueSuffix}`, role: 'INFRA_OPS', cookie: '' },
+    // Infrastructure diagnostics belong to the provider Super Admin in the final six-role model (INFRA_OPS is inactive)
+    opsAuditor: { id: crypto.randomUUID(), username: `dash_ops_${uniqueSuffix}`, role: 'SUPER_ADMIN', cookie: '' },
   };
 
   beforeAll(async () => {
@@ -469,7 +470,7 @@ describe('Admin Operations Dashboard & Reports Runtime Crash Fix Verification', 
       }
     });
 
-    it('Cross-Role Isolation: INFRA_OPS is strictly denied business endpoints (Catalog, Finance, Call Center)', async () => {
+    it('Cross-Role Isolation: provider SUPER_ADMIN is strictly denied client business endpoints (Catalog, Finance, Call Center)', async () => {
       // 1. Catalog Masters
       const catRes = await request(app)
         .get('/api/v1/catalog/brands')

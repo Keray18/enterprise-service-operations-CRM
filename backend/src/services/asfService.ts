@@ -683,6 +683,9 @@ export class AsfService {
         conn
       );
 
+      // The previously scheduled Arrival Happy Code SMS now carries an invalid code: never deliver it
+      await notificationRepository.supersedePending(input.requestId, 'SMS_02_APPOINTMENT', conn);
+
       // Append lifecycle event
       await serviceRequestEventRepository.createEvent(
         {
@@ -916,10 +919,17 @@ export class AsfService {
 
       const updated = await serviceRequestRepository.findById(input.requestId);
 
+      // Same dual guard as the closure dev preview: never outside non-production with explicit opt-in
+      const allowDevPreview =
+        (process.env['NODE_ENV'] || env.NODE_ENV) !== 'production' &&
+        (process.env['ENABLE_DEV_OTP_PREVIEW'] || env.ENABLE_DEV_OTP_PREVIEW) === 'true';
+
       return {
         serviceRequest: updated!,
         checkedInAt: new Date().toISOString(),
         verified: true,
+        completionHappyCodeIssued: true,
+        devHappyCodePreview: allowDevPreview ? completionCode : undefined,
       };
     } catch (err) {
       await conn.rollback();

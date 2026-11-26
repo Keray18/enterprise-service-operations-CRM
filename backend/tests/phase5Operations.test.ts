@@ -317,12 +317,19 @@ describe('Phase 5: SLA Evaluation, Notification Retries, Role Scoped Reporting &
         messageBody: 'Dear Customer, your service request test notification is registered.',
       });
 
-      // Run retry daemon
+      // Run retry daemon (oldest-due first; drain the shared backlog until this message is reached)
       mockSmsAdapter.clear();
-      const retryResult = await notificationService.retryFailedNotifications(3);
-
+      let retryResult = await notificationService.retryFailedNotifications(3);
       expect(retryResult.processedCount).toBeGreaterThan(0);
-      expect(retryResult.succeededCount).toBeGreaterThan(0);
+      let succeeded = retryResult.succeededCount;
+      for (let cycle = 0; cycle < 20; cycle++) {
+        const current = await notificationRepository.findById(testNotif.notificationId);
+        if (current?.status !== 'QUEUED') break;
+        retryResult = await notificationService.retryFailedNotifications(3);
+        succeeded += retryResult.succeededCount;
+        if (retryResult.processedCount === 0) break;
+      }
+      expect(succeeded).toBeGreaterThan(0);
 
       const updated = await notificationRepository.findById(testNotif.notificationId);
       expect(updated?.status).toBe('SENT');

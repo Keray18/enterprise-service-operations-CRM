@@ -350,7 +350,7 @@ export class ReplacementService {
         let outboxShortage;
         if (!alreadySent) {
           const serviceReq = await serviceRequestRepository.findById(rep.requestId, conn);
-          const customerPhone = serviceReq?.customerPhone || rep.customerPhone || '9820098200';
+          const customerPhone = serviceReq?.customerPhone || rep.customerPhone;
           if (customerPhone) {
             const smsText = notificationService.buildSmsStockShortageMessage({
               jobNumber: serviceReq?.jobNumber || rep.jobNumber || 'JOB-UNKNOWN',

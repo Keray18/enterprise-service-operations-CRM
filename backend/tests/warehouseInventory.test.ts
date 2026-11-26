@@ -46,6 +46,7 @@ describe('Phase 3 — Warehouse & Inventory Logistics', () => {
       locationCode: `WH_TEST_${Date.now().toString(36).toUpperCase()}`,
       locationName: 'Central Regional Logistics Warehouse',
       partyType: 'CENTRAL_WAREHOUSE',
+      isTestFixture: 'Y',
       isActive: 'Y',
     });
     centralWarehouseLocationId = locWh.locationId;
@@ -54,6 +55,7 @@ describe('Phase 3 — Warehouse & Inventory Logistics', () => {
       locationCode: `ASF_TEST_${Date.now().toString(36).toUpperCase()}`,
       locationName: 'Andheri West Franchise Center',
       partyType: 'ASF',
+      isTestFixture: 'Y',
       isActive: 'Y',
     });
     asfLocationId = locAsf.locationId;

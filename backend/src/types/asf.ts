@@ -44,6 +44,10 @@ export interface CheckInComplaintInput {
 export interface CheckInComplaintResponse {
   serviceRequest: ServiceRequestWithRelationsRecord;
   checkedInAt: string;
+  /** The separate Completion Happy Code is issued to the customer on successful arrival verification. */
+  completionHappyCodeIssued?: boolean;
+  /** Development-only preview (non-production with ENABLE_DEV_OTP_PREVIEW=true). */
+  devHappyCodePreview?: string;
   verified: boolean;
 }
 

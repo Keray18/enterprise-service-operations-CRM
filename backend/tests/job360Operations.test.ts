@@ -59,6 +59,7 @@ describe('Job 360, Diagnostics & Repair Operations (Phase 2B)', () => {
       locationCode: `ASF_360_${Date.now().toString(36).toUpperCase()}`,
       locationName: 'Andheri West Service Center',
       partyType: 'ASF',
+      isTestFixture: 'Y',
     });
     asfLocationId = loc1.locationId;
 
@@ -66,6 +67,7 @@ describe('Job 360, Diagnostics & Repair Operations (Phase 2B)', () => {
       locationCode: `ASF_OTH_${Date.now().toString(36).toUpperCase()}`,
       locationName: 'Bandra Service Center',
       partyType: 'ASF',
+      isTestFixture: 'Y',
     });
     otherLocationId = loc2.locationId;
 

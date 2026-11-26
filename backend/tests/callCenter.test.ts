@@ -482,7 +482,9 @@ describe('Fast Call Registration & Customer Lookup (Phase 1C)', () => {
       expect(res.body.error.code).toBe('BRAND_MODEL_MISMATCH');
     });
 
-    it('should reject registration for non-serviceable pincode', async () => {
+    // Superseded by approved V025 routing (P0 routing report, row 2): an unserviceable pincode is not
+    // rejected and never silently diverted; the complaint is held unassigned for manual routing.
+    it('holds registration for non-serviceable pincode as REGISTERED / UNASSIGNED_PENDING (no diversion)', async () => {
       const customer = (await customerRepository.searchCustomers({ code: 'C1001' })).items[0];
 
       const res = await request(app)
@@ -503,8 +505,12 @@ describe('Fast Call Registration & Customer Lookup (Phase 1C)', () => {
           addressLine: customer.addressLine,
         });
 
-      expect(res.status).toBe(400);
-      expect(res.body.error.code).toBe('NON_SERVICEABLE_PINCODE');
+      expect(res.status).toBe(201);
+      const sr = res.body.data.serviceRequest;
+      expect(sr.status).toBe('REGISTERED');
+      expect(sr.assignedLocationId).toBeUndefined();
+      expect(sr.assignmentSource).toBe('UNASSIGNED_PENDING');
+      expect(sr.assignmentFailedReason).toContain('unserviceable');
     });
   });
 

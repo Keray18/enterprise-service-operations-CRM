@@ -840,34 +840,60 @@ describe('Operational Workflow Acceptance — Engineer Isolation, Partial Dispat
       }
     });
 
-    it('generates cryptographically random non-deterministic temporary passwords for rotation-eligible accounts and preserves protected dev accounts', async () => {
-      const accounts1 = await seedDevAccounts();
-      const accounts2 = await seedDevAccounts();
+    it('never pins credentials: issues random temporary passwords with mandatory change and preserves existing accounts unless rotation is requested', async () => {
+      // Module must not export any pinned credential table any more
+      const seedModule: Record<string, unknown> = await import('../src/scripts/seedDevAccounts.js');
+      expect(seedModule['PROTECTED_DEV_CREDENTIALS']).toBeUndefined();
 
-      expect(accounts1.length).toBe(8);
-      expect(accounts2.length).toBe(8);
+      // Isolated spec so the shared development personas are never touched by this test
+      const tag = Date.now().toString(36);
+      const spec = [{
+        dashboard: 'Isolated Seed Test',
+        role: 'CALL_CENTER' as const,
+        username: `seed_iso_${tag}`,
+        email: `seed_iso_${tag}@crm.test`,
+        fullName: 'Isolated Seed Test',
+        route: '/call-center',
+      }];
 
-      // Verify that non-protected temporary dev accounts differ between executions (rotation safety)
-      const pw1 = accounts1.find((a) => a.username === 'infra_ops')?.password;
-      const pw2 = accounts2.find((a) => a.username === 'infra_ops')?.password;
-
+      const created = await seedDevAccounts({ accounts: spec });
+      expect(created).toHaveLength(1);
+      expect(created[0]!.action).toBe('CREATED');
+      const pw1 = created[0]!.temporaryPassword!;
       expect(pw1).toBeDefined();
-      expect(pw2).toBeDefined();
-      expect(pw1).not.toBe(pw2);
+      expect(pw1.length).toBeGreaterThanOrEqual(12);
 
-      // Invariant: Protected dev credentials must NEVER be randomized or altered
-      expect(accounts1.find((a) => a.username === 'admin')?.password).toBe('Admin@123');
-      expect(accounts1.find((a) => a.username === 'callcenter')?.password).toBe('callCenter@123');
-      expect(accounts1.find((a) => a.username === 'warehouse')?.password).toBe('wareHouse@123');
-      expect(accounts1.find((a) => a.username === 'service_center')?.password).toBe('serviceCenter@123');
-      expect(accounts1.find((a) => a.username === 'mumbai_tech_1')?.password).toBe('fieldEng@123');
+      // Re-running without rotation preserves the existing credential (no unexpected lockout)
+      const preserved = await seedDevAccounts({ accounts: spec });
+      expect(preserved[0]!.action).toBe('PRESERVED');
+      expect(preserved[0]!.temporaryPassword).toBeUndefined();
+
+      // Explicit rotation issues a different random temporary password
+      const rotated = await seedDevAccounts({ accounts: spec, rotate: true });
+      expect(rotated[0]!.action).toBe('ROTATED');
+      const pw2 = rotated[0]!.temporaryPassword!;
+      expect(pw2).toBeDefined();
+      expect(pw2).not.toBe(pw1);
+
+      const user = await userRepository.findByUsernameOrEmail(spec[0]!.username);
+      expect(user?.mustChangePassword).toBe('Y');
+      expect(user?.passwordHash).toMatch(/^\$argon2id\$/);
+
+      // The temporary credential works but only unlocks the password-change flow
+      const login = await request(app).post('/api/v1/auth/login').send({ username: spec[0]!.username, password: pw2 });
+      expect(login.status).toBe(200);
+      expect(login.body.data.user.mustChangePassword).toBe(true);
+      const loginCookie = (login.headers['set-cookie'] as unknown as string[]).join('; ');
+      const blocked = await request(app).get('/api/v1/call-center/serviceability/400001').set('Cookie', loginCookie);
+      expect(blocked.status).toBe(403);
+      expect(blocked.body.error.code).toBe('PASSWORD_CHANGE_REQUIRED');
     });
 
     it('stores strictly Argon2id hashes in Oracle, never plaintext passwords', async () => {
       const conn = await getOracleConnection();
       try {
         const res: any = await conn.execute(
-          `SELECT USERNAME, PASSWORD_HASH FROM APP_USERS WHERE USERNAME IN ('admin', 'service_center', 'mumbai_tech_1')`,
+          `SELECT USERNAME, PASSWORD_HASH FROM APP_USERS WHERE USERNAME IN ('admin', 'service_center', 'mumbai_tech_1') OR USERNAME LIKE 'seed_iso_%'`,
           {},
           { outFormat: 4002 }
         );

@@ -18,7 +18,10 @@
     "db:rotate-admin": "tsx src/scripts/rotateAdminPassword.ts",
     "db:users": "tsx src/scripts/listUsers.ts",
     "db:set-password": "tsx src/scripts/setUserPassword.ts",
-    "db:seed-dev-accounts": "tsx src/scripts/seedDevAccounts.ts"
+    "db:seed-dev-accounts": "tsx src/scripts/seedDevAccounts.ts",
+    "db:super-admin": "tsx src/scripts/superAdminAccounts.ts",
+    "db:rotate-compromised": "tsx src/scripts/rotateCompromisedCredentials.ts",
+    "db:repair-test-pollution": "tsx src/scripts/repairTestFixturePollution.ts"
   },
   "dependencies": {
     "@node-rs/argon2": "^2.2.2",

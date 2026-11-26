@@ -1012,6 +1012,17 @@ export class Job360Service {
   ): Promise<{ success: boolean; message: string; status: ServiceRequestStatus; devHappyCodePreview?: string }> {
     const { request } = await this.assertTechnicianCheckIn(requestId, actor);
 
+    // 1. Requests that are not in on-site work at all cannot be closed
+    const onSiteWorkStates = ['TECHNICIAN_CHECKED_IN', 'IN_PROGRESS_REPAIR', 'CALL_CLOSURE_SUBMITTED'];
+    if (!onSiteWorkStates.includes(request.status)) {
+      throw new AppError(
+        `Cannot initiate closure: Service request is in '${request.status}' status. Must be 'IN_PROGRESS_REPAIR' or 'CALL_CLOSURE_SUBMITTED'.`,
+        400,
+        'INVALID_STATE'
+      );
+    }
+
+    // 2. During on-site work, the actionable prerequisite is the recorded repair outcome
     if (!request.repairAction && !request.repairCodeId) {
       throw new AppError(
         'Repair action or repair code must be recorded before submitting call closure.',
@@ -1046,27 +1057,38 @@ export class Job360Service {
         );
       }
 
-      // Generate 6-digit Happy Code and Salt
-      const happyCode = generateHappyCode();
-      const salt = generateSalt(16);
-      const happyCodeHash = hashOtp({
-        otp: happyCode,
-        salt,
-        requestId,
-        purpose: 'HAPPY_CODE',
-      });
-      const expiresAt = new Date(Date.now() + 24 * 3600 * 1000); // 24-hour validity
-
-      // Store in SERVICE_REQUEST_VERIFICATIONS
-      await verificationRepository.upsertHappyCode(
-        {
-          requestId,
-          happyCodeHash,
-          salt,
-          expiresAt,
-        },
-        conn
+      // Approved rule: the Completion Happy Code is issued at Arrival verification. Reuse it while it is
+      // active; issue one here only when none is active (legacy check-ins, expiry or prior consumption).
+      const existingVerification = await verificationRepository.findByRequestId(requestId, conn);
+      const reuseIssuedCode = Boolean(
+        existingVerification?.happyCodeHash &&
+          !existingVerification.happyCodeVerifiedAt &&
+          existingVerification.happyCodeExpiresAt &&
+          existingVerification.happyCodeExpiresAt > new Date()
       );
+      const happyCode = reuseIssuedCode ? undefined : generateHappyCode();
+      const expiresAt = reuseIssuedCode ? existingVerification!.happyCodeExpiresAt! : new Date(Date.now() + 24 * 3600 * 1000); // 24-hour validity
+
+      if (happyCode) {
+        const salt = generateSalt(16);
+        const happyCodeHash = hashOtp({
+          otp: happyCode,
+          salt,
+          requestId,
+          purpose: 'HAPPY_CODE',
+        });
+
+        // Store in SERVICE_REQUEST_VERIFICATIONS
+        await verificationRepository.upsertHappyCode(
+          {
+            requestId,
+            happyCodeHash,
+            salt,
+            expiresAt,
+          },
+          conn
+        );
+      }
 
       // Transition STATUS to CALL_CLOSURE_SUBMITTED
       await serviceRequestRepository.updateStatus(requestId, 'CALL_CLOSURE_SUBMITTED', conn);
@@ -1092,16 +1114,19 @@ export class Job360Service {
       );
 
       // Build & Encrypt SMS 4 Call Closure Summary
-      const smsBody = notificationService.buildSms4Message({
-        jobNumber: request.jobNumber,
-        happyCode,
-      });
-      const encrypted = encryptNotificationPayload(smsBody);
+      const smsBody = happyCode
+        ? notificationService.buildSms4Message({
+            jobNumber: request.jobNumber,
+            happyCode,
+          })
+        : '';
+      const encrypted = happyCode ? encryptNotificationPayload(smsBody) : undefined;
 
-      const outboxRecord = await notificationRepository.enqueueNotification(
+      const outboxRecord = request.customerPhone && encrypted
+        ? await notificationRepository.enqueueNotification(
         {
           requestId,
-          recipient: request.customerPhone || '9999999999',
+          recipient: request.customerPhone,
           channel: 'SMS',
           templateCode: 'SMS_4_CALL_CLOSURE',
           messageBody: 'Dear Customer, Your service Request is closed. Kindly share the confidential Happy Code sent via SMS with our technician.',
@@ -1112,12 +1137,13 @@ export class Job360Service {
           keyVersion: encrypted.keyVersion,
         },
         conn
-      );
+      )
+        : undefined;
 
       await conn.commit();
 
       // Asynchronously trigger notification delivery via SMS adapter
-      notificationService.processNotification(outboxRecord).catch(() => {});
+      if (outboxRecord) notificationService.processNotification(outboxRecord).catch(() => {});
 
       const allowDevPreview =
         (process.env['NODE_ENV'] || env.NODE_ENV) !== 'production' &&
@@ -1126,9 +1152,11 @@ export class Job360Service {
 
       return {
         success: true,
-        message: 'Repair work marked complete. Happy Code generated and dispatched to customer via SMS 4.',
+        message: reuseIssuedCode
+          ? 'Repair work marked complete. The customer already holds the Completion Happy Code issued at arrival.'
+          : 'Repair work marked complete. Completion Happy Code generated and dispatched to customer via SMS 4.',
         status: 'CALL_CLOSURE_SUBMITTED',
-        devHappyCodePreview: allowDevPreview ? happyCode : undefined,
+        devHappyCodePreview: allowDevPreview && happyCode ? happyCode : undefined,
       };
     } catch (err) {
       await conn.rollback();
@@ -1231,10 +1259,11 @@ export class Job360Service {
       });
       const encrypted = encryptNotificationPayload(smsBody);
 
-      const outboxRecord = await notificationRepository.enqueueNotification(
+      const outboxRecord = request.customerPhone
+        ? await notificationRepository.enqueueNotification(
         {
           requestId,
-          recipient: request.customerPhone || '9999999999',
+          recipient: request.customerPhone,
           channel: 'SMS',
           templateCode: 'SMS_5_REGENERATE_HAPPY_CODE',
           messageBody: 'Dear Customer, Your confidential Happy Code has been regenerated. Kindly share it with the service technician.',
@@ -1245,12 +1274,13 @@ export class Job360Service {
           keyVersion: encrypted.keyVersion,
         },
         conn
-      );
+      )
+        : undefined;
 
       await conn.commit();
 
       // Trigger async dispatch
-      notificationService.processNotification(outboxRecord).catch(() => {});
+      if (outboxRecord) notificationService.processNotification(outboxRecord).catch(() => {});
 
       const allowDevPreview =
         (process.env['NODE_ENV'] || env.NODE_ENV) !== 'production' &&
@@ -1477,18 +1507,20 @@ export class Job360Service {
         feedbackUrl = `${frontendBaseUrl}/feedback/${feedbackToken}`;
         const feedbackSms = `Dear Customer, thank you for choosing our service. Kindly rate your service experience for job #${request.jobNumber}: ${feedbackUrl}`;
 
-        const outboxRecord = await notificationRepository.enqueueNotification(
+        const outboxRecord = request.customerPhone
+        ? await notificationRepository.enqueueNotification(
           {
             requestId,
-            recipient: request.customerPhone || '9999999999',
+            recipient: request.customerPhone,
             channel: 'SMS',
             templateCode: 'SMS_6_CUSTOMER_FEEDBACK',
             messageBody: feedbackSms,
           },
           conn
-        );
+        )
+        : undefined;
 
-        notificationService.processNotification(outboxRecord).catch(() => {});
+        if (outboxRecord) notificationService.processNotification(outboxRecord).catch(() => {});
       }
 
       // Append immutable lifecycle audit event
@@ -1796,21 +1828,23 @@ export class Job360Service {
           replacementApprovalNo: approvalNumber,
         });
 
-        const outboxRecord = await notificationRepository.enqueueNotification(
+        const outboxRecord = requestRow.CUSTOMER_PHONE
+        ? await notificationRepository.enqueueNotification(
           {
             requestId: rep.requestId,
-            recipient: requestRow.CUSTOMER_PHONE || '9999999999',
+            recipient: requestRow.CUSTOMER_PHONE,
             channel: 'SMS',
             templateCode: 'SMS_8_REPLACEMENT_APPROVED',
             messageBody: smsBody,
             isEncrypted: 'N',
           },
           conn
-        );
+        )
+        : undefined;
 
         await conn.commit();
 
-        notificationService.processNotification(outboxRecord).catch(() => {});
+        if (outboxRecord) notificationService.processNotification(outboxRecord).catch(() => {});
 
         return {
           success: true,
@@ -2058,17 +2092,19 @@ export class Job360Service {
           jobNumber: requestRow.JOB_NUMBER,
         });
 
-        const outboxRecord = await notificationRepository.enqueueNotification(
+        const outboxRecord = requestRow.CUSTOMER_PHONE
+        ? await notificationRepository.enqueueNotification(
           {
             requestId: canc.requestId,
-            recipient: requestRow.CUSTOMER_PHONE || '9999999999',
+            recipient: requestRow.CUSTOMER_PHONE,
             channel: 'SMS',
             templateCode: 'SMS_7_SERVICE_CANCELLED',
             messageBody: smsBody,
             isEncrypted: 'N',
           },
           conn
-        );
+        )
+        : undefined;
 
         // Auto-release any active warehouse part reservations for this cancelled job
         await inventoryService.autoReleaseJobReservations(
@@ -2080,7 +2116,7 @@ export class Job360Service {
 
         await conn.commit();
 
-        notificationService.processNotification(outboxRecord).catch(() => {});
+        if (outboxRecord) notificationService.processNotification(outboxRecord).catch(() => {});
 
         return {
           success: true,

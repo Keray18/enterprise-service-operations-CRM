@@ -1,0 +1,123 @@
+-- ==============================================================================
+-- Migration: V026__super_admin_and_audit_foundation.sql
+-- Description: Establishes Client Super Admin role, segregates Master Data Management
+--              authority, creates audit & compliance permissions, and provisions
+--              the SYSTEM_AUDIT_LOGS table for enterprise compliance tracking.
+-- ==============================================================================
+
+-- 1. Create SUPER_ADMIN System Role
+MERGE INTO ROLES r
+USING (
+    SELECT '00000000-0000-0000-0000-000000000010' AS ROLE_ID,
+           'SUPER_ADMIN' AS CODE,
+           'Super Administrator' AS NAME,
+           'Client Super Administrator with exclusive system configuration, master data governance, and compliance authority' AS DESCRIPTION,
+           'Y' AS IS_SYSTEM
+    FROM DUAL
+) s ON (r.ROLE_ID = s.ROLE_ID OR r.CODE = s.CODE)
+WHEN NOT MATCHED THEN
+    INSERT (ROLE_ID, CODE, NAME, DESCRIPTION, IS_SYSTEM)
+    VALUES (s.ROLE_ID, s.CODE, s.NAME, s.DESCRIPTION, s.IS_SYSTEM);
+
+-- 2. Seed Governance & Compliance Permissions
+MERGE INTO PERMISSIONS p
+USING (
+    SELECT '10000000-0000-0000-0000-000000000023' AS PERMISSION_ID,
+           'system:config' AS CODE,
+           'SYSTEM' AS MODULE,
+           'Manage system configuration, business policies, and tenant parameters' AS DESCRIPTION
+    FROM DUAL
+) s ON (p.PERMISSION_ID = s.PERMISSION_ID OR p.CODE = s.CODE)
+WHEN NOT MATCHED THEN
+    INSERT (PERMISSION_ID, CODE, MODULE, DESCRIPTION)
+    VALUES (s.PERMISSION_ID, s.CODE, s.MODULE, s.DESCRIPTION);
+
+MERGE INTO PERMISSIONS p
+USING (
+    SELECT '10000000-0000-0000-0000-000000000024' AS PERMISSION_ID,
+           'audit:read' AS CODE,
+           'AUDIT' AS MODULE,
+           'Read and inspect enterprise compliance and system audit logs' AS DESCRIPTION
+    FROM DUAL
+) s ON (p.PERMISSION_ID = s.PERMISSION_ID OR p.CODE = s.CODE)
+WHEN NOT MATCHED THEN
+    INSERT (PERMISSION_ID, CODE, MODULE, DESCRIPTION)
+    VALUES (s.PERMISSION_ID, s.CODE, s.MODULE, s.DESCRIPTION);
+
+MERGE INTO PERMISSIONS p
+USING (
+    SELECT '10000000-0000-0000-0000-000000000025' AS PERMISSION_ID,
+           'audit:export' AS CODE,
+           'AUDIT' AS MODULE,
+           'Export compliance audit trails and operational governance reports' AS DESCRIPTION
+    FROM DUAL
+) s ON (p.PERMISSION_ID = s.PERMISSION_ID OR p.CODE = s.CODE)
+WHEN NOT MATCHED THEN
+    INSERT (PERMISSION_ID, CODE, MODULE, DESCRIPTION)
+    VALUES (s.PERMISSION_ID, s.CODE, s.MODULE, s.DESCRIPTION);
+
+-- 3. Disassociate Master Data Mutation & Import Permissions from Business ADMIN Role
+-- The operational ADMIN role retains read access (masters:read) for operational dispatch and SLA monitoring,
+-- but loses mutation authority (masters:manage, masters:import) which belongs strictly to SUPER_ADMIN.
+DELETE FROM ROLE_PERMISSIONS
+WHERE ROLE_ID = '00000000-0000-0000-0000-000000000001'
+  AND PERMISSION_ID IN (
+      '10000000-0000-0000-0000-000000000019', -- masters:manage
+      '10000000-0000-0000-0000-000000000022'  -- masters:import
+  );
+
+-- 4. Map Governance Permissions to SUPER_ADMIN Role
+-- Super Admin manages masters, identity, configuration, and compliance.
+-- SUPER_ADMIN does NOT inherit frontline operational permissions (e.g. calls:create, calls:assign, inventory:dispatch).
+MERGE INTO ROLE_PERMISSIONS rp
+USING (
+    SELECT '00000000-0000-0000-0000-000000000010' AS ROLE_ID, '10000000-0000-0000-0000-000000000001' AS PERMISSION_ID FROM DUAL -- users:read
+    UNION ALL SELECT '00000000-0000-0000-0000-000000000010', '10000000-0000-0000-0000-000000000002' FROM DUAL -- users:create
+    UNION ALL SELECT '00000000-0000-0000-0000-000000000010', '10000000-0000-0000-0000-000000000003' FROM DUAL -- users:update
+    UNION ALL SELECT '00000000-0000-0000-0000-000000000010', '10000000-0000-0000-0000-000000000004' FROM DUAL -- users:delete
+    UNION ALL SELECT '00000000-0000-0000-0000-000000000010', '10000000-0000-0000-0000-000000000005' FROM DUAL -- roles:read
+    UNION ALL SELECT '00000000-0000-0000-0000-000000000010', '10000000-0000-0000-0000-000000000006' FROM DUAL -- roles:manage
+    UNION ALL SELECT '00000000-0000-0000-0000-000000000010', '10000000-0000-0000-0000-000000000018' FROM DUAL -- masters:read
+    UNION ALL SELECT '00000000-0000-0000-0000-000000000010', '10000000-0000-0000-0000-000000000019' FROM DUAL -- masters:manage
+    UNION ALL SELECT '00000000-0000-0000-0000-000000000010', '10000000-0000-0000-0000-000000000021' FROM DUAL -- system:audit
+    UNION ALL SELECT '00000000-0000-0000-0000-000000000010', '10000000-0000-0000-0000-000000000022' FROM DUAL -- masters:import
+    UNION ALL SELECT '00000000-0000-0000-0000-000000000010', '10000000-0000-0000-0000-000000000023' FROM DUAL -- system:config
+    UNION ALL SELECT '00000000-0000-0000-0000-000000000010', '10000000-0000-0000-0000-000000000024' FROM DUAL -- audit:read
+    UNION ALL SELECT '00000000-0000-0000-0000-000000000010', '10000000-0000-0000-0000-000000000025' FROM DUAL -- audit:export
+) s ON (rp.ROLE_ID = s.ROLE_ID AND rp.PERMISSION_ID = s.PERMISSION_ID)
+WHEN NOT MATCHED THEN
+    INSERT (ROLE_ID, PERMISSION_ID)
+    VALUES (s.ROLE_ID, s.PERMISSION_ID);
+
+-- 5. Create SYSTEM_AUDIT_LOGS Table for Enterprise Compliance Tracking
+DECLARE
+    v_cnt NUMBER;
+BEGIN
+    SELECT COUNT(*) INTO v_cnt FROM user_tables WHERE table_name = 'SYSTEM_AUDIT_LOGS';
+    IF v_cnt = 0 THEN
+        EXECUTE IMMEDIATE '
+            CREATE TABLE SYSTEM_AUDIT_LOGS (
+                EVENT_ID VARCHAR2(36 CHAR) PRIMARY KEY,
+                ACTOR_ID VARCHAR2(36 CHAR),
+                ACTOR_ROLE VARCHAR2(50 CHAR),
+                ACTOR_USERNAME VARCHAR2(100 CHAR),
+                ACTION VARCHAR2(50 CHAR) NOT NULL,
+                TARGET_RESOURCE VARCHAR2(50 CHAR) NOT NULL,
+                RECORD_IDENTIFIER VARCHAR2(100 CHAR),
+                OUTCOME VARCHAR2(20 CHAR) NOT NULL CHECK (OUTCOME IN (''SUCCESS'', ''FAILURE'')),
+                CORRELATION_ID VARCHAR2(100 CHAR),
+                CHANGES_JSON CLOB,
+                JUSTIFICATION VARCHAR2(1000 CHAR),
+                IP_ADDRESS VARCHAR2(45 CHAR),
+                USER_AGENT VARCHAR2(255 CHAR),
+                CREATED_AT TIMESTAMP(6) WITH TIME ZONE DEFAULT SYSTIMESTAMP NOT NULL
+            )
+        ';
+        EXECUTE IMMEDIATE 'CREATE INDEX IDX_SYS_AUDIT_CREATED ON SYSTEM_AUDIT_LOGS (CREATED_AT DESC)';
+        EXECUTE IMMEDIATE 'CREATE INDEX IDX_SYS_AUDIT_ACTOR ON SYSTEM_AUDIT_LOGS (ACTOR_ID, CREATED_AT DESC)';
+        EXECUTE IMMEDIATE 'CREATE INDEX IDX_SYS_AUDIT_ACTION ON SYSTEM_AUDIT_LOGS (ACTION, TARGET_RESOURCE)';
+    END IF;
+END;
+/
+
+COMMIT;

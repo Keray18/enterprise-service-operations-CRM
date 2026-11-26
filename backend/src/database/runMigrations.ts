@@ -22,15 +22,29 @@ async function main(): Promise<void> {
         console.log('\n========================================================================================');
         console.log('Version | Description                    | Status    | Applied On          | Checksum');
         console.log('----------------------------------------------------------------------------------------');
+        const fileVersions = new Set(files.map((f) => f.version));
+        const rows: Array<{ version: string; line: string }> = [];
         for (const f of files) {
           const a = appliedMap.get(f.version);
-          const status = a ? 'APPLIED' : 'PENDING';
+          let status = a ? (a.success === 'Y' ? 'APPLIED' : 'FAILED') : 'PENDING';
+          if (a && a.checksum !== f.checksum) status = 'MISMATCH';
           const installedOn = a ? a.installedOn.toISOString().slice(0, 19).replace('T', ' ') : '                   ';
           const checksumPreview = f.checksum.slice(0, 8);
-          console.log(
-            `V${f.version.padEnd(6)} | ${f.description.padEnd(30)} | ${status.padEnd(9)} | ${installedOn} | ${checksumPreview}...`
-          );
+          rows.push({
+            version: f.version,
+            line: `V${f.version.padEnd(6)} | ${f.description.padEnd(30)} | ${status.padEnd(9)} | ${installedOn} | ${checksumPreview}...`,
+          });
         }
+        // Applied history rows whose source file is absent (e.g. V031/V032, reconciled by V033)
+        for (const a of applied) {
+          if (fileVersions.has(a.version)) continue;
+          const installedOn = a.installedOn.toISOString().slice(0, 19).replace('T', ' ');
+          rows.push({
+            version: a.version,
+            line: `V${a.version.padEnd(6)} | ${a.description.padEnd(30)} | ${'NO_SOURCE'.padEnd(9)} | ${installedOn} | ${a.checksum.slice(0, 8)}...`,
+          });
+        }
+        rows.sort((x, y) => parseInt(x.version, 10) - parseInt(y.version, 10)).forEach((r) => console.log(r.line));
         console.log('========================================================================================\n');
       } finally {
         await conn.close();

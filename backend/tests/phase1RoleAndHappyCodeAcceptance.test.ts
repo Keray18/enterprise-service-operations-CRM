@@ -27,6 +27,7 @@ describe('Phase 1 Acceptance Suite: Role Simplification & Happy Code Standardiza
       { role: 'ASF', username: `p1_asf_${suffix}`, email: `p1_asf_${suffix}@crm.internal` },
       { role: 'ENGINEER', username: `p1_eng_${suffix}`, email: `p1_eng_${suffix}@crm.internal` },
       { role: 'WAREHOUSE', username: `p1_wh_${suffix}`, email: `p1_wh_${suffix}@crm.internal` },
+      { role: 'SUPER_ADMIN', username: `p1_sa_${suffix}`, email: `p1_sa_${suffix}@crm.internal` },
     ];
 
     for (const u of testUsers) {
@@ -65,14 +66,14 @@ describe('Phase 1 Acceptance Suite: Role Simplification & Happy Code Standardiza
   // 1. Role Tests
   // ==============================================================================
   describe('1. Role Authorization & Simplification Invariants', () => {
-    it('1.1. All five approved roles authenticate successfully and return correct active role identity', async () => {
+    it('1.1. All six approved roles authenticate successfully and return correct active role identity', async () => {
       for (const role of APPROVED_ROLES) {
         expect(sessions[role]).toBeDefined();
         expect(sessions[role].user.roles).toContain(role);
       }
     });
 
-    it('1.2. Exactly five roles are active in Oracle database and removed roles are marked inactive', async () => {
+    it('1.2. Exactly six roles are active in Oracle database and removed roles are marked inactive', async () => {
       const conn = await getOracleConnection();
       try {
         const activeRes: any = await conn.execute(
@@ -81,7 +82,8 @@ describe('Phase 1 Acceptance Suite: Role Simplification & Happy Code Standardiza
           { outFormat: 4002 }
         );
         const activeRoleCodes = activeRes.rows.map((r: any) => r.CODE);
-        expect(activeRoleCodes).toEqual(['ADMIN', 'ASF', 'CALL_CENTER', 'ENGINEER', 'WAREHOUSE']);
+        // Final approved model: SUPER_ADMIN (provider) + five client roles
+        expect(activeRoleCodes).toEqual(['ADMIN', 'ASF', 'CALL_CENTER', 'ENGINEER', 'SUPER_ADMIN', 'WAREHOUSE']);
 
         const inactiveRes: any = await conn.execute(
           `SELECT CODE FROM ROLES WHERE IS_ACTIVE = 'N' ORDER BY CODE ASC`,
@@ -97,7 +99,7 @@ describe('Phase 1 Acceptance Suite: Role Simplification & Happy Code Standardiza
       }
     });
 
-    it('1.3. Reject attempts to assign removed roles (SUPER_ADMIN, INFRA_OPS, FINANCE, BRAND, DISTRIBUTOR)', async () => {
+    it('1.3. Reject attempts to assign removed roles (INFRA_OPS, FINANCE, BRAND, DISTRIBUTOR)', async () => {
       const testUserId = '00000000-0000-0000-0001-000000000001';
 
       for (const removedRole of DEPRECATED_ROLES) {
@@ -107,22 +109,35 @@ describe('Phase 1 Acceptance Suite: Role Simplification & Happy Code Standardiza
       }
     });
 
-    it('1.4. Inactive role accounts cannot log in (rejected with 401)', async () => {
-      const deactLogins = [
-        { username: 'super', password: 'Password@123' },
-        { username: 'infra_ops', password: 'Password@123' },
-        { username: 'brand_manager', password: 'Password@123' },
-        { username: 'finance_officer', password: 'Password@123' },
-      ];
-
-      for (const cred of deactLogins) {
-        const res = await request(app)
-          .post('/api/v1/auth/login')
-          .send(cred);
-
-        // Deactivated users cannot log in
-        expect([401, 403]).toContain(res.status);
+    it('1.4. Accounts with only removed roles, or deactivated accounts, cannot log in', async () => {
+      // Isolated fixtures: one active account whose only role is a removed role, one deactivated account
+      const conn = await getOracleConnection();
+      const legacyUserId = crypto.randomUUID();
+      const deactivatedUserId = crypto.randomUUID();
+      const legacyUsername = `p1_legacy_${suffix}`;
+      const deactivatedUsername = `p1_deact_${suffix}`;
+      const passwordHash = await hashPassword(TEST_PASSWORD);
+      try {
+        await userRepository.createUser({ userId: legacyUserId, username: legacyUsername, email: `${legacyUsername}@crm.internal`, fullName: 'Legacy Finance', passwordHash }, conn);
+        // Removed roles are not assignable through the application; seed the historical grant directly
+        await conn.execute(
+          `INSERT INTO USER_ROLES (USER_ID, ROLE_ID, ASSIGNED_BY) SELECT :userId, ROLE_ID, 'PHASE1_TEST_SETUP' FROM ROLES WHERE CODE = 'FINANCE'`,
+          { userId: legacyUserId }
+        );
+        await userRepository.createUser({ userId: deactivatedUserId, username: deactivatedUsername, email: `${deactivatedUsername}@crm.internal`, fullName: 'Deactivated Call Handler', passwordHash, isActive: 'N' }, conn);
+        await rbacRepository.assignRoleToUser(deactivatedUserId, 'CALL_CENTER', 'PHASE1_TEST_SETUP', conn);
+        await conn.commit();
+      } finally {
+        await conn.close();
       }
+
+      const legacy = await request(app).post('/api/v1/auth/login').send({ username: legacyUsername, password: TEST_PASSWORD });
+      expect(legacy.status).toBe(403);
+      expect(legacy.body.error.code).toBe('NO_ACTIVE_ROLE');
+
+      const deactivated = await request(app).post('/api/v1/auth/login').send({ username: deactivatedUsername, password: TEST_PASSWORD });
+      expect(deactivated.status).toBe(403);
+      expect(deactivated.body.error.code).toBe('ACCOUNT_DISABLED');
     });
 
     it('1.5. Workspace check endpoints strictly grant access to the 5 approved roles and deny unauthorized roles', async () => {
